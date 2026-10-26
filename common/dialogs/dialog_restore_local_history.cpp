@@ -77,7 +77,7 @@ void DIALOG_RESTORE_LOCAL_HISTORY::Populate()
         wxString    countText =
                 snapshot.filesChanged > 0 ? wxString::Format( "%d", snapshot.filesChanged ) : wxString( "-" );
 
-        m_list->SetItem( row, 1, snapshot.summary );
+        m_list->SetItem( row, 1, LOCAL_HISTORY::DisplayTitle( snapshot.summary ) );
 
         m_list->SetItem( row, 2, countText );
     }
@@ -103,7 +103,7 @@ void DIALOG_RESTORE_LOCAL_HISTORY::UpdateDetails( long aIndex )
     const auto& snapshot = m_snapshots[aIndex];
 
     wxString text;
-    text << snapshot.summary << "\n";
+    text << LOCAL_HISTORY::DisplayTitle( snapshot.summary ) << "\n";
     text << snapshot.date.FormatISOCombined() << "\n";
     text << snapshot.hash;
 

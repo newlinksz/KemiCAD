@@ -522,6 +522,11 @@ void GIT_COMMIT_PANE::applyStatus( const STATUS& aStatus )
 {
     std::vector<FILE_CHECKLIST_ENTRY> entries = aStatus.entries;
     m_hasRepo = aStatus.hasRepo;
+
+    // Without a repository there is nothing to commit or fetch; show only the hint.
+    m_commitButton->Show( m_hasRepo );
+    m_pullButton->Show( m_hasRepo );
+
     m_hasRemote = aStatus.hasRemote;
     m_headDetached = aStatus.headDetached;
     m_operationInProgress = aStatus.operationInProgress;
@@ -651,7 +656,9 @@ void GIT_COMMIT_PANE::showDisabledState()
     m_changesRow->ShowItems( false );
     m_branchName->SetLabel( wxEmptyString );
     m_branchRow->ShowItems( false );
-    m_settingsButton->Show();
+    m_settingsButton->Hide();
+    m_commitButton->Hide();
+    m_pullButton->Hide();
 
     m_canAmend = false;
     m_amendCheckbox->SetValue( false );
@@ -1019,8 +1026,8 @@ void GIT_COMMIT_PANE::populateBranches( const STATUS& aStatus )
     m_branchName->SetLabel( wxEmptyString );
     m_branchRow->ShowItems( aStatus.hasRepo );
 
-    // The advanced window is reachable without a repository, as the old button was.
-    m_settingsButton->Show();
+    // Without a repository the pane only shows a hint; the gear has nothing to configure.
+    m_settingsButton->Show( aStatus.hasRepo );
 
     if( !aStatus.hasRepo )
         return;

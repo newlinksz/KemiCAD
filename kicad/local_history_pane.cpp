@@ -21,6 +21,7 @@
 #include "kicad_manager_frame.h"
 
 #include <git2.h>
+#include <local_history.h>
 #include <project.h>
 #include <wx/filename.h>
 #include <wx/intl.h>
@@ -124,7 +125,7 @@ void LOCAL_HISTORY_PANE::RefreshHistory( const wxString& aProjectPath )
             timeStr = info.date.Format();
         }
 
-        wxString title = info.message.BeforeFirst( '\n' );
+        wxString title = LOCAL_HISTORY::DisplayTitle( info.message );
         long     row = m_list->InsertItem( m_list->GetItemCount(), title );
         m_list->SetItem( row, 1, timeStr );
 
@@ -150,7 +151,13 @@ void LOCAL_HISTORY_PANE::OnMotion( wxMouseEvent& aEvent )
     if( item >= 0 && item < static_cast<long>( m_commits.size() ) )
     {
         const LOCAL_COMMIT_INFO& info = m_commits[item];
-        wxString                 tip = info.message;
+        wxString                 tip = LOCAL_HISTORY::DisplayTitle( info.message );
+        wxString                 body;
+
+        info.message.BeforeFirst( '\n', &body );
+
+        if( !body.IsEmpty() )
+            tip << wxS( "\n" ) << body;
 
         if( !tip.EndsWith( wxS( "\n" ) ) )
             tip << wxS( "\n" );

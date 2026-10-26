@@ -11229,7 +11229,7 @@ msgstr "正在压缩已修剪的历史记录..."
 msgid ""
 "Could not restore local history '%s'. The previous history is preserved at "
 "'%s'."
-msgstr ""
+msgstr "无法还原本地历史记录“%s”。之前的历史记录保留在“%s”。"
 
 #: common/local_history.cpp:2750
 msgid "Cannot restore - the following files are open by another user:"
@@ -38045,7 +38045,7 @@ msgstr "导入 DipTrace 原理图和 PCB (*.dch, *.dip)"
 
 #: kicad/menubar.cpp:164
 msgid "Easy-PC / DesignSpark PCB Project..."
-msgstr ""
+msgstr "Easy-PC / DesignSpark PCB 工程..."
 
 #: kicad/menubar.cpp:165
 #, fuzzy
@@ -38076,7 +38076,7 @@ msgstr "比较工程分支..."
 
 #: kicad/menubar.cpp:250
 msgid "Review the file changes between two git refs in the current project"
-msgstr ""
+msgstr "查看当前工程中两个 Git 引用之间的文件更改"
 
 #: kicad/menubar.cpp:255
 msgid "Edit Local File..."
@@ -39321,11 +39321,11 @@ msgstr "启动首选文本编辑器"
 
 #: kicad/tools/kicad_manager_actions.cpp:199
 msgid "Export for Older KiCad Version..."
-msgstr ""
+msgstr "导出为旧版 KiCad 格式..."
 
 #: kicad/tools/kicad_manager_actions.cpp:200
 msgid "Export a copy of the project that an older KiCad can open"
-msgstr ""
+msgstr "导出一份旧版 KiCad 可打开的工程副本"
 
 #: kicad/tools/kicad_manager_actions.cpp:205
 msgid "Archive Project..."
@@ -39452,19 +39452,19 @@ msgstr ""
 
 #: kicad/tools/kicad_manager_control.cpp:661
 msgid "The board was not saved. Nothing was exported."
-msgstr ""
+msgstr "电路板未保存，未导出任何内容。"
 
 #: kicad/tools/kicad_manager_control.cpp:676
 msgid ""
 "A library editor has unsaved changes. The export uses the last saved library"
 " files. Continue?"
-msgstr ""
+msgstr "有库编辑器存在未保存的更改。导出将使用上次保存的库文件。要继续吗？"
 
 #: kicad/tools/kicad_manager_control.cpp:728
 #, c-format
 msgid ""
 "The folder '%s' is not empty. Choose a location where it does not exist yet."
-msgstr ""
+msgstr "文件夹“%s”不为空。请选择一个尚不存在的位置。"
 
 #: kicad/tools/kicad_manager_control.cpp:766
 #, fuzzy, c-format
@@ -72616,6 +72616,1389 @@ msgstr ""
 "此电路板引用的 3D 模型在您的系统上已不存在。\n"
 "KemiCAD 可以从已配置的 3D 目录以及下方指定的其他目录中自动选择合适的匹配项。  \n"
 "可在“替换”列表中逐项覆盖匹配结果，改用搜索目录中的其他候选项或指定的模型文件。"
+
+# KemiCAD: version control and local history strings
+
+msgid "Repository:"
+msgstr "仓库："
+
+msgid "Branch:"
+msgstr "分支："
+
+msgid "Fetch"
+msgstr "抓取"
+
+msgid "Authentication is required to access the remote repository."
+msgstr "访问远程仓库需要身份验证。"
+
+msgid "Authentication is required to access %s."
+msgstr "访问 %s 需要身份验证。"
+
+msgid "Leave empty if the key has no passphrase."
+msgstr "如果密钥没有密码短语，请留空。"
+
+msgid "Commits record who made them. Enter the name and email to use."
+msgstr "提交会记录作者。请输入要使用的姓名和邮箱。"
+
+msgid "Email:"
+msgstr "邮箱："
+
+msgid "Enter a name for the tag."
+msgstr "请输入标签名称。"
+
+msgid "Tag name:"
+msgstr "标签名称："
+
+msgid "Message:"
+msgstr "说明："
+
+msgid "A message makes an annotated tag. Leave it empty for a plain tag."
+msgstr "填写说明将创建附注标签；留空则创建轻量标签。"
+
+msgid "Add Remote"
+msgstr "添加远程仓库"
+
+msgid "Edit Remote"
+msgstr "编辑远程仓库"
+
+msgid "Enter a name for the remote."
+msgstr "请输入远程仓库名称。"
+
+msgid "Enter the remote's URL."
+msgstr "请输入远程仓库的 URL。"
+
+msgid "URL:"
+msgstr "URL："
+
+msgid "Changes"
+msgstr "更改"
+
+msgid "History"
+msgstr "历史"
+
+msgid "Branches"
+msgstr "分支"
+
+msgid "Remotes"
+msgstr "远程仓库"
+
+msgid "Stashes"
+msgstr "储藏"
+
+msgid "Tags"
+msgstr "标签"
+
+msgid "BASE (HEAD)"
+msgstr "BASE（HEAD）"
+
+msgid "BASE (%s)"
+msgstr "BASE（%s）"
+
+msgid "WORKING (changes)"
+msgstr "WORKING（更改）"
+
+msgid "Fetching..."
+msgstr "正在抓取..."
+
+msgid "No remote is configured to get changes from."
+msgstr "尚未配置可获取更改的远程仓库。"
+
+msgid "Could not start the fetch."
+msgstr "无法开始抓取。"
+
+msgid "The branch or its last commit changed. Select the commit to amend again."
+msgstr "分支或其最近一次提交已改变。请重新选择要修订的提交。"
+
+msgid "Switch to a branch before amending its last commit."
+msgstr "请先切换到某个分支，再修订其最近一次提交。"
+
+msgid "Finish or abandon the current Git operation before amending a commit."
+msgstr "请先完成或放弃当前的 Git 操作，再修订提交。"
+
+msgid "Only an unpushed commit can be amended."
+msgstr "只能修订尚未推送的提交。"
+
+msgid "Could not start branch '%s'."
+msgstr "无法开始分支“%s”。"
+
+msgid "Could not create branch '%s'."
+msgstr "无法创建分支“%s”。"
+
+msgid "Could not switch to the new branch '%s'."
+msgstr "无法切换到新分支“%s”。"
+
+msgid "Summarize your changes..."
+msgstr "概述您的更改..."
+
+msgid "Branch name"
+msgstr "分支名称"
+
+msgid "Extended Description (optional)"
+msgstr "详细说明（可选）"
+
+msgid "Commit and Push"
+msgstr "提交并推送"
+
+msgid "Show what changed in the selected file. Pick a file in the list first."
+msgstr "显示所选文件的更改内容。请先在列表中选择文件。"
+
+msgid "Double click a file to see what changed in it. Right click for more."
+msgstr "双击文件查看其更改内容，右键单击查看更多操作。"
+
+msgid "Commit Message"
+msgstr "提交说明"
+
+msgid "This project is in the middle of a %s that was started outside KemiCAD or interrupted. Abandon it to go back to the last commit, or finish it with the program that started it."
+msgstr "此工程正处于一次在 KemiCAD 之外启动或被中断的%s中。放弃它可回到最近一次提交，或使用启动它的程序完成该操作。"
+
+msgid "This project is showing an old snapshot rather than a branch, so it cannot be committed or pushed from here. In the Advanced Git window, choose Branches and double click a branch to go back to it."
+msgstr "此工程当前显示的是旧快照而非分支，因此无法在此提交或推送。请在高级 Git 窗口中选择“分支”，然后双击某个分支返回。"
+
+msgid "Version control is turned off in Preferences."
+msgstr "版本控制已在首选项中关闭。"
+
+msgid "This project is not under version control. To set it up, right click the project in the project manager and choose Version Control."
+msgstr "此工程尚未启用版本控制。如需启用，请在工程管理器中右键单击工程，然后选择“版本控制”。"
+
+msgid "The tracked branch has changes this project does not. Get Changes brings them in."
+msgstr "跟踪的分支有本工程没有的更改。点击“获取更改”即可合入。"
+
+msgid "Committed changes are waiting to be pushed."
+msgstr "已提交的更改等待推送。"
+
+msgid "No changes"
+msgstr "无更改"
+
+msgid "Open Advanced Git Window..."
+msgstr "打开高级 Git 窗口..."
+
+msgid "Set Author..."
+msgstr "设置作者..."
+
+msgid "Reading author..."
+msgstr "正在读取作者..."
+
+msgid "merge"
+msgstr "合并"
+
+msgid "rebase"
+msgstr "变基"
+
+msgid "cherry-pick"
+msgstr "拣选"
+
+msgid "revert"
+msgstr "还原"
+
+msgid "git operation"
+msgstr "Git 操作"
+
+msgid "Abandon Merge"
+msgstr "放弃合并"
+
+msgid "Abandon Rebase"
+msgstr "放弃变基"
+
+msgid "Abandon Cherry-pick"
+msgstr "放弃拣选"
+
+msgid "Abandon Revert"
+msgstr "放弃还原"
+
+msgid "Abandon Operation"
+msgstr "放弃操作"
+
+msgid "Get Changes"
+msgstr "获取更改"
+
+msgid "The tracked branch has commits this project does not have."
+msgstr "跟踪的分支有本工程没有的提交。"
+
+msgid "Commit"
+msgstr "提交"
+
+msgid "Amend"
+msgstr "修订"
+
+msgid "Amend and Push"
+msgstr "修订并推送"
+
+msgid "This commit can no longer be amended. Untick Amend to start a new commit."
+msgstr "此提交已无法修订。请取消勾选“修订”以创建新提交。"
+
+msgid "Write a summary to amend the last commit."
+msgstr "请填写概述以修订最近一次提交。"
+
+msgid "Write a summary to commit."
+msgstr "请填写概述以提交。"
+
+msgid "Name the new branch, or untick Create a new branch."
+msgstr "请为新分支命名，或取消勾选“创建新分支”。"
+
+msgid "Tick a file to commit it."
+msgstr "勾选文件以提交。"
+
+msgid "The open editors have unsaved changes. Committing offers to save them first."
+msgstr "打开的编辑器中有未保存的更改。提交时会先提示保存。"
+
+msgid "This project has no remote, so there is nothing to get changes from or push to. Add one from the Remotes page of the Advanced Git window."
+msgstr "此工程没有远程仓库，因此无法获取更改或推送。请在高级 Git 窗口的“远程仓库”页面添加。"
+
+msgid "Not on a branch"
+msgstr "不在任何分支上"
+
+msgid "No commits yet"
+msgstr "尚无提交"
+
+msgid "Recent messages"
+msgstr "最近的说明"
+
+msgid "Changes to Commit (%d of %d)"
+msgstr "待提交的更改（%d / %d）"
+
+msgid "1 file will be committed"
+msgstr "将提交 1 个文件"
+
+msgid "%d files will be committed"
+msgstr "将提交 %d 个文件"
+
+msgid "1 left out"
+msgstr "1 个未包含"
+
+msgid "%d left out"
+msgstr "%d 个未包含"
+
+msgid "Show History for This File"
+msgstr "显示此文件的历史"
+
+msgid "Checking changes..."
+msgstr "正在检查更改..."
+
+msgid "An editor has unsaved changes. Save or revert them before discarding files, so the discard is not undone by the next save."
+msgstr "有编辑器存在未保存的更改。请先保存或撤销，再丢弃文件，以免下次保存时丢弃被撤回。"
+
+msgid "Resolve"
+msgstr "解决"
+
+msgid "Could not discard the changes to '%s'."
+msgstr "无法丢弃对“%s”的更改。"
+
+msgid "Could not move '%s' to the trash. The file is still on disk, so discard it again to retry."
+msgstr "无法将“%s”移到回收站。文件仍在磁盘上，请再次丢弃以重试。"
+
+msgid "Cancelled."
+msgstr "已取消。"
+
+msgid "Cancelling. A stalled connection stops only when it times out."
+msgstr "正在取消。停滞的连接只有在超时后才会停止。"
+
+msgid "Finish or abandon the %s in progress first."
+msgstr "请先完成或放弃正在进行的%s。"
+
+msgid "No remote is configured to push to."
+msgstr "尚未配置可推送的远程仓库。"
+
+msgid "There are no commits to push."
+msgstr "没有需要推送的提交。"
+
+msgid "Checking working files..."
+msgstr "正在检查工作文件..."
+
+msgid "The open editors have unsaved changes. Save or revert them first, so it is clear what is being abandoned."
+msgstr "打开的编辑器中有未保存的更改。请先保存或撤销，以明确要放弃的内容。"
+
+msgid "Could not abandon the %s."
+msgstr "无法放弃%s。"
+
+msgid "Back at the last commit."
+msgstr "已回到最近一次提交。"
+
+msgid "The selected commit is no longer the last commit on this branch."
+msgstr "所选提交已不再是此分支的最近一次提交。"
+
+msgid "Replace the current commit message with the selected commit's message?"
+msgstr "要用所选提交的说明替换当前提交说明吗？"
+
+msgid "Reading last commit..."
+msgstr "正在读取最近一次提交..."
+
+msgid "The branch changed while preparing the commit. Review the changes and commit again."
+msgstr "准备提交时分支已改变。请检查更改后重新提交。"
+
+msgid "Nothing was saved, so there is nothing to commit."
+msgstr "没有保存任何内容，因此没有可提交的内容。"
+
+msgid "The branch or its last commit changed while preparing the commit. Review the changes and commit again."
+msgstr "准备提交时分支或其最近一次提交已改变。请检查更改后重新提交。"
+
+msgid "Could not create the commit."
+msgstr "无法创建提交。"
+
+msgid "Committed."
+msgstr "已提交。"
+
+msgid "Committed. No remote is configured to push to."
+msgstr "已提交。尚未配置可推送的远程仓库。"
+
+msgid "Checking remote..."
+msgstr "正在检查远程仓库..."
+
+msgid "Pushing..."
+msgstr "正在推送..."
+
+msgid "Could not start the push."
+msgstr "无法开始推送。"
+
+msgid "Preparing the merge..."
+msgstr "正在准备合并..."
+
+msgid "Could not create a temporary directory for the merge."
+msgstr "无法为合并创建临时目录。"
+
+msgid "Could not prepare the merge."
+msgstr "无法准备合并。"
+
+msgid "The open editors have unsaved changes. Save or revert them before resolving the merge."
+msgstr "打开的编辑器中有未保存的更改。请先保存或撤销，再解决合并。"
+
+msgid "This project is set to rebase when getting changes, but a conflict can only be settled here by merging. Carry on and make a merge commit, or cancel and rebase from a git command line?"
+msgstr "此工程设置为获取更改时变基，但冲突在此处只能通过合并解决。要继续并创建合并提交，还是取消后在 Git 命令行中变基？"
+
+msgid "Getting changes was cancelled. Your files are unchanged."
+msgstr "获取更改已取消。您的文件未改变。"
+
+msgid "Open the merge tool"
+msgstr "打开合并工具"
+
+msgid "Keep my version"
+msgstr "保留我的版本"
+
+msgid "Keep it deleted"
+msgstr "保持删除"
+
+msgid "Leave it out"
+msgstr "不包含"
+
+msgid "Use the remote version"
+msgstr "使用远程版本"
+
+msgid "Delete it, as on the remote"
+msgstr "按远程删除"
+
+msgid "Leave it out, as on the remote"
+msgstr "按远程不包含"
+
+msgid "Resolve Conflict"
+msgstr "解决冲突"
+
+msgid "Stop resolving? The file you merged by hand is discarded with the rest."
+msgstr "要停止解决吗？您手动合并的文件将与其他内容一起被丢弃。"
+
+msgid "Stop resolving? The %d files you merged by hand are discarded with the rest."
+msgstr "要停止解决吗？您手动合并的 %d 个文件将与其他内容一起被丢弃。"
+
+msgid "The merge tool did not produce a result."
+msgstr "合并工具未产生结果。"
+
+msgid "Could not save the version you are replacing as '%s', so the merge was stopped."
+msgstr "无法将要替换的版本保存为“%s”，因此合并已停止。"
+
+msgid "Another git operation is in progress. Try again?"
+msgstr "另一个 Git 操作正在进行。要重试吗？"
+
+msgid "Could not finish the merge."
+msgstr "无法完成合并。"
+
+msgid "Changes merged."
+msgstr "更改已合并。"
+
+msgid "Changes merged. The versions you replaced are in '%s'."
+msgstr "更改已合并。被替换的版本保存在“%s”中。"
+
+msgid "Getting changes..."
+msgstr "正在获取更改..."
+
+msgid "Could not start getting changes."
+msgstr "无法开始获取更改。"
+
+msgid "Changes received."
+msgstr "已收到更改。"
+
+msgid "Commit your changes first."
+msgstr "请先提交您的更改。"
+
+msgid "There are changes that are not committed yet, and getting changes would run over them. Commit them first, then get changes again. To set them aside instead, use Stash Changes in the Advanced Git window."
+msgstr "有尚未提交的更改，获取更改会将其覆盖。请先提交，然后重新获取更改。如需暂存，请使用高级 Git 窗口中的“储藏更改”。"
+
+msgid "Could not get changes."
+msgstr "无法获取更改。"
+
+msgid "Commit to:"
+msgstr "提交到："
+
+msgid "Commit settings and the advanced window"
+msgstr "提交设置与高级窗口"
+
+msgid "Commit Options"
+msgstr "提交选项"
+
+msgid "Amend last commit"
+msgstr "修订最近一次提交"
+
+msgid "Sign off (add Signed-off-by)"
+msgstr "签署（添加 Signed-off-by）"
+
+msgid "Create a new branch"
+msgstr "创建新分支"
+
+msgid "Changes to Commit"
+msgstr "待提交的更改"
+
+msgid "Show Diff"
+msgstr "显示差异"
+
+msgid "The remote changed while this window was open. Try the operation again."
+msgstr "此窗口打开期间远程仓库已改变。请重试该操作。"
+
+msgid "The credentials could not be saved to the system keychain, so they are kept for this session only."
+msgstr "无法将凭据保存到系统钥匙串，仅在本次会话中保留。"
+
+msgid "%s is already known by a different key type. The key it presented has fingerprint SHA256:%s. Connect and remember this key too?"
+msgstr "%s 已以另一种密钥类型被记录。其提供的密钥指纹为 SHA256:%s。要连接并同时记住此密钥吗？"
+
+msgid "This is the first time connecting to %s. Its key fingerprint is SHA256:%s. Connect and remember this server?"
+msgstr "这是首次连接 %s。其密钥指纹为 SHA256:%s。要连接并记住此服务器吗？"
+
+msgid "Verify Server"
+msgstr "验证服务器"
+
+msgid "&Connect"
+msgstr "连接(&C)"
+
+msgid "The key for %s could not be saved, so the connection was not made. Check that your .ssh folder can be written to."
+msgstr "无法保存 %s 的密钥，因此未建立连接。请检查 .ssh 文件夹是否可写。"
+
+msgid "Set Author"
+msgstr "设置作者"
+
+msgid "Could not save the name and email to the repository."
+msgstr "无法将姓名和邮箱保存到仓库。"
+
+msgid "Loading comparison..."
+msgstr "正在加载比较..."
+
+msgid "Could not compare this file."
+msgstr "无法比较此文件。"
+
+msgid "Could not create a temporary directory for the diff."
+msgstr "无法为差异比较创建临时目录。"
+
+msgid "This is not a plain text file, so there is no comparison to show."
+msgstr "这不是纯文本文件，因此无法显示比较。"
+
+msgid "Double click the file to open its comparison."
+msgstr "双击文件打开其比较。"
+
+msgid "Switch to branch '%s'? This replaces the project files on disk with that branch's version."
+msgstr "要切换到分支“%s”吗？这会用该分支的版本替换磁盘上的工程文件。"
+
+msgid "Could not switch to branch '%s'."
+msgstr "无法切换到分支“%s”。"
+
+msgid "Could not check the working files. Try again before rewriting project files."
+msgstr "无法检查工作文件。请重试后再改写工程文件。"
+
+msgid "There are changes that are not committed yet, and this would run over them. Commit them first, or set them aside with Stash Changes."
+msgstr "有尚未提交的更改，此操作会将其覆盖。请先提交，或使用“储藏更改”暂存。"
+
+msgid "&Save and Continue"
+msgstr "保存并继续(&S)"
+
+msgid "&Save and Review"
+msgstr "保存并查看(&S)"
+
+msgid "'%s' is not a plain text file. KemiCAD compares design files and text files only, so there is no comparison to show."
+msgstr "“%s”不是纯文本文件。KemiCAD 只比较设计文件和文本文件，因此无法显示比较。"
+
+msgid "BASE (parent of %s)"
+msgstr "BASE（%s 的父提交）"
+
+msgid "WORKING (%s)"
+msgstr "WORKING（%s）"
+
+msgid "Could not open the diff."
+msgstr "无法打开差异比较。"
+
+msgid "Could not read the committed version of '%s'."
+msgstr "无法读取“%s”的已提交版本。"
+
+msgid "This commit has no file changes to show."
+msgstr "此提交没有可显示的文件更改。"
+
+msgid "This commit changed more than one file. Select one to compare:"
+msgstr "此提交更改了多个文件。请选择一个进行比较："
+
+msgid "Select File to Compare"
+msgstr "选择要比较的文件"
+
+msgid "Could not read this commit's file contents."
+msgstr "无法读取此提交的文件内容。"
+
+msgid "This commit did not change '%s'."
+msgstr "此提交未更改“%s”。"
+
+msgid "Could not read the Git repository: %s"
+msgstr "无法读取 Git 仓库：%s"
+
+msgid "Could not read the Git repository."
+msgstr "无法读取 Git 仓库。"
+
+msgid "just now"
+msgstr "刚刚"
+
+msgid "%d days ago"
+msgstr "%d 天前"
+
+msgid "Enter your name. It is recorded as the author of your commits."
+msgstr "请输入您的姓名，它将作为提交的作者记录。"
+
+msgid "Enter a valid email address. It is recorded as the author of your commits."
+msgstr "请输入有效的邮箱地址，它将作为提交的作者记录。"
+
+msgid "Search branches"
+msgstr "搜索分支"
+
+msgid "Double click a local branch to switch the project to it."
+msgstr "双击本地分支可将工程切换到该分支。"
+
+msgid "This branch is on the remote. Select it and press New Branch to start your own branch from it."
+msgstr "此分支位于远程仓库。选中后点击“新建分支”可基于它创建自己的分支。"
+
+msgid "current"
+msgstr "当前"
+
+msgid "remote"
+msgstr "远程"
+
+msgid "1 branch"
+msgstr "1 个分支"
+
+msgid "%d branches"
+msgstr "%d 个分支"
+
+msgid "Branch: %s"
+msgstr "分支：%s"
+
+msgid "Commit: %s, %s"
+msgstr "提交：%s，%s"
+
+msgid "Author: %s <%s>"
+msgstr "作者：%s <%s>"
+
+msgid "Not tracking another branch."
+msgstr "未跟踪其他分支。"
+
+msgid "Could not compare with %s."
+msgstr "无法与 %s 比较。"
+
+msgid "Up to date with %s."
+msgstr "与 %s 保持同步。"
+
+msgid "%zu commits ahead of %s."
+msgstr "领先 %zu 个提交（相对 %s）。"
+
+msgid "%zu commits behind %s."
+msgstr "落后 %zu 个提交（相对 %s）。"
+
+msgid "%zu commits ahead and %zu behind %s."
+msgstr "领先 %zu 个提交，落后 %zu 个提交（相对 %s）。"
+
+msgid "New branch name:"
+msgstr "新分支名称："
+
+msgid "New branch from '%s', name:"
+msgstr "基于“%s”的新分支，名称："
+
+msgid "New Branch"
+msgstr "新建分支"
+
+msgid "This branch lives on the remote, so it cannot be deleted from here."
+msgstr "此分支位于远程仓库，无法在此删除。"
+
+msgid "You cannot delete the branch you are on."
+msgstr "不能删除当前所在的分支。"
+
+msgid "Could not compare this branch with the current version."
+msgstr "无法将此分支与当前版本比较。"
+
+msgid "Delete branch '%s'?"
+msgstr "要删除分支“%s”吗？"
+
+msgid "Delete Branch"
+msgstr "删除分支"
+
+msgid "Could not delete branch '%s'."
+msgstr "无法删除分支“%s”。"
+
+msgid "This project is showing an old snapshot rather than a branch, so there is no branch to push. Double click a branch to go back to it first."
+msgstr "此工程当前显示的是旧快照而非分支，因此没有可推送的分支。请先双击某个分支返回。"
+
+msgid "Force Push"
+msgstr "强制推送"
+
+msgid "Force &Push"
+msgstr "强制推送(&P)"
+
+msgid "Could not start the force push."
+msgstr "无法开始强制推送。"
+
+msgid "New Branch..."
+msgstr "新建分支..."
+
+msgid "added"
+msgstr "已添加"
+
+msgid "removed"
+msgstr "已删除"
+
+msgid "renamed"
+msgstr "已重命名"
+
+msgid "copied"
+msgstr "已复制"
+
+msgid "type changed"
+msgstr "类型已更改"
+
+msgid "modified"
+msgstr "已修改"
+
+msgid "Search history"
+msgstr "搜索历史"
+
+msgid "Refs"
+msgstr "引用"
+
+msgid "Double click a commit to see what it changed. Right click for more."
+msgstr "双击提交查看其更改内容，右键单击查看更多操作。"
+
+msgid "Restore This Version"
+msgstr "还原到此版本"
+
+msgid "Double click a file to see what the commit changed in it."
+msgstr "双击文件查看此提交对它的更改。"
+
+msgid "All Branches"
+msgstr "所有分支"
+
+msgid "No parent"
+msgstr "无父提交"
+
+msgid "Parent: %s"
+msgstr "父提交：%s"
+
+msgid "1 changed file"
+msgstr "1 个更改的文件"
+
+msgid "%d changed files"
+msgstr "%d 个更改的文件"
+
+msgid "%s from %s"
+msgstr "%s（来自 %s）"
+
+msgid "binary"
+msgstr "二进制"
+
+msgid "BASE (nothing)"
+msgstr "BASE（无）"
+
+msgid "This project is showing an old snapshot rather than a branch. Double click a branch on the Branches page first, then restore."
+msgstr "此工程当前显示的是旧快照而非分支。请先在“分支”页面双击某个分支，然后再还原。"
+
+msgid "There are unsaved changes in the open editors. Commit them first, so the restore stays a separate step that can be undone."
+msgstr "打开的编辑器中有未保存的更改。请先提交，使还原成为可撤销的独立步骤。"
+
+msgid "A library editor has unsaved changes. Save or discard them first, so the restore does not overwrite what it is editing."
+msgstr "有库编辑器存在未保存的更改。请先保存或丢弃，以免还原覆盖正在编辑的内容。"
+
+msgid "&Restore"
+msgstr "还原(&R)"
+
+msgid "The project already matches that version."
+msgstr "工程已与该版本一致。"
+
+msgid "There are uncommitted changes. Commit them first, so the restore stays a separate step that can be undone."
+msgstr "有未提交的更改。请先提交，使还原成为可撤销的独立步骤。"
+
+msgid "Could not restore that version."
+msgstr "无法还原到该版本。"
+
+msgid "Show refs"
+msgstr "显示引用"
+
+msgid "Showing commits that changed"
+msgstr "显示更改了以下内容的提交"
+
+msgid "Show All Commits"
+msgstr "显示所有提交"
+
+msgid "1 remote"
+msgstr "1 个远程仓库"
+
+msgid "%d remotes"
+msgstr "%d 个远程仓库"
+
+msgid "Remote: %s"
+msgstr "远程仓库：%s"
+
+msgid "Last fetch: %s"
+msgstr "上次抓取：%s"
+
+msgid "Not fetched yet."
+msgstr "尚未抓取。"
+
+msgid "Could not add remote '%s'."
+msgstr "无法添加远程仓库“%s”。"
+
+msgid "Could not update remote '%s'."
+msgstr "无法更新远程仓库“%s”。"
+
+msgid "Remove remote '%s'?"
+msgstr "要移除远程仓库“%s”吗？"
+
+msgid "Could not remove remote '%s'."
+msgstr "无法移除远程仓库“%s”。"
+
+msgid "Edit URL..."
+msgstr "编辑 URL..."
+
+msgid "Remove Remote"
+msgstr "移除远程仓库"
+
+msgid "Add Remote..."
+msgstr "添加远程仓库..."
+
+msgid "Fills in the Set Author dialog when Git has no name and email for a repository."
+msgstr "当 Git 中没有仓库的姓名和邮箱时，用于预填“设置作者”对话框。"
+
+msgid "Contributor Photos"
+msgstr "贡献者头像"
+
+msgid "Show contributor photos from the web (Gravatar)"
+msgstr "从网络显示贡献者头像（Gravatar）"
+
+msgid "Each contributor's email is sent to Gravatar to look up a photo."
+msgstr "每位贡献者的邮箱将发送到 Gravatar 以查找头像。"
+
+msgid "Edits apply to this repository only."
+msgstr "修改仅对此仓库生效。"
+
+msgid "Edit Author..."
+msgstr "编辑作者..."
+
+msgid "Name and email apply to this project only. Preferences holds the default used when these are empty."
+msgstr "姓名和邮箱仅对此工程生效。留空时使用首选项中的默认值。"
+
+msgid "Double click a file to see what the stash changes in it."
+msgstr "双击文件查看此储藏对它的更改。"
+
+msgid "1 stash"
+msgstr "1 个储藏"
+
+msgid "%d stashes"
+msgstr "%d 个储藏"
+
+msgid "Stashed: %s"
+msgstr "储藏于：%s"
+
+msgid "Commit: %s"
+msgstr "提交：%s"
+
+msgid "Apply this stash and remove it from the list?"
+msgstr "要应用此储藏并将其从列表中移除吗？"
+
+msgid "Apply this stash to the working tree?"
+msgstr "要将此储藏应用到工作区吗？"
+
+msgid "Could not pop the stash. Another program may have changed the stash list, so nothing was applied."
+msgstr "无法弹出储藏。其他程序可能已更改储藏列表，因此未应用任何内容。"
+
+msgid "Could not apply the stash. Another program may have changed the stash list, so nothing was applied."
+msgstr "无法应用储藏。其他程序可能已更改储藏列表，因此未应用任何内容。"
+
+msgid "Drop this stash? This cannot be undone."
+msgstr "要删除此储藏吗？此操作无法撤销。"
+
+msgid "Could not drop the stash. Another program may have changed the stash list, so nothing was dropped."
+msgstr "无法删除储藏。其他程序可能已更改储藏列表，因此未删除任何内容。"
+
+msgid "The changed files have never been committed, and a stash only includes files that have been. Commit them from the Version Control panel first, or discard them there."
+msgstr "更改的文件从未提交过，而储藏只包含已提交过的文件。请先在“版本控制”面板中提交或丢弃它们。"
+
+msgid "There are no changes to stash."
+msgstr "没有可储藏的更改。"
+
+msgid "Optional description for this stash:"
+msgstr "此储藏的说明（可选）："
+
+msgid "Stash Changes"
+msgstr "储藏更改"
+
+msgid "Could not stash the changes."
+msgstr "无法储藏更改。"
+
+msgid "Stash Details"
+msgstr "储藏详情"
+
+msgid "Changes:"
+msgstr "更改："
+
+msgid "Apply Stash"
+msgstr "应用储藏"
+
+msgid "Pop Stash"
+msgstr "弹出储藏"
+
+msgid "Drop Stash"
+msgstr "删除储藏"
+
+msgid "Stash Changes..."
+msgstr "储藏更改..."
+
+msgid "Tag"
+msgstr "标签"
+
+msgid "1 tag"
+msgstr "1 个标签"
+
+msgid "%d tags"
+msgstr "%d 个标签"
+
+msgid "Tag: %s"
+msgstr "标签：%s"
+
+msgid "Date: %s"
+msgstr "日期：%s"
+
+msgid "Could not create tag '%s'."
+msgstr "无法创建标签“%s”。"
+
+msgid "Check out tag '%s'? This shows an old snapshot of the project. To keep any commits you make here, create a new branch before committing. Switching away without one leaves those commits outside every branch."
+msgstr "要检出标签“%s”吗？这将显示工程的旧快照。如要保留在此处所做的提交，请在提交前新建分支；否则切换离开后，这些提交将不属于任何分支。"
+
+msgid "Could not check out tag '%s'."
+msgstr "无法检出标签“%s”。"
+
+msgid "Delete tag '%s'?"
+msgstr "要删除标签“%s”吗？"
+
+msgid "Could not delete tag '%s'."
+msgstr "无法删除标签“%s”。"
+
+msgid "Check Out"
+msgstr "检出"
+
+msgid "Delete Tag"
+msgstr "删除标签"
+
+msgid "Create Tag..."
+msgstr "创建标签..."
+
+msgid "KemiCAD could not read the key %s presented, so the connection was not made. Ask your administrator which host key the server uses."
+msgstr "KemiCAD 无法读取 %s 提供的密钥，因此未建立连接。请向管理员询问服务器使用的主机密钥。"
+
+msgid "The address of %s could not be matched to the remote, so its key was not checked. Check the remote URL."
+msgstr "无法将 %s 的地址与远程仓库匹配，因此未检查其密钥。请检查远程仓库 URL。"
+
+msgid "Enter a name for the branch."
+msgstr "请输入分支名称。"
+
+msgid "A branch name cannot contain spaces."
+msgstr "分支名称不能包含空格。"
+
+msgid "A branch name cannot start with a dash."
+msgstr "分支名称不能以短横线开头。"
+
+msgid "A branch name cannot contain two dots in a row."
+msgstr "分支名称不能包含连续两个点。"
+
+msgid "A branch name cannot end with a slash."
+msgstr "分支名称不能以斜杠结尾。"
+
+msgid "'%s' is not a valid branch name."
+msgstr "“%s”不是有效的分支名称。"
+
+msgid "Another git operation is in progress. Try again in a moment."
+msgstr "另一个 Git 操作正在进行。请稍后重试。"
+
+msgid "%s did not accept the SSH key %s. Check the key's passphrase, and that %s.pub is added to your account on %s."
+msgstr "%s 未接受 SSH 密钥 %s。请检查密钥的密码短语，并确认 %s.pub 已添加到您在 %s 上的账户。"
+
+msgid "%s did not accept the SSH key %s. Check that %s.pub is added to your account on %s, or choose another key."
+msgstr "%s 未接受 SSH 密钥 %s。请确认 %s.pub 已添加到您在 %s 上的账户，或选择其他密钥。"
+
+msgid "%s did not accept any SSH key. KemiCAD found no key files, and your SSH agent offered none that %s accepts. Create or choose a key, and add its .pub to your account on %s."
+msgstr "%s 未接受任何 SSH 密钥。KemiCAD 未找到密钥文件，SSH 代理也未提供 %s 接受的密钥。请创建或选择一个密钥，并将其 .pub 添加到您在 %s 上的账户。"
+
+msgid "%s did not accept the username and password. Many servers require a personal access token in place of a password."
+msgstr "%s 未接受该用户名和密码。许多服务器要求使用个人访问令牌代替密码。"
+
+msgid "The SSH key %s could not be opened. Check the passphrase, and that you chose the private key file rather than the .pub file."
+msgstr "无法打开 SSH 密钥 %s。请检查密码短语，并确认选择的是私钥文件而不是 .pub 文件。"
+
+msgid "%s is not a known server yet. Use Get Changes to check its key and remember it."
+msgstr "%s 还不是已知服务器。请使用“获取更改”检查并记住其密钥。"
+
+msgid "The known hosts file %s has a line that could not be read. Fix or remove that line, then try again."
+msgstr "已知主机文件 %s 中有一行无法读取。请修复或删除该行后重试。"
+
+msgid "Could not find the server %s. Check the address, and that you are connected to the network or VPN that reaches it."
+msgstr "找不到服务器 %s。请检查地址，并确认已连接到可访问它的网络或 VPN。"
+
+msgid "%s did not answer. Check your network or VPN connection, then try again."
+msgstr "%s 没有响应。请检查网络或 VPN 连接后重试。"
+
+msgid "This computer does not trust the security certificate of %s. Ask your administrator to install your organization's certificate."
+msgstr "此计算机不信任 %s 的安全证书。请让管理员安装贵组织的证书。"
+
+msgid "The proxy refused the connection to %s. Check the proxy configured for Git (http.proxy) or in your system settings."
+msgstr "代理拒绝了到 %s 的连接。请检查为 Git 配置的代理（http.proxy）或系统设置中的代理。"
+
+msgid "%s has no repository at this address, or your account cannot see it. Check the repository address."
+msgstr "%s 在此地址没有仓库，或您的账户无权查看。请检查仓库地址。"
+
+msgid "%s has no repository at this address, or your account cannot see it. Check the remote's address in the Advanced Git window, Remotes page."
+msgstr "%s 在此地址没有仓库，或您的账户无权查看。请在高级 Git 窗口的“远程仓库”页面检查远程仓库地址。"
+
+msgid "%s refused the push. Your account may not have write access, or the branch is protected."
+msgstr "%s 拒绝了推送。您的账户可能没有写入权限，或该分支受保护。"
+
+msgid "%s refused the push. The server's reason is shown in the details."
+msgstr "%s 拒绝了推送。服务器给出的原因见详细信息。"
+
+msgid "%s refused the request. The server's reason is shown in the details."
+msgstr "%s 拒绝了请求。服务器给出的原因见详细信息。"
+
+msgid "The remote has changes you do not have yet. Get changes first, then push again."
+msgstr "远程仓库有您尚未获取的更改。请先获取更改，然后再推送。"
+
+msgid "Could not clone from %s. The details below may help your administrator."
+msgstr "无法从 %s 克隆。以下详细信息可能对管理员有帮助。"
+
+msgid "Could not get changes from %s. The details below may help your administrator."
+msgstr "无法从 %s 获取更改。以下详细信息可能对管理员有帮助。"
+
+msgid "Could not push to %s. The details below may help your administrator."
+msgstr "无法推送到 %s。以下详细信息可能对管理员有帮助。"
+
+msgid "Could not set up the remote %s. The details below may help your administrator."
+msgstr "无法设置远程仓库 %s。以下详细信息可能对管理员有帮助。"
+
+msgid "Could not connect to %s. The details below may help your administrator."
+msgstr "无法连接到 %s。以下详细信息可能对管理员有帮助。"
+
+msgid "SSH agent"
+msgstr "SSH 代理"
+
+msgid "Keys offered: %s"
+msgstr "已提供的密钥：%s"
+
+msgid "Address: %s"
+msgstr "地址：%s"
+
+msgid "The repository at '%s' belongs to another user, so git will not open it. git reads a folder named '*' as a wildcard, so rename the folder before trusting it."
+msgstr "位于“%s”的仓库属于其他用户，因此 Git 不会打开它。Git 会将名为“*”的文件夹视为通配符，请先重命名该文件夹再信任它。"
+
+msgid "The repository at '%s' belongs to another user, so git will not open it. To trust it, add its folder to git's safe.directory setting and reopen the project."
+msgstr "位于“%s”的仓库属于其他用户，因此 Git 不会打开它。如要信任，请将其文件夹添加到 Git 的 safe.directory 设置，然后重新打开工程。"
+
+msgid "The repository at '%s' belongs to another user, so git will not open it. To trust it, run the command below and reopen the project."
+msgstr "位于“%s”的仓库属于其他用户，因此 Git 不会打开它。如要信任，请运行下面的命令，然后重新打开工程。"
+
+msgid "The key for %s has been revoked. Ask your administrator before connecting again."
+msgstr "%s 的密钥已被吊销。再次连接前请咨询管理员。"
+
+msgid "The key for %s has changed since the last connection. This can mean the server was replaced or that someone is intercepting the connection. Ask your administrator before connecting again."
+msgstr "%s 的密钥自上次连接后已改变。这可能意味着服务器已更换，或有人正在拦截连接。再次连接前请咨询管理员。"
+
+msgid "%s still could not be verified after its key was saved. Ask your administrator before connecting again."
+msgstr "保存 %s 的密钥后仍无法验证。再次连接前请咨询管理员。"
+
+msgid "Set your name and email before committing (gear menu > Set Author...)."
+msgstr "提交前请设置您的姓名和邮箱（齿轮菜单 > 设置作者...）。"
+
+msgid "Could not record the commit author."
+msgstr "无法记录提交作者。"
+
+msgid "There is no remote named '%s'. Add it on the Remotes page of the Advanced Git window."
+msgstr "没有名为“%s”的远程仓库。请在高级 Git 窗口的“远程仓库”页面添加。"
+
+msgid "Could not read the remote '%s'."
+msgstr "无法读取远程仓库“%s”。"
+
+msgid "This project has conflicts that are not resolved yet. Finish or abort the merge with git, then commit here."
+msgstr "此工程有尚未解决的冲突。请用 Git 完成或中止合并，然后在此提交。"
+
+msgid "bisect"
+msgstr "二分查找"
+
+msgid "This project is in the middle of a %s. Finish or abort it with git, then commit here."
+msgstr "此工程正处于%s过程中。请用 Git 完成或中止它，然后在此提交。"
+
+msgid "Could not read the list of staged files."
+msgstr "无法读取已暂存文件列表。"
+
+msgid "Could not stage the selected files."
+msgstr "无法暂存所选文件。"
+
+msgid "Could not prepare the commit."
+msgstr "无法准备提交。"
+
+msgid "The branch moved while this was running, so nothing was committed. Review the changes and try again."
+msgstr "运行期间分支已移动，因此未提交任何内容。请检查更改后重试。"
+
+msgid "The staged files changed outside KemiCAD while this ran. Nothing was committed. Review the changes and try again."
+msgstr "运行期间已暂存的文件在 KemiCAD 之外被更改。未提交任何内容。请检查更改后重试。"
+
+msgid "Could not read the current commit."
+msgstr "无法读取当前提交。"
+
+msgid "The commit was created, but the list of staged files was left alone, because the staged files changed outside KemiCAD while this ran."
+msgstr "提交已创建，但已暂存文件列表未改动，因为运行期间已暂存的文件在 KemiCAD 之外被更改。"
+
+msgid "The commit was created, but the list of staged files was left alone, because another program kept changing it."
+msgstr "提交已创建，但已暂存文件列表未改动，因为另一个程序不断更改它。"
+
+msgid "The commit was created, but the list of staged files could not be updated."
+msgstr "提交已创建，但无法更新已暂存文件列表。"
+
+msgid "Could not amend the commit."
+msgstr "无法修订提交。"
+
+msgid "The commit was amended, but the list of staged files was left alone, because the staged files changed outside KemiCAD while this ran."
+msgstr "提交已修订，但已暂存文件列表未改动，因为运行期间已暂存的文件在 KemiCAD 之外被更改。"
+
+msgid "The commit was amended, but the list of staged files was left alone, because another program kept changing it."
+msgstr "提交已修订，但已暂存文件列表未改动，因为另一个程序不断更改它。"
+
+msgid "The commit was amended, but the list of staged files could not be updated."
+msgstr "提交已修订，但无法更新已暂存文件列表。"
+
+msgid "The branch or its last commit changed while the push was waiting. Review the changes and try again."
+msgstr "等待推送期间分支或其最近一次提交已改变。请检查更改后重试。"
+
+msgid "This project is showing an old snapshot rather than a branch, so there is nothing to push. Go back to a branch first."
+msgstr "此工程当前显示的是旧快照而非分支，因此没有可推送的内容。请先返回某个分支。"
+
+msgid "Could not set up version control in %s."
+msgstr "无法在 %s 中设置版本控制。"
+
+msgid "The branch '%s' no longer exists."
+msgstr "分支“%s”已不存在。"
+
+msgid "Could not open the branch '%s'."
+msgstr "无法打开分支“%s”。"
+
+msgid "'%s' is a branch on the remote, so the project cannot be switched to it. Make a local branch from it instead."
+msgstr "“%s”是远程分支，无法将工程切换到它。请基于它创建本地分支。"
+
+msgid "(never committed)"
+msgstr "（从未提交）"
+
+msgid "and %zu more\n"
+msgstr "及其他 %zu 项\n"
+
+msgid "Commit or stash your changes first. Files that were never committed are not included in a stash, so commit or discard those from the Version Control panel."
+msgstr "请先提交或储藏您的更改。从未提交过的文件不会包含在储藏中，请在“版本控制”面板中提交或丢弃它们。"
+
+msgid "Commit or stash your changes first."
+msgstr "请先提交或储藏您的更改。"
+
+msgid "Could not switch to the branch '%s'."
+msgstr "无法切换到分支“%s”。"
+
+msgid "Could not read the fetched commit."
+msgstr "无法读取抓取到的提交。"
+
+msgid "Could not read the status of the project files, so getting changes was stopped. Files that were never committed could have been overwritten."
+msgstr "无法读取工程文件状态，因此已停止获取更改。从未提交过的文件可能已被覆盖。"
+
+msgid "Could not create the branch '%s'."
+msgstr "无法创建分支“%s”。"
+
+msgid "Could not check out the remote branch, so nothing was changed."
+msgstr "无法检出远程分支，因此未作任何更改。"
+
+msgid "Could not check out the remote branch, and the project may be partly changed."
+msgstr "无法检出远程分支，工程可能已被部分更改。"
+
+msgid "Could not read the fetched changes."
+msgstr "无法读取抓取到的更改。"
+
+msgid "The changes being fetched keep '%s' in Git LFS, which KemiCAD cannot read or write. Use git on the command line for this repository."
+msgstr "抓取到的更改将“%s”保存在 Git LFS 中，KemiCAD 无法读写。请对此仓库使用 Git 命令行。"
+
+msgid "Could not compare the fetched changes with this branch."
+msgstr "无法将抓取到的更改与此分支比较。"
+
+msgid "Could not read the repository settings."
+msgstr "无法读取仓库设置。"
+
+msgid "Could not find the remote branch '%s'."
+msgstr "找不到远程分支“%s”。"
+
+msgid "Could not read the remote branch '%s'."
+msgstr "无法读取远程分支“%s”。"
+
+msgid "Could not read the status of the project files, so getting changes was stopped."
+msgstr "无法读取工程文件状态，因此已停止获取更改。"
+
+msgid "There are changes that are not committed yet, and getting changes would run over them. Commit them first."
+msgstr "有尚未提交的更改，获取更改会将其覆盖。请先提交。"
+
+msgid "Could not update the project files, so nothing was changed."
+msgstr "无法更新工程文件，因此未作任何更改。"
+
+msgid "Could not update the project files, and they may be partly changed."
+msgstr "无法更新工程文件，文件可能已被部分更改。"
+
+msgid "Could not move the branch, so nothing was changed."
+msgstr "无法移动分支，因此未作任何更改。"
+
+msgid "Could not move the branch, and the project files may be left at the incoming version while the branch is not."
+msgstr "无法移动分支，工程文件可能停留在传入版本而分支没有移动。"
+
+msgid "Could not merge the fetched changes."
+msgstr "无法合并抓取到的更改。"
+
+msgid "Could not create the merge commit."
+msgstr "无法创建合并提交。"
+
+msgid "Could not start the rebase."
+msgstr "无法开始变基。"
+
+msgid "Could not rebase your commits onto the fetched changes."
+msgstr "无法将您的提交变基到抓取到的更改上。"
+
+msgid "Could not finish the rebase."
+msgstr "无法完成变基。"
+
+msgid "Commit or discard the current changes first, so the stash has a clean version to apply to."
+msgstr "请先提交或丢弃当前更改，使储藏有一个干净的版本可以应用。"
+
+msgid "The stash does not fit on top of the current version of the files, so nothing was changed. Restore the version it was made on from History, then apply it there."
+msgstr "储藏无法应用到文件的当前版本上，因此未作任何更改。请从“历史”中还原到创建储藏时的版本，再在其上应用。"
+
+msgid "Could not find the fetched remote commit."
+msgstr "找不到抓取到的远程提交。"
+
+msgid "Could not read the commit trees."
+msgstr "无法读取提交树。"
+
+msgid "The project has no git repository."
+msgstr "此工程没有 Git 仓库。"
+
+msgid "Could not work out which folder this project occupies in the repository, so nothing was restored."
+msgstr "无法确定此工程在仓库中所在的文件夹，因此未还原任何内容。"
+
+msgid "Could not find that version."
+msgstr "找不到该版本。"
+
+msgid "Could not read that version's contents."
+msgstr "无法读取该版本的内容。"
+
+msgid "That version does not contain this project's folder."
+msgstr "该版本不包含此工程的文件夹。"
+
+msgid "Could not build the restored content: %s"
+msgstr "无法生成还原内容：%s"
+
+msgid "Could not build the restored content."
+msgstr "无法生成还原内容。"
+
+msgid "Could not read the repository status."
+msgstr "无法读取仓库状态。"
+
+msgid "Restore version %s"
+msgstr "还原到版本 %s"
+
+msgid "Could not create the restore commit: %s"
+msgstr "无法创建还原提交：%s"
+
+msgid "Could not update the working files, so nothing was changed: %s"
+msgstr "无法更新工作文件，因此未作任何更改：%s"
+
+msgid "Could not update the working files, and they may be partially changed: %s"
+msgstr "无法更新工作文件，文件可能已被部分更改：%s"
+
+msgid "Could not record the restore commit, so nothing was changed: %s"
+msgstr "无法记录还原提交，因此未作任何更改：%s"
+
+msgid "Could not record the restore commit, and the working files may have been changed: %s"
+msgstr "无法记录还原提交，工作文件可能已被更改：%s"
+
+msgid "This rebase was started by another program, and only that program can finish or abort it."
+msgstr "此变基由其他程序启动，只有该程序才能完成或中止它。"
+
+msgid "This project is in the middle of a search through its history, started by another program. Only that program can end the search and bring the project back."
+msgstr "此工程正处于由其他程序启动的历史二分查找中。只有该程序才能结束查找并恢复工程。"
+
+msgid "The merge has no conflicts."
+msgstr "此合并没有冲突。"
+
+msgid "Could not list the merge conflicts."
+msgstr "无法列出合并冲突。"
+
+msgid "Could not extract the conflicting file versions."
+msgstr "无法提取冲突文件的各个版本。"
+
+msgid "Files changed while the conflicts were being resolved, and finishing the merge would overwrite those changes. Get changes again to redo the merge with the current files."
+msgstr "解决冲突期间文件已改变，完成合并会覆盖这些更改。请重新获取更改，用当前文件重新合并。"
+
+msgid "The repository changed while resolving. Get changes again."
+msgstr "解决冲突期间仓库已改变。请重新获取更改。"
+
+msgid "Could not mark '%s' as resolved."
+msgstr "无法将“%s”标记为已解决。"
+
+msgid "Could not read the resolved file for '%s'."
+msgstr "无法读取“%s”的已解决文件。"
+
+msgid "Could not store the resolved file for '%s'."
+msgstr "无法存储“%s”的已解决文件。"
+
+msgid "Not every conflict was resolved."
+msgstr "并非所有冲突都已解决。"
+
+msgid "Could not record the merge commit, so nothing was changed: %s"
+msgstr "无法记录合并提交，因此未作任何更改：%s"
+
+msgid "Could not record the merge commit, and the working files may have been changed: %s"
+msgstr "无法记录合并提交，工作文件可能已被更改：%s"
+
+msgid "Could not work out which folder this project occupies in the repository, so the operation was cancelled."
+msgstr "无法确定此工程在仓库中所在的文件夹，因此操作已取消。"
+
+msgid "This project keeps '%s' in Git LFS, which KemiCAD cannot read or write. Use git on the command line for this repository."
+msgstr "此工程将“%s”保存在 Git LFS 中，KemiCAD 无法读写。请对此仓库使用 Git 命令行。"
+
+msgid "Autosave"
+msgstr "自动保存"
+
+msgid "Project closed"
+msgstr "关闭工程"
+
+msgid "PCB saved"
+msgstr "PCB 已保存"
+
+msgid "Backup"
+msgstr "备份"
+
+msgid "Declined restore"
+msgstr "已拒绝恢复"
+
+msgid "Initial snapshot"
+msgstr "初始快照"
+
+msgid "Discarded unsaved schematic changes"
+msgstr "已丢弃未保存的原理图更改"
+
+msgid "Discarded unsaved PCB changes"
+msgstr "已丢弃未保存的 PCB 更改"
+
+msgid "Restored from %s"
+msgstr "已从 %s 还原"
+
+msgid "%ld files changed"
+msgstr "%ld 个文件已更改"
+
+msgid "TARGET 3001! Project..."
+msgstr "TARGET 3001! 工程..."
+
+msgid "Import TARGET 3001! project schematic and PCB (*.T3001)"
+msgstr "导入 TARGET 3001! 工程原理图和 PCB（*.T3001）"
+
+msgid "Could not create the branch."
+msgstr "无法创建分支。"
+
+msgid "The repository has no KiCad project to open. Its files were cloned to '%s', which can be deleted if they are not needed."
+msgstr "该仓库中没有可打开的 KemiCAD 工程。其文件已克隆到“%s”，如不需要可将其删除。"
+
+msgid "Resolve the conflict in '%s' by going back to the version this project was on?\n\nThe version that arrived is dropped, and the file no longer needs resolving."
+msgstr "要将“%s”中的冲突解决为回到本工程原来的版本吗？\n\n传入的版本将被丢弃，该文件不再需要解决。"
+
+msgid "Throw away the changes to '%s'?\n\nThe file goes back to the last committed version."
+msgstr "要丢弃对“%s”的更改吗？\n\n文件将恢复到最近一次提交的版本。"
+
+msgid "Move '%s' to the trash?\n\nIt has never been committed, so there is no version to bring back."
+msgstr "要将“%s”移到回收站吗？\n\n它从未提交过，因此没有可以恢复的版本。"
+
+msgid "Abandon the %s and go back to the last commit?\n\nChanges made to the files since that commit are discarded."
+msgstr "要放弃%s并回到最近一次提交吗？\n\n自该提交以来对文件所做的更改将被丢弃。"
+
+msgid "\n\nThis also discards uncommitted changes elsewhere in this repository:%s"
+msgstr "\n\n这也会丢弃此仓库中其他位置未提交的更改：%s"
+
+msgid "Someone else pushed changes first.\n\nGet their changes and push again?"
+msgstr "其他人已先推送了更改。\n\n要获取他们的更改后重新推送吗？"
+
+msgid "'%s' exists only on the remote (%zu of %zu).\n\nHow should it be resolved?"
+msgstr "“%s”只存在于远程仓库（第 %zu 个，共 %zu 个）。\n\n要如何解决？"
+
+msgid "'%s' was deleted here but changed on the remote (%zu of %zu).\n\nHow should it be resolved?"
+msgstr "“%s”在本地已删除，但在远程仓库中有更改（第 %zu 个，共 %zu 个）。\n\n要如何解决？"
+
+msgid "'%s' exists only here (%zu of %zu).\n\nHow should it be resolved?"
+msgstr "“%s”只存在于本地（第 %zu 个，共 %zu 个）。\n\n要如何解决？"
+
+msgid "'%s' was changed here but deleted on the remote (%zu of %zu).\n\nHow should it be resolved?"
+msgstr "“%s”在本地有更改，但在远程仓库中已删除（第 %zu 个，共 %zu 个）。\n\n要如何解决？"
+
+msgid "'%s' was changed both here and on the remote (%zu of %zu).\n\nHow should it be resolved?"
+msgstr "“%s”在本地和远程仓库中都有更改（第 %zu 个，共 %zu 个）。\n\n要如何解决？"
+
+msgid "The following editors have unsaved changes:%s\n\nSave or discard those changes before stashing."
+msgstr "以下编辑器有未保存的更改：%s\n\n请先保存或丢弃这些更改，再进行储藏。"
+
+msgid "The following editors have unsaved changes:%s\n\nSave or discard those changes first. If saving leaves uncommitted files, commit or stash them before trying again."
+msgstr "以下编辑器有未保存的更改：%s\n\n请先保存或丢弃这些更改。如果保存后留下未提交的文件，请先提交或储藏后再重试。"
+
+msgid "There are uncommitted changes elsewhere in this repository:%s\n\nCommit or discard them from that project first, then try again."
+msgstr "此仓库中其他位置有未提交的更改：%s\n\n请先在那个工程中提交或丢弃，然后重试。"
+
+msgid "The following editors have unsaved library changes:%s\n\nThis rewrites files on disk. Save or discard those changes first, then try again."
+msgstr "以下编辑器有未保存的库更改：%s\n\n此操作会改写磁盘上的文件。请先保存或丢弃这些更改，然后重试。"
+
+msgid "The following editors have unsaved changes:%s\n\nThis rewrites those files on disk. They must be saved first, otherwise the next save would overwrite what arrives."
+msgstr "以下编辑器有未保存的更改：%s\n\n此操作会改写磁盘上的这些文件。必须先保存，否则下次保存会覆盖传入的内容。"
+
+msgid "The following editors have unsaved changes:%s\n\nSave them and review the updated file list before committing?"
+msgstr "以下编辑器有未保存的更改：%s\n\n要保存它们并在提交前查看更新后的文件列表吗？"
+
+msgid "Branch '%s' has one commit that is not in the current version.\n\nDelete it anyway?"
+msgstr "分支“%s”有 1 个提交不在当前版本中。\n\n仍要删除吗？"
+
+msgid "Branch '%s' has %zu commits that are not in the current version.\n\nDelete it anyway?"
+msgstr "分支“%s”有 %zu 个提交不在当前版本中。\n\n仍要删除吗？"
+
+msgid "Force push replaces '%s' with your local '%s'.\n\nCommits that exist only on the remote will be lost."
+msgstr "强制推送会将“%s”替换为本地的“%s”。\n\n只存在于远程仓库的提交将会丢失。"
+
+msgid "Restore this project's files as they were at version %s?\n\nThey are replaced with that version, recorded as a new commit, so nothing in the history is lost. Files outside the project folder, including any shared with other projects, keep their current state."
+msgstr "要将此工程的文件还原为版本 %s 时的状态吗？\n\n文件将被替换为该版本，并记录为一次新提交，因此历史记录不会丢失。工程文件夹以外的文件（包括与其他工程共享的文件）保持当前状态。"
+
+msgid "There are uncommitted changes elsewhere in this repository:%s\n\nCommit or discard them from that project first, or set them aside with Stash Changes."
+msgstr "此仓库中其他位置有未提交的更改：%s\n\n请先在那个工程中提交或丢弃，或使用“储藏更改”暂存。"
+
+msgid "Switching to branch '%s' would overwrite:\n\n%s\n%s"
+msgstr "切换到分支“%s”将覆盖：\n\n%s\n%s"
+
+msgid "Getting changes would overwrite files that were never committed:%s\n\nCommit or discard them first."
+msgstr "获取更改将覆盖从未提交过的文件：%s\n\n请先提交或丢弃它们。"
+
+#: common/startwizard/startwizard.cpp:122
+msgid "KemiCAD Getting Started"
+msgstr "KemiCAD 入门指南"
 
 #~ msgid "Image Converter"
 #~ msgstr "图片转换器"

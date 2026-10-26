@@ -1,7 +1,7 @@
 Unicode true
 ManifestDPIAware true
 !define APPNAME "KemiCAD"
-!define VERSION "0.9.0"
+!define VERSION "0.9.1"
 !ifndef DIST
 !define DIST "D:\KiCad\build\kemi-eda-dist"
 !endif
@@ -40,11 +40,11 @@ InstallDirRegKey ${REGROOT} "${UNINSTKEY}" "InstallLocation"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
-VIProductVersion "0.9.0.0"
+VIProductVersion "0.9.1.0"
 VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "ProductName" "KemiCAD"
-VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "FileVersion" "0.9.0"
-VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "ProductVersion" "0.9.0"
-VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "FileDescription" "KemiCAD 0.9.0 安装程序 (基于 KiCad 开源软件, GPL-3.0)"
+VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "FileVersion" "0.9.1"
+VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "ProductVersion" "0.9.1"
+VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "FileDescription" "KemiCAD 0.9.1 安装程序 (基于 KiCad 开源软件, GPL-3.0)"
 VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "LegalCopyright" "Copyright (C) 深圳新智联软件有限公司; based on KiCad, GPL-3.0-or-later"
 Function .onInit
   ${If} ${RunningX64}
@@ -69,7 +69,7 @@ Section "KemiCAD" SecMain
   CreateShortcut "$SMPROGRAMS\KemiCAD\KemiCAD.lnk" "$INSTDIR\bin\kicad.exe"
   CreateShortcut "$SMPROGRAMS\KemiCAD\卸载 KemiCAD.lnk" "$INSTDIR\uninstall.exe"
   CreateShortcut "$DESKTOP\KemiCAD.lnk" "$INSTDIR\bin\kicad.exe"
-  WriteRegStr ${REGROOT} "${UNINSTKEY}" "DisplayName" "KemiCAD 0.9.0"
+  WriteRegStr ${REGROOT} "${UNINSTKEY}" "DisplayName" "KemiCAD 0.9.1"
   WriteRegStr ${REGROOT} "${UNINSTKEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr ${REGROOT} "${UNINSTKEY}" "Publisher" "深圳新智联软件有限公司"
   WriteRegStr ${REGROOT} "${UNINSTKEY}" "DisplayIcon" "$INSTDIR\bin\kicad.exe"

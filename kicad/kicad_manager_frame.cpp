@@ -26,6 +26,8 @@
 #include "project_tree_pane.h"
 #include <dialogs/dialog_git_mr_review.h>
 #include <widgets/git_commit_pane.h>
+#include <git/project_git_utils.h>
+#include <git2.h>
 #include "local_history_pane.h"
 #include "widgets/bitmap_button.h"
 
@@ -154,7 +156,7 @@ KICAD_MANAGER_FRAME::KICAD_MANAGER_FRAME( wxWindow* parent, const wxString& titl
         m_restoredFromHistory( false ),
         m_active_project( false ),
         m_showHistoryPanel( false ),
-        m_showGitCommitPanel( true ),
+        m_showGitCommitPanel( false ),
         m_projectTreePane( nullptr ),
         m_historyPane( nullptr ),
         m_gitCommitPane( nullptr ),
@@ -1055,6 +1057,22 @@ bool KICAD_MANAGER_FRAME::LoadProject( const wxFileName& aProjectFileName )
     m_projectTreePane->ReCreateTreePrj();
     m_historyPane->RefreshHistory( Prj().GetProjectPath() );
 
+    // The version control pane is only useful for projects in a git repository.
+    if( m_gitCommitPane )
+    {
+        bool hasGit = false;
+
+        if( git_repository* repo = KIGIT::PROJECT_GIT_UTILS::GetRepositoryForFile(
+                    Prj().GetProjectFullName().utf8_str() ) )
+        {
+            hasGit = true;
+            git_repository_free( repo );
+        }
+
+        m_auimgr.GetPane( m_gitCommitPane ).Show( m_showGitCommitPanel && hasGit );
+        m_auimgr.Update();
+    }
+
     if( GitCommitPaneShown() )
         m_gitCommitPane->RefreshFileList();
 
@@ -1400,7 +1418,8 @@ void KICAD_MANAGER_FRAME::SaveSettings( APP_SETTINGS_BASE* aCfg )
 
     settings->m_LeftWinWidth = m_projectTreePane->GetSize().x;
     settings->m_ShowHistoryPanel = m_historyPane && m_auimgr.GetPane( m_historyPane ).IsShown();
-    settings->m_ShowGitCommitPanel = GitCommitPaneShown();
+    // Store the user's choice, not the per-project visibility (hidden for projects without git).
+    settings->m_ShowGitCommitPanel = m_showGitCommitPanel;
 
     if( !m_isClosing )
         settings->m_OpenProjects = GetSettingsManager()->GetOpenProjects();
@@ -1599,6 +1618,7 @@ void KICAD_MANAGER_FRAME::ToggleGitCommitPane()
     bool           show = !pane.IsShown();
 
     pane.Show( show );
+    m_showGitCommitPanel = show;
 
     if( show )
         m_gitCommitPane->RefreshFileList();

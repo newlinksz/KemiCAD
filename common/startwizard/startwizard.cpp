@@ -118,8 +118,8 @@ public:
 
         wxBoxSizer* helpSizer = new wxBoxSizer( wxHORIZONTAL );
         wxStaticText* helpLabel = new wxStaticText( this, -1, _( "For help, please visit " ) );
-        wxString docsUrl = wxString( wxS( "https://github.com/newlinksz/KemiCAD" ) );
-        wxHyperlinkCtrl* helpLink = new wxHyperlinkCtrl( this, -1, wxT( "github.com/newlinksz/KemiCAD" ), docsUrl );
+        wxString docsUrl = wxString( wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%85%A5%E9%97%A8%E6%8C%87%E5%8D%97.md" ) );
+        wxHyperlinkCtrl* helpLink = new wxHyperlinkCtrl( this, -1, _( "KemiCAD Getting Started" ), docsUrl );
         helpSizer->Add( helpLabel, 0, wxLEFT | wxTOP | wxBOTTOM | wxALIGN_CENTER_VERTICAL, 5 );
         helpSizer->Add( helpLink, 0, wxRIGHT | wxTOP | wxBOTTOM | wxALIGN_CENTER_VERTICAL, 5 );
         m_mainSizer->Add( helpSizer, 0, wxEXPAND, 5 );

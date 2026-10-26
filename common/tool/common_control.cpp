@@ -50,7 +50,55 @@
 #include <reporter.h>
 #include <widgets/kistatusbar.h>
 
-#define URL_DOCUMENTATION wxS( "https://github.com/newlinksz/KemiCAD" )
+#define KEMI_DOCS_BASE wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/" )
+
+/// Online documentation index (docs/kemi/README.md).
+#define URL_DOCUMENTATION KEMI_DOCS_BASE wxS( "README.md" )
+
+/// docs/kemi/入门指南.md, percent-encoded UTF-8.
+#define URL_GETTING_STARTED wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%85%A5%E9%97%A8%E6%8C%87%E5%8D%97.md" )
+
+/// docs/kemi/使用帮助.md, used by the project manager.
+#define URL_USER_HELP wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E4%BD%BF%E7%94%A8%E5%B8%AE%E5%8A%A9.md" )
+
+
+/**
+ * Return the docs/kemi page for the frame's Help entry.  Symbol and footprint editors share a
+ * kiface (and so a help file name) with their main editors, so pick by the untranslated
+ * program title instead.
+ */
+static wxString kemiHelpUrl( EDA_BASE_FRAME* aFrame )
+{
+    static const std::pair<const wxChar*, const wxChar*> pages[] = {
+        { wxS( "KemiCAD Schematic Editor" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%8E%9F%E7%90%86%E5%9B%BE%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 原理图编辑器.md
+        { wxS( "KemiCAD Symbol Editor" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E7%AC%A6%E5%8F%B7%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 符号编辑器.md
+        { wxS( "KemiCAD Symbol Library Browser" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E7%AC%A6%E5%8F%B7%E4%B8%8E%E5%B0%81%E8%A3%85%E5%BA%93.md" ) }, // 符号与封装库.md
+        { wxS( "KemiCAD PCB Editor" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/PCB%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // PCB编辑器.md
+        { wxS( "KemiCAD Footprint Editor" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%B0%81%E8%A3%85%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 封装编辑器.md
+        { wxS( "KemiCAD Footprint Library Browser" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E7%AC%A6%E5%8F%B7%E4%B8%8E%E5%B0%81%E8%A3%85%E5%BA%93.md" ) }, // 符号与封装库.md
+        { wxS( "KemiCAD 3D Viewer" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/PCB%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // PCB编辑器.md
+        { wxS( "KemiCAD Gerber Viewer" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/Gerber%E6%9F%A5%E7%9C%8B%E5%99%A8.md" ) }, // Gerber查看器.md
+        { wxS( "KemiCAD Calculator Tools" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/PCB%E8%AE%A1%E7%AE%97%E5%99%A8.md" ) }, // PCB计算器.md
+        { wxS( "KemiCAD Drawing Sheet Editor" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%9B%BE%E6%A1%86%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 图框编辑器.md
+        { wxS( "KemiCAD Assign Footprints" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%88%86%E9%85%8D%E5%B0%81%E8%A3%85.md" ) }, // 分配封装.md
+    };
+
+    if( !aFrame )
+        return URL_DOCUMENTATION;
+
+    const wxString& title = aFrame->GetUntranslatedAboutTitle();
+
+    for( const auto& [name, url] : pages )
+    {
+        if( title == name )
+            return url;
+    }
+
+    if( aFrame->IsType( KICAD_MAIN_FRAME_T ) )
+        return URL_USER_HELP;
+
+    return URL_DOCUMENTATION;
+}
 
 
 /// URL to launch a new issue with pre-populated description
@@ -289,7 +337,6 @@ int COMMON_CONTROL::ShowProjectManager( const TOOL_EVENT& aEvent )
 int COMMON_CONTROL::ShowHelp( const TOOL_EVENT& aEvent )
 {
     wxString helpFile;
-    wxString msg;
 
     /* We have to get document for beginners,
      * or the full specific doc
@@ -317,16 +364,8 @@ int COMMON_CONTROL::ShowHelp( const TOOL_EVENT& aEvent )
 
         if( !helpFile )
         {
-            msg = wxString::Format( _( "Help file '%s' or\n'%s' could not be found.\n"
-                                       "Do you want to access the KemiCAD online help?" ),
-                                    names[0], names[1] );
-            KICAD_MESSAGE_DIALOG dlg( nullptr, msg, _( "File Not Found" ),
-                                      wxYES_NO | wxNO_DEFAULT | wxCANCEL );
-
-            if( dlg.ShowModal() != wxID_YES )
-                return -1;
-
-            helpFile = URL_DOCUMENTATION;
+            // No local help is shipped; open the KemiCAD online page directly.
+            helpFile = URL_GETTING_STARTED;
         }
     }
     else
@@ -337,16 +376,8 @@ int COMMON_CONTROL::ShowHelp( const TOOL_EVENT& aEvent )
 
         if( !helpFile )
         {
-            msg = wxString::Format( _( "Help file '%s' could not be found.\n"
-                                       "Do you want to access the KemiCAD online help?" ),
-                                    base_name );
-            KICAD_MESSAGE_DIALOG dlg( nullptr, msg, _( "File Not Found" ),
-                                      wxYES_NO | wxNO_DEFAULT | wxCANCEL );
-
-            if( dlg.ShowModal() != wxID_YES )
-                return -1;
-
-            helpFile = URL_DOCUMENTATION;
+            // No local help is shipped; open the KemiCAD online page directly.
+            helpFile = kemiHelpUrl( m_frame );
         }
     }
 

@@ -1279,6 +1279,57 @@ static bool commitSnapshotForProject( const wxString& aProjectPath, const std::v
 }
 
 
+wxString LOCAL_HISTORY::DisplayTitle( const wxString& aStoredTitle )
+{
+    wxString line = aStoredTitle.BeforeFirst( '\n' );
+    line.Trim( true ).Trim( false );
+
+    wxString rest;
+    wxString head = line.BeforeFirst( ':', &rest );
+    head.Trim( true ).Trim( false );
+    rest.Trim( true ).Trim( false );
+
+    wxString out;
+    wxString suffix;
+
+    if( head == wxS( "Autosave" ) )
+        out = _( "Autosave" );
+    else if( head == wxS( "Close" ) )
+        out = _( "Project closed" );
+    else if( head == wxS( "SCH Save" ) )
+        out = _( "Schematic saved" );
+    else if( head == wxS( "PCB Save" ) )
+        out = _( "PCB saved" );
+    else if( head == wxS( "Backup" ) )
+        out = _( "Backup" );
+    else if( head == wxS( "Declined restore" ) )
+        out = _( "Declined restore" );
+    else if( head == wxS( "Initial" ) )
+        out = _( "Initial snapshot" );
+    else if( head == wxS( "Discard unsaved schematic changes" ) )
+        out = _( "Discarded unsaved schematic changes" );
+    else if( head == wxS( "Discard unsaved pcb changes" ) )
+        out = _( "Discarded unsaved PCB changes" );
+    else if( head.StartsWith( wxS( "Restored from " ), &suffix ) )
+        out = wxString::Format( _( "Restored from %s" ), suffix );
+    else
+        out = head;
+
+    if( !rest.IsEmpty() )
+    {
+        wxString countText;
+        long     count = 0;
+
+        if( rest.EndsWith( wxS( " files changed" ), &countText ) && countText.ToLong( &count ) )
+            out << wxS( ": " ) << wxString::Format( _( "%ld files changed" ), count );
+        else
+            out << wxS( ": " ) << rest;
+    }
+
+    return out;
+}
+
+
 bool LOCAL_HISTORY::CommitSnapshot( const std::vector<wxString>& aFiles, const wxString& aTitle )
 {
     if( aFiles.empty() || !localHistoryEnabled() )

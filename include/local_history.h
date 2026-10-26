@@ -79,6 +79,13 @@ class KICOMMON_API LOCAL_HISTORY
 {
 public:
     LOCAL_HISTORY();
+
+    /**
+     * Translate a stored snapshot title (e.g. "Autosave: 3 files changed") for display.
+     * The stored commit message is an internal tag and is never changed; only the text
+     * shown to the user is localized.
+     */
+    static wxString DisplayTitle( const wxString& aStoredTitle );
     ~LOCAL_HISTORY();
 
     /** Initialize the local history repository for the given project path. */
