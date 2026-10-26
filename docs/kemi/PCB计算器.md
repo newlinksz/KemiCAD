@@ -105,3 +105,7 @@ PCB 计算器提供器件选值、导体尺寸、间距、传输线和常用参�
 - [封装编辑器](封装编辑器.md)
 - [使用帮助](使用帮助.md)
 - [文档索引](README.md)
+
+---
+
+本文档采用 [知识共享 署名-相同方式共享 4.0 国际许可协议（CC BY-SA 4.0）](https://creativecommons.org/licenses/by-sa/4.0/deed.zh-hans) 授权，许可证全文见仓库根目录 `LICENSE.CC-BY-SA-4.0`。

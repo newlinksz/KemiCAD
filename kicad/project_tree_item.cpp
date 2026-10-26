@@ -32,6 +32,7 @@
 #include <confirm.h>
 #include <mail_type.h>
 #include <gestfich.h>
+#include <pgm_base.h>
 #include <kiplatform/environment.h>
 #include <kiplatform/io.h>
 #include <kiway.h>
@@ -333,6 +334,16 @@ void PROJECT_TREE_ITEM::Activate( PROJECT_TREE_PANE* aTreePrjFrame )
     case TREE_FILE_TYPE::TXT:
     case TREE_FILE_TYPE::MD:
     case TREE_FILE_TYPE::REPORT:
+#ifdef __WINDOWS__
+        // No editor configured: open with the system association instead of asking
+        if( Pgm().GetTextEditor( false ).IsEmpty() )
+        {
+            if( !wxLaunchDefaultApplication( fullFileName ) )
+                ExecuteFile( wxS( "notepad.exe" ), fullFileName );
+
+            break;
+        }
+#endif
         toolMgr->RunAction<wxString*>( KICAD_MANAGER_ACTIONS::openTextEditor, &fullFileName );
         break;
 

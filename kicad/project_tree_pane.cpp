@@ -438,6 +438,14 @@ wxTreeItemId PROJECT_TREE_PANE::addItemToProjectTree( const wxString& aName,
     if( fn.GetFullName().IsSameAs( wxS( ".git" ), false ) )
         return wxTreeItemId();
 
+    // Local history archive (internal, not user content)
+    if( fn.GetFullName().IsSameAs( wxS( ".history" ), false ) )
+        return wxTreeItemId();
+
+    // Automatic project backups folder (<project>-backups), internal
+    if( wxDirExists( aName ) && fn.GetFullName().EndsWith( wxS( "-backups" ) ) )
+        return wxTreeItemId();
+
     if( wxDirExists( aName ) )
     {
         type = TREE_FILE_TYPE::DIRECTORY;
@@ -1070,7 +1078,14 @@ void PROJECT_TREE_PANE::showContextMenu()
 
 void PROJECT_TREE_PANE::onOpenSelectedFileWithTextEditor( wxCommandEvent& event )
 {
+#ifdef __WINDOWS__
+    wxString editorname = Pgm().GetTextEditor( false );
+
+    if( editorname.IsEmpty() )
+        editorname = wxS( "notepad.exe" );
+#else
     wxString editorname = Pgm().GetTextEditor();
+#endif
 
     if( editorname.IsEmpty() )
     {

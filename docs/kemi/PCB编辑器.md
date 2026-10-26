@@ -77,3 +77,7 @@ KemiCAD 安装包不包含 3D 模型库；封装模型需要另行准备并配�
 - [符号与封装库](符号与封装库.md)
 - [Gerber 查看器](Gerber查看器.md)
 - [文档索引](README.md)
+
+---
+
+本文档采用 [知识共享 署名-相同方式共享 4.0 国际许可协议（CC BY-SA 4.0）](https://creativecommons.org/licenses/by-sa/4.0/deed.zh-hans) 授权，许可证全文见仓库根目录 `LICENSE.CC-BY-SA-4.0`。

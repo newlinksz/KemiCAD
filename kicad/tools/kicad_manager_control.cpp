@@ -1113,7 +1113,16 @@ int KICAD_MANAGER_CONTROL::Execute( const TOOL_EVENT& aEvent )
     else if( aEvent.IsAction( &KICAD_MANAGER_ACTIONS::editDrawingSheet ) )
         execFile = PL_EDITOR_EXE;
     else if( aEvent.IsAction( &KICAD_MANAGER_ACTIONS::openTextEditor ) )
+    {
+#ifdef __WINDOWS__
+        execFile = Pgm().GetTextEditor( false );
+
+        if( execFile.IsEmpty() )
+            execFile = wxS( "notepad.exe" );
+#else
         execFile = Pgm().GetTextEditor();
+#endif
+    }
     else if( aEvent.IsAction( &KICAD_MANAGER_ACTIONS::editOtherSch ) )
         execFile = EESCHEMA_EXE;
     else if( aEvent.IsAction( &KICAD_MANAGER_ACTIONS::editOtherPCB ) )
