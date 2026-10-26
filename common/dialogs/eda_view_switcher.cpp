@@ -1,0 +1,187 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <dialogs/eda_view_switcher.h>
+#include <kiplatform/ui.h>
+
+#include <wx/utils.h>
+
+
+#ifdef __WXGTK__
+#define LIST_BOX_H_PADDING 20
+#define LIST_BOX_V_PADDING 8
+#else
+#define LIST_BOX_H_PADDING 10
+#define LIST_BOX_V_PADDING 5
+#endif
+
+
+EDA_VIEW_SWITCHER::EDA_VIEW_SWITCHER( wxWindow* aParent, const wxArrayString& aItems,
+                                      wxKeyCode aCtrlKey ) :
+        EDA_VIEW_SWITCHER_BASE( aParent ),
+        // Start with the tab marked as "up" so the initial ctrl-tab press advances selection.
+        m_tabState( false ),
+        m_receivingEvents( false ),
+        m_ctrlKey( aCtrlKey )
+{
+    m_listBox->InsertItems( aItems, 0 );
+    m_listBox->SetSelection( std::min( 0, (int) m_listBox->GetCount() - 1 ) );
+
+    // Without key state polling the tab press that opened the switcher is never seen, so count it now.
+    if( !KIPLATFORM::UI::SupportsKeyState() )
+        advanceSelection();
+
+    int width = 0;
+    int height = 0;
+
+    for( const wxString& item : aItems )
+    {
+        wxSize extents = m_listBox->GetTextExtent( item );
+        width = std::max( width, extents.x );
+        height += extents.y + LIST_BOX_V_PADDING;
+    }
+
+    m_listBox->SetMinSize( wxSize( width + LIST_BOX_H_PADDING,
+                                   height + ( LIST_BOX_V_PADDING * 2 ) ) );
+    SetInitialFocus( m_listBox );
+
+    // this line fixes an issue on Linux Ubuntu using Unity (dialog not shown),
+    // and works fine on all systems
+    GetSizer()->Fit( this );
+
+    Centre();
+}
+
+
+bool EDA_VIEW_SWITCHER::Show( bool aShow )
+{
+    if( !aShow )
+        m_receivingEvents = false;
+
+#ifdef __WXGTK__
+    // On Wayland, window positions cannot be changed after mapping. DIALOG_SHIM::Show() calls
+    // Raise() -> gtk_window_present() before wxDialog::Show(), prematurely mapping the window so
+    // the compositor places it at its default position instead of centered on the parent. Centre
+    // before mapping and bypass DIALOG_SHIM::Show() since this transient popup needs no geometry
+    // save/restore.
+    if( aShow && wxGetEnv( wxT( "WAYLAND_DISPLAY" ), nullptr ) )
+    {
+        clampToWorkArea();
+        Centre();
+        m_receivingEvents = true;
+        return wxDialog::Show( true );
+    }
+#endif
+
+    bool ret = DIALOG_SHIM::Show( aShow );
+
+    if( aShow )
+    {
+        Centre();
+        m_receivingEvents = true;
+    }
+
+    return ret;
+}
+
+
+void EDA_VIEW_SWITCHER::advanceSelection()
+{
+    int count = (int) m_listBox->GetCount();
+
+    if( count == 0 )
+        return;
+
+    bool backward = wxGetKeyState( WXK_SHIFT ) && m_ctrlKey != WXK_SHIFT;
+    int  idx = m_listBox->GetSelection() + ( backward ? -1 : 1 );
+
+    m_listBox->SetSelection( ( idx + count ) % count );
+}
+
+
+// OK, this is *really* annoying, but wxWidgets doesn't give us key-down events while the
+// control key is being held down.  So we can't use OnKeyDown() or OnCharHook() and instead
+// must rely on watching key states in TryBefore().
+//
+// Just checking the state of the tab key is tempting, but then we'll think it's been hit
+// several times when it's actually just a key-down followed by a redraw or idle event.
+//
+// So we have to keep a state machine of the tab key.
+//
+// wxGetKeyState() cannot query non-modifier keys on Wayland, but char hook events do arrive there
+// with the control key held, so tab and escape come from those events instead.
+//
+bool EDA_VIEW_SWITCHER::TryBefore( wxEvent& aEvent )
+{
+    if( !m_receivingEvents )
+    {
+        return DIALOG_SHIM::TryBefore( aEvent );
+    }
+
+    if( !KIPLATFORM::UI::SupportsKeyState() )
+    {
+        if( aEvent.GetEventType() == wxEVT_CHAR_HOOK )
+        {
+            int keyCode = static_cast<wxKeyEvent&>( aEvent ).GetKeyCode();
+
+            if( keyCode == WXK_TAB )
+            {
+                advanceSelection();
+                return true;
+            }
+
+            if( keyCode == WXK_ESCAPE )
+            {
+                wxPostEvent( this, wxCommandEvent( wxEVT_COMMAND_BUTTON_CLICKED, wxID_CANCEL ) );
+                return true;
+            }
+        }
+
+        if( !wxGetKeyState( m_ctrlKey ) )
+            wxPostEvent( this, wxCommandEvent( wxEVT_COMMAND_BUTTON_CLICKED, wxID_OK ) );
+
+        return DIALOG_SHIM::TryBefore( aEvent );
+    }
+
+    // Check for tab key leading edge
+    if( !m_tabState && wxGetKeyState( WXK_TAB ) )
+    {
+        m_tabState = true;
+        advanceSelection();
+        return true;
+    }
+
+    // Check for tab key trailing edge
+    if( m_tabState && !wxGetKeyState( WXK_TAB ) )
+    {
+        m_tabState = false;
+    }
+
+    // Check for control key trailing edge
+    if( !wxGetKeyState( m_ctrlKey ) )
+    {
+        wxPostEvent( this, wxCommandEvent( wxEVT_COMMAND_BUTTON_CLICKED, wxID_OK ) );
+    }
+    else if( wxGetKeyState( WXK_ESCAPE ) )
+    {
+        wxPostEvent( this, wxCommandEvent( wxEVT_COMMAND_BUTTON_CLICKED, wxID_CANCEL ) );
+    }
+
+    return DIALOG_SHIM::TryBefore( aEvent );
+}

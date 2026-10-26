@@ -1,0 +1,121 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2017-2018 CERN
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ * @author Maciej Suminski <maciej.suminski@cern.ch>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 3
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <widgets/text_ctrl_eval.h>
+
+
+TEXT_CTRL_EVAL::TEXT_CTRL_EVAL( wxWindow* aParent, wxWindowID aId, const wxString& aValue,
+                                const wxPoint& aPos, const wxSize& aSize, long aStyle,
+                                const wxValidator& aValidator, const wxString& aName ) :
+        wxTextCtrl( aParent, aId, aValue, aPos, aSize, aStyle | wxTE_PROCESS_ENTER, aValidator, aName ),
+        m_eval( EDA_UNITS::UNSCALED ),
+        m_deferToBinder( false )
+{
+    Connect( wxEVT_SET_FOCUS, wxFocusEventHandler( TEXT_CTRL_EVAL::onTextFocusGet ), nullptr, this );
+    Connect( wxEVT_KILL_FOCUS, wxFocusEventHandler( TEXT_CTRL_EVAL::onTextFocusLost ), nullptr, this );
+    Connect( wxEVT_TEXT_ENTER, wxCommandEventHandler( TEXT_CTRL_EVAL::onTextEnter ), nullptr, this );
+}
+
+
+void TEXT_CTRL_EVAL::SetValue( const wxString& aValue )
+{
+    wxTextCtrl::SetValue( aValue );
+    m_eval.Clear();
+}
+
+
+wxString TEXT_CTRL_EVAL::GetFormula() const
+{
+    wxString formula = m_eval.OriginalText();
+
+    if( m_eval.IsValid() && !formula.IsEmpty() && GetValue() == m_eval.Result() )
+        return formula;
+
+    return GetValue();
+}
+
+
+bool TEXT_CTRL_EVAL::RestoreFormula( const wxString& aFormula )
+{
+    if( m_deferToBinder || aFormula.IsEmpty() )
+        return false;
+
+    if( !m_eval.Process( aFormula ) )
+    {
+        // A failed expression must not be handed back to the control on the next focus
+        m_eval.Clear();
+        return false;
+    }
+
+    ChangeValue( m_eval.Result() );
+    return true;
+}
+
+
+void TEXT_CTRL_EVAL::onTextFocusGet( wxFocusEvent& aEvent )
+{
+    wxString oldStr = m_eval.OriginalText();
+
+    if( !m_deferToBinder && oldStr.length() && oldStr != GetValue() )
+        SetValue( oldStr );
+
+    aEvent.Skip();
+}
+
+
+void TEXT_CTRL_EVAL::onTextFocusLost( wxFocusEvent& aEvent )
+{
+    if( m_deferToBinder )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    if( m_customEval.has_value() )
+        m_customEval.value()( this );
+    else
+        evaluate();
+
+    aEvent.Skip();
+}
+
+
+void TEXT_CTRL_EVAL::onTextEnter( wxCommandEvent& aEvent )
+{
+    evaluate();
+
+    // Accept the changes and close the parent dialog
+    wxCommandEvent event( wxEVT_COMMAND_BUTTON_CLICKED, wxID_OK );
+    wxPostEvent( GetParent(), event );
+}
+
+
+void TEXT_CTRL_EVAL::evaluate()
+{
+    if( m_deferToBinder )
+        return;
+
+    // Bypass the override, which would discard the expression that was just evaluated
+    if( m_eval.Process( GetValue() ) )
+        wxTextCtrl::SetValue( m_eval.Result() );
+    else
+        m_eval.Clear();
+}

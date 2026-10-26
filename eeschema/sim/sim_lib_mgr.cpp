@@ -1,0 +1,399 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2022 Mikolaj Wielgus
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 3
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <filename_resolver.h>
+#include <pgm_base.h>
+#include <string>
+#include <string_utils.h>
+#include <common.h>
+#include <functional>
+#include <sch_symbol.h>
+#include <schematic.h>
+
+// Include simulator headers after wxWidgets headers to avoid conflicts with Windows headers
+// (especially on msys2 + wxWidgets 3.0.x)
+#include <sim/sim_lib_mgr.h>
+#include <sim/sim_library.h>
+#include <sim/sim_model.h>
+#include <sim/sim_model_ideal.h>
+
+using namespace std::placeholders;
+
+
+SIM_LIB_MGR::SIM_LIB_MGR( const PROJECT* aPrj ) :
+        m_project( aPrj ),
+        m_forceFullParse( false )
+{
+}
+
+
+void SIM_LIB_MGR::Clear()
+{
+    m_libraries.clear();
+    m_models.clear();
+}
+
+
+wxString SIM_LIB_MGR::ResolveLibraryPath( const wxString& aLibraryPath, REPORTER& aReporter )
+{
+    FILENAME_RESOLVER resolver;
+
+    resolver.SetProject( m_project );
+
+    std::vector<const EMBEDDED_FILES*> embeddedFilesStack;
+
+    for( const EMBEDDED_FILES* embeddedFiles : m_embeddedFilesStack )
+        embeddedFilesStack.push_back( embeddedFiles );
+
+    wxString resolvedPath = resolver.ResolvePath( aLibraryPath, wxEmptyString,
+                                                  std::move( embeddedFilesStack ) );
+
+    // If FILENAME_RESOLVER found the file, use that result
+    if( !resolvedPath.IsEmpty() )
+    {
+        wxFileName fn( resolvedPath );
+
+        if( fn.IsAbsolute() )
+            return fn.GetFullPath();
+    }
+
+    // Fall back to the original behavior for paths not found by FILENAME_RESOLVER.
+    // First expand any environment variables in the path.
+    wxString expandedPath = ExpandEnvVarSubstitutions( aLibraryPath, m_project );
+
+    // Convert to UNIX format
+    expandedPath.Replace( '\\', '/' );
+
+    wxFileName fn( expandedPath );
+
+    if( fn.IsAbsolute() && fn.Exists() )
+        return fn.GetFullPath();
+
+    wxFileName projectFn( m_project ? m_project->AbsolutePath( expandedPath ) : expandedPath );
+
+    if( projectFn.Exists() )
+        return projectFn.GetFullPath();
+
+    // Check relative to SPICE_LIB_DIR environment variable
+    wxFileName spiceLibFn( expandedPath );
+    wxString   spiceLibDir;
+
+    wxGetEnv( wxT( "SPICE_LIB_DIR" ), &spiceLibDir );
+
+    if( !spiceLibDir.IsEmpty() && spiceLibFn.MakeAbsolute( spiceLibDir ) && spiceLibFn.Exists() )
+        return spiceLibFn.GetFullPath();
+
+    if( spiceLibDir.IsEmpty() || spiceLibFn.GetFullPath() == projectFn.GetFullPath() )
+    {
+        aReporter.Report( wxString::Format( _( "Simulation model library not found at '%s'" ),
+                                            projectFn.GetFullPath() ) );
+    }
+    else
+    {
+        aReporter.Report( wxString::Format( _( "Simulation model library not found at '%s' or '%s'" ),
+                                            projectFn.GetFullPath(),
+                                            spiceLibFn.GetFullPath() ) );
+    }
+
+    return aLibraryPath;
+}
+
+
+wxString SIM_LIB_MGR::ResolveEmbeddedLibraryPath( const wxString& aLibPath,
+                                                  const wxString& aRelativeLib,
+                                                  REPORTER& aReporter )
+{
+    wxFileName testPath( aLibPath );
+    wxString fullPath( aLibPath );
+
+    if( !testPath.IsAbsolute() && !aRelativeLib.empty() )
+    {
+        wxString relLib( aRelativeLib );
+
+        relLib = ResolveLibraryPath( relLib, aReporter );
+
+        wxFileName fn( relLib );
+
+        testPath.MakeAbsolute( fn.GetPath( true ) );
+        fullPath = testPath.GetFullPath();
+    }
+
+    wxFileName fn( fullPath );
+
+    if( !fn.Exists() )
+        fullPath = aLibPath;
+
+    fullPath = ResolveLibraryPath( fullPath, aReporter );
+
+    return fullPath;
+}
+
+
+void SIM_LIB_MGR::SetLibrary( const wxString& aLibraryPath, REPORTER& aReporter )
+{
+    wxString path = ResolveLibraryPath( aLibraryPath, aReporter );
+
+    if( aReporter.HasMessageOfSeverity( RPT_SEVERITY_UNDEFINED | RPT_SEVERITY_ERROR ) )
+        return;
+
+    if( !wxFileName::Exists( path ) )
+    {
+        aReporter.Report( wxString::Format( _( "Simulation model library not found at '%s'" ),
+                                            path ) );
+        return;
+    }
+
+    std::unique_ptr<SIM_LIBRARY> library = SIM_LIBRARY::Create( path, m_forceFullParse, aReporter,
+            [&]( const wxString& libPath, const wxString& relativeLib ) -> wxString
+            {
+                return ResolveEmbeddedLibraryPath( libPath, relativeLib, aReporter );
+            } );
+
+    Clear();
+    m_libraries[path] = std::move( library );
+}
+
+
+SIM_MODEL& SIM_LIB_MGR::CreateModel( SIM_MODEL::TYPE aType, std::span<const wxString> aPins,
+                                     REPORTER& aReporter )
+{
+    m_models.push_back( SIM_MODEL::Create( aType, aPins, aReporter ) );
+    return *m_models.back();
+}
+
+
+SIM_MODEL& SIM_LIB_MGR::CreateModel( const SIM_MODEL* aBaseModel,
+                                     std::span<const wxString> aPins, REPORTER& aReporter )
+{
+    m_models.push_back( SIM_MODEL::Create( aBaseModel, aPins, aReporter ) );
+    return *m_models.back();
+}
+
+
+SIM_MODEL& SIM_LIB_MGR::CreateModel( const SIM_MODEL* aBaseModel, std::span<const wxString> aPins,
+                                     const std::vector<SCH_FIELD>& aFields, bool aResolve, int aDepth,
+                                     REPORTER& aReporter )
+{
+    m_models.push_back( SIM_MODEL::Create( aBaseModel, aPins, aFields, aResolve, aDepth, aReporter ) );
+    return *m_models.back();
+}
+
+
+SIM_MODEL_INPUT SIM_LIB_MGR::CaptureModelInput( const SCH_SHEET_PATH* aSheetPath, const SCH_SYMBOL& aSymbol,
+                                                int aDepth, const wxString& aVariantName,
+                                                const wxString& aMergedSimPins )
+{
+    SIM_MODEL_INPUT input;
+    input.prefix = aSymbol.GetPrefix();
+
+    for( const SCH_FIELD& field : aSymbol.GetFields() )
+    {
+        if( field.GetId() == FIELD_T::REFERENCE )
+        {
+            input.fields.emplace_back( field.GetName(), aSymbol.GetRef( aSheetPath ) );
+        }
+        else if( field.GetId() == FIELD_T::VALUE || field.GetName().StartsWith( wxS( "Sim." ) ) )
+        {
+            const wxString value = !aMergedSimPins.IsEmpty() && field.GetName() == SIM_PINS_FIELD
+                                           ? aMergedSimPins
+                                           : field.GetShownText( aSheetPath, FOR_NETNAME, aVariantName, aDepth );
+            input.fields.emplace_back( field.GetName(), value );
+        }
+    }
+
+    input.inferencePins = SIM_MODEL::PinNumbers( aSymbol.GetPins( aSheetPath ) );
+    std::sort( input.inferencePins.begin(), input.inferencePins.end() );
+    input.modelPins = SIM_MODEL::PinNumbers( aSymbol.GetAllLibPins() );
+    std::sort( input.modelPins.begin(), input.modelPins.end(),
+               []( const wxString& lhs, const wxString& rhs ) { return StrNumCmp( lhs, rhs, true ) < 0; } );
+    return input;
+}
+
+
+SIM_LIBRARY::MODEL SIM_LIB_MGR::CreateModel( const SCH_SHEET_PATH* aSheetPath, const SCH_SYMBOL& aSymbol,
+                                             bool aResolve, int aDepth, const wxString& aVariantName,
+                                             REPORTER& aReporter, const wxString& aMergedSimPins )
+{
+    return CreateModel( CaptureModelInput( aSheetPath, aSymbol, aDepth, aVariantName, aMergedSimPins ),
+                        aResolve, aReporter );
+}
+
+
+SIM_LIBRARY::MODEL SIM_LIB_MGR::CreateModel( const SIM_MODEL_INPUT& aInput, bool aAllowRawFallback,
+                                             REPORTER& aReporter )
+{
+    std::vector<SCH_FIELD> fields;
+
+    for( const auto& [name, value] : aInput.fields )
+    {
+        fields.emplace_back( nullptr, FIELD_T::USER, name );
+        fields.back().SetText( value );
+    }
+
+    auto getOrCreateField =
+            [&fields]( const wxString& name ) -> SCH_FIELD*
+            {
+                if( SCH_FIELD* field = FindField( fields, name ) )
+                    return field;
+
+                fields.emplace_back( nullptr, FIELD_T::USER, name );
+                return &fields.back();
+            };
+
+    wxString deviceType;
+    wxString modelType;
+    wxString modelParams;
+    wxString pinMap;
+    bool     storeInValue = false;
+
+    // Infer RLC and VI models if they aren't specified
+    if( SIM_MODEL::InferSimModel( aInput.prefix, aInput.inferencePins, &fields, false, 0,
+                                  SIM_VALUE_GRAMMAR::NOTATION::SI, &deviceType, &modelType, &modelParams, &pinMap ) )
+    {
+        getOrCreateField( SIM_DEVICE_FIELD )->SetText( deviceType );
+
+        if( !modelType.IsEmpty() )
+            getOrCreateField( SIM_DEVICE_SUBTYPE_FIELD )->SetText( modelType );
+
+        getOrCreateField( SIM_PARAMS_FIELD )->SetText( modelParams );
+        getOrCreateField( SIM_PINS_FIELD )->SetText( pinMap );
+
+        storeInValue = true;
+    }
+
+    SIM_LIBRARY::MODEL model = createModel( fields, false, 0, aInput.modelPins, aReporter, aAllowRawFallback );
+
+    model.model.SetIsStoredInValue( storeInValue );
+
+    return model;
+}
+
+
+SIM_LIBRARY::MODEL SIM_LIB_MGR::CreateModel( const std::vector<SCH_FIELD>& aFields,
+                                             bool aResolve, int aDepth,
+                                             std::span<const wxString> aPins,
+                                             REPORTER& aReporter )
+{
+    return createModel( aFields, aResolve, aDepth, aPins, aReporter, aResolve );
+}
+
+
+SIM_LIBRARY::MODEL SIM_LIB_MGR::createModel( const std::vector<SCH_FIELD>& aFields, bool aResolve, int aDepth,
+                                             std::span<const wxString> aPins, REPORTER& aReporter,
+                                             bool aAllowRawFallback )
+{
+    std::string libraryPath = GetFieldValue( &aFields, SIM_LIBRARY::LIBRARY_FIELD, aResolve, aDepth );
+    std::string baseModelName = GetFieldValue( &aFields, SIM_LIBRARY::NAME_FIELD, aResolve, aDepth );
+
+    if( libraryPath != "" )
+    {
+        return CreateModel( libraryPath, baseModelName, aFields, aResolve, aDepth, aPins, aReporter );
+    }
+    else
+    {
+        m_models.push_back( SIM_MODEL::Create( aFields, aResolve, aDepth, aPins, aReporter, aAllowRawFallback ) );
+        return { baseModelName, *m_models.back() };
+    }
+}
+
+
+SIM_LIBRARY::MODEL SIM_LIB_MGR::CreateModel( const wxString& aLibraryPath,
+                                             const std::string& aBaseModelName,
+                                             const std::vector<SCH_FIELD>& aFields,
+                                             bool aResolve, int aDepth,
+                                             std::span<const wxString> aPins,
+                                             REPORTER& aReporter )
+{
+    wxString     msg;
+    SIM_LIBRARY* library = nullptr;
+    SIM_MODEL*   baseModel = nullptr;
+    std::string  modelName;
+    wxString     path = ResolveLibraryPath( aLibraryPath, aReporter );
+
+    auto it = m_libraries.find( path );
+
+    if( it == m_libraries.end() )
+    {
+        it = m_libraries.emplace( path, SIM_LIBRARY::Create( path, m_forceFullParse, aReporter,
+                [&]( const wxString& libPath, const wxString& relativeLib ) -> wxString
+                {
+                    return ResolveEmbeddedLibraryPath( libPath, relativeLib, aReporter );
+                } ) ).first;
+    }
+
+    library = &*it->second;
+
+    if( aBaseModelName == "" )
+    {
+        msg.Printf( _( "Error loading simulation model: no '%s' field" ),
+                    SIM_LIBRARY::NAME_FIELD );
+
+        aReporter.Report( msg, RPT_SEVERITY_ERROR );
+
+        modelName = _( "unknown" ).ToStdString();
+    }
+    else if( library )
+    {
+        baseModel = library->FindModel( aBaseModelName );
+        modelName = aBaseModelName;
+
+        if( !baseModel )
+        {
+            msg.Printf( _( "Error loading simulation model: could not find base model '%s' "
+                           "in library '%s'" ),
+                        aBaseModelName,
+                        path );
+
+            aReporter.Report( msg, RPT_SEVERITY_ERROR );
+        }
+    }
+
+    m_models.push_back( SIM_MODEL::Create( baseModel, aPins, aFields, aResolve, aDepth, aReporter ) );
+
+    return { modelName, *m_models.back() };
+}
+
+
+void SIM_LIB_MGR::SetModel( int aIndex, std::unique_ptr<SIM_MODEL> aModel )
+{
+    m_models.at( aIndex ) = std::move( aModel );
+}
+
+
+std::map<wxString, std::reference_wrapper<const SIM_LIBRARY>> SIM_LIB_MGR::GetLibraries() const
+{
+    std::map<wxString, std::reference_wrapper<const SIM_LIBRARY>> libraries;
+
+    for( auto& [path, library] : m_libraries )
+        libraries.try_emplace( path, *library );
+
+    return libraries;
+}
+
+
+std::vector<std::reference_wrapper<SIM_MODEL>> SIM_LIB_MGR::GetModels() const
+{
+    std::vector<std::reference_wrapper<SIM_MODEL>> models;
+
+    for( const std::unique_ptr<SIM_MODEL>& model : m_models )
+        models.emplace_back( *model );
+
+    return models;
+}

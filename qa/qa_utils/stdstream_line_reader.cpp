@@ -1,0 +1,82 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <qa_utils/stdstream_line_reader.h>
+
+#include <ios>
+
+STDISTREAM_LINE_READER::STDISTREAM_LINE_READER() :
+    LINE_READER( 0 ),
+    m_stream( nullptr )
+{
+    m_line = nullptr;
+    m_lineNum = 0;
+}
+
+
+STDISTREAM_LINE_READER::~STDISTREAM_LINE_READER()
+{
+    // this is only a view into a string, it can't be deleted by the base
+    m_line = nullptr;
+}
+
+
+char* STDISTREAM_LINE_READER::ReadLine()
+{
+    getline( *m_stream, m_buffer );
+
+    m_buffer.append( 1, '\n' );
+
+    m_length = m_buffer.size();
+    m_line = (char*) m_buffer.data(); //ew why no const??
+
+    // lineNum is incremented even if there was no line read, because this
+    // leads to better error reporting when we hit an end of file.
+    ++m_lineNum;
+
+    return m_stream->eof() ? nullptr : m_line;
+}
+
+
+void STDISTREAM_LINE_READER::SetStream( std::istream& aStream )
+{
+    // Could be done with a virtual getStream function, but the
+    // virtual function call is a noticeable (but minor) penalty within
+    // ReadLine() in tight loops
+    m_stream = &aStream;
+}
+
+
+IFSTREAM_LINE_READER::IFSTREAM_LINE_READER( const wxFileName& aFileName )  :
+        m_fStream( aFileName.GetFullPath().fn_str() )
+{
+    if( !m_fStream.is_open() )
+        THROW_IO_ERRORF( _( "Unable to open filename '%s' for reading" ), aFileName.GetFullPath().GetData() );
+
+    SetStream( m_fStream );
+
+    m_source = aFileName.GetFullPath();
+}
+
+
+void IFSTREAM_LINE_READER::Rewind()
+{
+    m_fStream.clear() ;
+    m_fStream.seekg(0, std::ios::beg );
+}

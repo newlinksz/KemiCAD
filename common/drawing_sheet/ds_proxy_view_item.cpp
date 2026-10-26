@@ -1,0 +1,257 @@
+/*
+ * This program source code file is part of KICAD, a free EDA CAD application.
+ *
+ * Copyright (C) 2013-2020 CERN
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ * @author Maciej Suminski <maciej.suminski@cern.ch>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <algorithm>
+#include <common.h>
+#include <layer_ids.h>
+#include <page_info.h>
+#include <drawing_sheet/ds_proxy_view_item.h>
+#include <drawing_sheet/ds_draw_item.h>
+#include <drawing_sheet/ds_data_item.h>
+#include <drawing_sheet/ds_data_model.h>
+#include <drawing_sheet/ds_painter.h>
+#include <eda_text.h>
+#include <gal/graphics_abstraction_layer.h>
+#include <project.h>
+#include <text_var_dependency.h>
+#include <view/view.h>
+
+using namespace KIGFX;
+
+DS_PROXY_VIEW_ITEM::DS_PROXY_VIEW_ITEM( const EDA_IU_SCALE& aIuScale, const PAGE_INFO* aPageInfo,
+                                        const PROJECT* aProject, const TITLE_BLOCK* aTitleBlock,
+                                        const std::map<wxString, wxString>* aProperties ) :
+        EDA_ITEM( NOT_USED ), // this item is never added to a BOARD so it needs no type
+        m_iuScale( aIuScale ),
+        m_titleBlock( aTitleBlock ),
+        m_pageInfo( aPageInfo ),
+        m_pageNumber( "1" ),
+        m_sheetCount( 1 ),
+        m_isFirstPage( false ),
+        m_project( aProject ),
+        m_properties( aProperties ),
+        m_colorLayer( LAYER_DRAWINGSHEET ),
+        m_pageBorderColorLayer( LAYER_PAGE_LIMITS )
+{
+}
+
+
+const BOX2I DS_PROXY_VIEW_ITEM::ViewBBox() const
+{
+    BOX2I bbox;
+
+    if( m_pageInfo )
+    {
+        bbox.SetOrigin( VECTOR2I( 0, 0 ) );
+        bbox.SetEnd( VECTOR2I( m_iuScale.MilsToIU( m_pageInfo->GetWidthMils() ),
+                               m_iuScale.MilsToIU( m_pageInfo->GetHeightMils() ) ) );
+    }
+    else
+    {
+        bbox.SetMaximum();
+    }
+
+    return bbox;
+}
+
+
+void DS_PROXY_VIEW_ITEM::buildDrawList( VIEW* aView,
+                                        const std::map<wxString, wxString>* aProperties,
+                                        DS_DRAW_ITEM_LIST* aDrawList ) const
+{
+    RENDER_SETTINGS* settings = aView->GetPainter()->GetSettings();
+    wxString         fileName( m_fileName.c_str(), wxConvUTF8 );
+    wxString         sheetName( m_sheetName.c_str(), wxConvUTF8 );
+    wxString         sheetPath( m_sheetPath.c_str(), wxConvUTF8 );
+    wxString         variantName( m_variantName.c_str(), wxConvUTF8 );
+    wxString         variantDesc( m_variantDesc.c_str(), wxConvUTF8 );
+
+    aDrawList->SetDefaultPenSize( (int) settings->GetDrawingSheetLineWidth() );
+    aDrawList->SetIsFirstPage( m_isFirstPage );
+    aDrawList->SetPageNumber( m_pageNumber );
+    aDrawList->SetSheetCount( m_sheetCount );
+    aDrawList->SetFileName( fileName );
+    aDrawList->SetSheetName( sheetName );
+    aDrawList->SetSheetPath( sheetPath );
+    aDrawList->SetSheetLayer( settings->GetLayerName() );
+    aDrawList->SetVariantName( variantName );
+    aDrawList->SetVariantDesc( variantDesc );
+    aDrawList->SetProject( m_project );
+    aDrawList->SetProperties( aProperties );
+
+    aDrawList->BuildDrawItemsList( *m_pageInfo, *m_titleBlock );
+}
+
+
+void DS_PROXY_VIEW_ITEM::ViewDraw( int aLayer, VIEW* aView ) const
+{
+    GAL*              gal = aView->GetGAL();
+    RENDER_SETTINGS*  settings = aView->GetPainter()->GetSettings();
+    DS_DRAW_ITEM_LIST drawList( m_iuScale );
+
+    buildDrawList( aView, m_properties, &drawList );
+
+    BOX2I viewport = BOX2ISafe( aView->GetViewport() );
+
+    // Draw the title block normally even if the view is flipped
+    bool flipped = gal->IsFlippedX();
+
+    if( flipped )
+    {
+        int pageWidth = m_iuScale.MilsToIU( m_pageInfo->GetWidthMils() );
+
+        gal->Save();
+        gal->Translate( VECTOR2D( pageWidth, 0 ) );
+        gal->Scale( VECTOR2D( -1.0, 1.0 ) );
+
+        int right = pageWidth - viewport.GetLeft();
+        int left = right - viewport.GetWidth();
+        viewport.SetOrigin( left, viewport.GetTop() );
+    }
+
+    if( !m_painter || m_painterGal != gal )
+    {
+        m_painter = std::make_unique<DS_PAINTER>( gal );
+        m_painterGal = gal;
+    }
+
+    DS_PAINTER& ws_painter = *m_painter;
+    auto        ws_settings = static_cast<DS_RENDER_SETTINGS*>( ws_painter.GetSettings() );
+
+    // Colors and font follow the theme, so they are cheap to set on every draw
+    ws_settings->SetNormalColor( settings->GetLayerColor( m_colorLayer ) );
+    ws_settings->SetSelectedColor( settings->GetLayerColor( LAYER_SELECT_OVERLAY ) );
+    ws_settings->SetBrightenedColor( settings->GetLayerColor( LAYER_BRIGHTENED ) );
+    ws_settings->SetPageBorderColor( settings->GetLayerColor( m_pageBorderColorLayer ) );
+    ws_settings->SetDefaultFont( settings->GetDefaultFont() );
+
+    // A retained scene keeps the sheet across pans, so it must hold all of it
+    const bool wholeSheet = gal->HasRetainedScene();
+
+    // Draw all the components that make the drawing sheet
+    for( DS_DRAW_ITEM_BASE* item = drawList.GetFirst(); item; item = drawList.GetNext() )
+    {
+        if( wholeSheet || viewport.Intersects( item->GetApproxBBox() ) )
+            ws_painter.Draw( item, LAYER_DRAWINGSHEET );
+    }
+
+    // Draw gray line that outlines the sheet size
+    if( settings->GetShowPageLimits() )
+        ws_painter.DrawBorder( m_pageInfo, m_iuScale.IU_PER_MILS );
+
+    if( flipped )
+        gal->Restore();
+}
+
+
+std::vector<int> DS_PROXY_VIEW_ITEM::ViewGetLayers() const
+{
+    std::vector<int> layer{ LAYER_DRAWINGSHEET };
+    return layer;
+}
+
+
+std::vector<TEXT_VAR_REF_KEY> DS_PROXY_VIEW_ITEM::CollectTextVarKeys() const
+{
+    // Scan the drawing-sheet *template* data model, not the resolved draw
+    // list: SyncDrawItems expands `${...}` against the current title block
+    // before populating DS_DRAW_ITEM_TEXT, so the references are lost by the
+    // time we'd see draw items. The template's m_TextBase preserves them.
+    std::vector<TEXT_VAR_REF_KEY> keys;
+
+    for( DS_DATA_ITEM* item : DS_DATA_MODEL::GetTheInstance().GetItems() )
+    {
+        if( item->GetType() != DS_DATA_ITEM::DS_TEXT )
+            continue;
+
+        const DS_DATA_ITEM_TEXT* textItem = static_cast<const DS_DATA_ITEM_TEXT*>( item );
+        std::vector<TEXT_VAR_REF_KEY> itemKeys = ExtractTextVarReferences( textItem->m_TextBase );
+
+        for( const TEXT_VAR_REF_KEY& ref : itemKeys )
+        {
+            if( ref.IsTrackable() )
+                keys.push_back( ref );
+        }
+    }
+
+    // De-duplicate — the same ${REVISION} reference may appear on multiple
+    // draw items; a single registration per unique key is enough.
+    std::sort( keys.begin(), keys.end(),
+               []( const TEXT_VAR_REF_KEY& a, const TEXT_VAR_REF_KEY& b )
+               {
+                   if( a.kind != b.kind )
+                       return static_cast<int>( a.kind ) < static_cast<int>( b.kind );
+
+                   if( a.primary != b.primary )
+                       return a.primary < b.primary;
+
+                   return a.secondary < b.secondary;
+               } );
+
+    keys.erase( std::unique( keys.begin(), keys.end() ), keys.end() );
+
+    return keys;
+}
+
+
+void DS_PROXY_VIEW_ITEM::AttachToTracker( TEXT_VAR_TRACKER* aTracker )
+{
+    // Detach path: unregister from any previously attached tracker.
+    if( !aTracker )
+    {
+        if( m_attachedTracker )
+            m_attachedTracker->UnregisterItem( this );
+
+        m_attachedTracker = nullptr;
+        return;
+    }
+
+    // Re-attach to a different tracker: unregister from the old one first.
+    if( m_attachedTracker && m_attachedTracker != aTracker )
+        m_attachedTracker->UnregisterItem( this );
+
+    m_attachedTracker = aTracker;
+    aTracker->RegisterItem( this, CollectTextVarKeys() );
+}
+
+
+DS_PROXY_VIEW_ITEM::~DS_PROXY_VIEW_ITEM()
+{
+    if( m_attachedTracker )
+        m_attachedTracker->UnregisterItem( this );
+}
+
+
+bool DS_PROXY_VIEW_ITEM::HitTestDrawingSheetItems( VIEW* aView, const VECTOR2I& aPosition )
+{
+    int               accuracy = (int) aView->ToWorld( 5.0 );   // five pixels at current zoom
+    DS_DRAW_ITEM_LIST drawList( m_iuScale );
+
+    buildDrawList( aView, m_properties, &drawList );
+
+    for( DS_DRAW_ITEM_BASE* item = drawList.GetFirst(); item; item = drawList.GetNext() )
+    {
+        if( item->HitTest( aPosition, accuracy ) )
+            return true;
+    }
+
+    return false;
+}

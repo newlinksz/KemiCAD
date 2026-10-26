@@ -1,0 +1,374 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2024 KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "drc_re_rule_saver.h"
+
+#include <board.h>
+#include <kiplatform/io.h>
+#include <lset.h>
+#include <string_utils.h>
+
+#include <drc_rules_lexer.h>
+
+#include "drc_re_base_constraint_data.h"
+#include "drc_rule_editor_enums.h"
+
+
+namespace
+{
+
+wxString formatLayerClause( const wxString& aLayerSource )
+{
+    if( aLayerSource.IsEmpty() )
+        return wxEmptyString;
+
+    if( aLayerSource == DRC_RULES_LEXER::TokenName( DRCRULE_T::T_outer )
+        || aLayerSource == DRC_RULES_LEXER::TokenName( DRCRULE_T::T_inner ) )
+        return wxString::Format( wxS( "(layer %s)" ), aLayerSource );
+
+    return wxString::Format( wxS( "(layer \"%s\")" ), EscapeString( aLayerSource, CTX_QUOTED_STR ) );
+}
+
+}
+
+
+DRC_RULE_SAVER::DRC_RULE_SAVER()
+{
+}
+
+
+bool DRC_RULE_SAVER::SaveFile( const wxString&                               aPath,
+                                const std::vector<DRC_RE_LOADED_PANEL_ENTRY>& aEntries,
+                                const BOARD*                                  aBoard,
+                                const DRC_RE_FILE_TRIVIA&                     aTrivia )
+{
+    wxString    content = GenerateRulesText( aEntries, aBoard, aTrivia );
+    std::string utf8 = std::string( content.mb_str( wxConvUTF8 ) );
+
+    return KIPLATFORM::IO::AtomicWriteFile( aPath, utf8.data(), utf8.size() );
+}
+
+
+wxString DRC_RULE_SAVER::GenerateRulesText( const std::vector<DRC_RE_LOADED_PANEL_ENTRY>& aEntries,
+                                             const BOARD*                                  aBoard,
+                                             const DRC_RE_FILE_TRIVIA&                     aTrivia )
+{
+    wxString result = aTrivia.header;
+
+    if( result.IsEmpty() )
+        result = wxS( "(version 2)" );
+
+    // Group entries by (sourceRule, ruleName, condition, layerSource) for merging same-rule constraints.
+    // Including the layer source prevents rules with different layer scopes from being
+    // incorrectly merged (e.g. separate "outer" and "inner" rules must remain distinct).
+    using GroupKey = std::tuple<int, wxString, wxString, wxString>;
+
+    std::vector<std::pair<GroupKey, std::vector<const DRC_RE_LOADED_PANEL_ENTRY*>>>
+            groupedEntries;
+    std::map<GroupKey, size_t> groupIndex;
+
+    for( const DRC_RE_LOADED_PANEL_ENTRY& entry : aEntries )
+    {
+        auto key = std::make_tuple( entry.sourceRule, entry.ruleName, entry.condition, entry.layerSource );
+        auto it = groupIndex.find( key );
+
+        if( it == groupIndex.end() )
+        {
+            groupIndex[key] = groupedEntries.size();
+            groupedEntries.push_back( { key, { &entry } } );
+        }
+        else
+        {
+            groupedEntries[it->second].second.push_back( &entry );
+        }
+    }
+
+    size_t nextTrivia = 0;
+
+    // Generate rule text for each group
+    for( const auto& [key, entries] : groupedEntries )
+    {
+        wxString ruleText;
+
+        if( entries.size() == 1 )
+        {
+            // Single entry, no merge needed
+            ruleText = generateRuleText( *entries[0], aBoard );
+        }
+        else
+        {
+            // Multiple entries with same name/condition need merging
+            ruleText = generateMergedRuleText( entries, aBoard );
+        }
+
+        if( ruleText.IsEmpty() )
+            continue;
+
+        // Comments of deleted rules are kept, and a file rule split by an edit emits its own only once
+        int source = entries[0]->sourceRule;
+
+        if( source >= 0 && static_cast<size_t>( source ) >= nextTrivia
+            && static_cast<size_t>( source ) < aTrivia.leadingTrivia.size() )
+        {
+            while( nextTrivia <= static_cast<size_t>( source ) )
+                result += aTrivia.leadingTrivia[nextTrivia++];
+        }
+        else
+        {
+            result += wxS( "\n" );
+        }
+
+        result += ruleText;
+    }
+
+    while( nextTrivia < aTrivia.leadingTrivia.size() )
+        result += aTrivia.leadingTrivia[nextTrivia++];
+
+    if( aTrivia.header.IsEmpty() )
+        result += wxS( "\n" );
+    else
+        result += aTrivia.trailer;
+
+    return result;
+}
+
+
+wxString DRC_RULE_SAVER::generateRuleText( const DRC_RE_LOADED_PANEL_ENTRY& aEntry,
+                                            const BOARD*                     aBoard )
+{
+    // Round-trip preservation: return original text if not edited. A rule that was split
+    // into several entries must be regenerated once any of them is gone.
+    if( !aEntry.wasEdited && !aEntry.originalRuleText.IsEmpty() && aEntry.originalEntryCount == 1 )
+        return aEntry.originalRuleText;
+
+    // Otherwise, regenerate from panel data
+    if( !aEntry.constraintData )
+        return wxEmptyString;
+
+    wxString ruleText = aEntry.constraintData->GetGeneratedRule();
+
+    if( ruleText.IsEmpty() || aEntry.panelType == SILK_TO_SOLDERMASK_CLEARANCE
+        || aEntry.panelType == SILK_TO_SILK_CLEARANCE )
+    {
+        RULE_GENERATION_CONTEXT ctx;
+        ctx.ruleName = aEntry.ruleName;
+        ctx.conditionExpression = aEntry.condition;
+        ctx.constraintCode = aEntry.constraintData->GetConstraintCode();
+        ctx.comment = aEntry.constraintData->GetComment();
+
+        if( aEntry.panelType == SILK_TO_SOLDERMASK_CLEARANCE )
+        {
+            wxString silkCond;
+
+            if( aEntry.layerCondition.test( F_SilkS ) && !aEntry.layerCondition.test( B_SilkS ) )
+                silkCond = wxS( "L == 'F.Mask'" );
+            else if( aEntry.layerCondition.test( B_SilkS ) && !aEntry.layerCondition.test( F_SilkS ) )
+                silkCond = wxS( "L == 'B.Mask'" );
+            else
+                silkCond = wxS( "L == 'F.Mask' || L == 'B.Mask'" );
+
+            if( !ctx.conditionExpression.IsEmpty() )
+                ctx.conditionExpression = wxS( "(" ) + silkCond + wxS( ") && " ) + ctx.conditionExpression;
+            else
+                ctx.conditionExpression = silkCond;
+        }
+        else if( aEntry.panelType == SILK_TO_SILK_CLEARANCE )
+        {
+            wxString silkCond;
+
+            if( aEntry.layerCondition.test( F_SilkS ) && !aEntry.layerCondition.test( B_SilkS ) )
+                silkCond = wxS( "L == 'F.SilkS'" );
+            else if( aEntry.layerCondition.test( B_SilkS ) && !aEntry.layerCondition.test( F_SilkS ) )
+                silkCond = wxS( "L == 'B.SilkS'" );
+            else
+                silkCond = wxS( "L == 'F.SilkS' || L == 'B.SilkS'" );
+
+            if( !ctx.conditionExpression.IsEmpty() )
+                ctx.conditionExpression = wxS( "(" ) + silkCond + wxS( ") && " ) + ctx.conditionExpression;
+            else
+                ctx.conditionExpression = silkCond;
+        }
+        else if( aBoard )
+        {
+            if( !aEntry.layerSource.IsEmpty() )
+                ctx.layerClause = formatLayerClause( aEntry.layerSource );
+            else
+                ctx.layerClause = generateLayerClause( aEntry.layerCondition );
+        }
+
+        ruleText = aEntry.constraintData->GenerateRule( ctx );
+    }
+
+    // If severity is specified and not default, we need to inject it
+    // The GenerateRule method should handle this, but we verify here
+    if( aEntry.severity != RPT_SEVERITY_UNDEFINED && aEntry.severity != RPT_SEVERITY_ERROR )
+    {
+        wxString severityClause = generateSeverityClause( aEntry.severity );
+
+        if( !severityClause.IsEmpty() && !ruleText.Contains( "(severity" ) )
+        {
+            // Insert severity clause before the closing paren
+            size_t lastParen = ruleText.rfind( ')' );
+
+            if( lastParen != wxString::npos )
+            {
+                ruleText = ruleText.Left( lastParen ) + "\n\t" + severityClause + ")";
+            }
+        }
+    }
+
+    return ruleText;
+}
+
+
+wxString DRC_RULE_SAVER::generateLayerClause( const LSET& aLayers )
+{
+    // The parser gives a rule without a layer clause every layer
+    if( !aLayers.any() || aLayers == LSET::AllLayersMask() )
+        return wxEmptyString;
+
+    if( ( aLayers & LSET::AllCuMask() ) == LSET::ExternalCuMask() )
+        return wxString::Format( wxS( "(layer %s)" ), DRC_RULES_LEXER::TokenName( DRCRULE_T::T_outer ) );
+
+    if( ( aLayers & LSET::AllCuMask() ) == LSET::InternalCuMask() )
+        return wxString::Format( wxS( "(layer %s)" ), DRC_RULES_LEXER::TokenName( DRCRULE_T::T_inner ) );
+
+    // The parser only accepts a single layer name, and a user name only where the board registered
+    // it, so emit the canonical name of the first layer. Multi-layer sets use outer or inner above
+    for( PCB_LAYER_ID layer : aLayers.Seq() )
+        return wxString::Format( wxS( "(layer \"%s\")" ), LSET::Name( layer ) );
+
+    return wxEmptyString;
+}
+
+
+wxString DRC_RULE_SAVER::generateSeverityClause( SEVERITY aSeverity )
+{
+    switch( aSeverity )
+    {
+    case RPT_SEVERITY_IGNORE:    return "(severity ignore)";
+    case RPT_SEVERITY_WARNING:   return "(severity warning)";
+    case RPT_SEVERITY_ERROR:     return "(severity error)";
+    case RPT_SEVERITY_EXCLUSION: return "(severity exclusion)";
+    default:                     return wxEmptyString;
+    }
+}
+
+
+wxString DRC_RULE_SAVER::generateMergedRuleText(
+        const std::vector<const DRC_RE_LOADED_PANEL_ENTRY*>& aEntries,
+        const BOARD*                                         aBoard )
+{
+    if( aEntries.empty() )
+        return wxEmptyString;
+
+    // Check if all entries are unedited and the first one has original text
+    // If so, we can use round-trip preservation
+    bool allUnedited = true;
+
+    for( const auto* entry : aEntries )
+    {
+        if( entry->wasEdited )
+        {
+            allUnedited = false;
+            break;
+        }
+    }
+
+    if( allUnedited && !aEntries[0]->originalRuleText.IsEmpty()
+        && static_cast<int>( aEntries.size() ) == aEntries[0]->originalEntryCount )
+    {
+        return aEntries[0]->originalRuleText;
+    }
+
+    // Otherwise, merge constraint clauses from all entries
+    const DRC_RE_LOADED_PANEL_ENTRY* firstEntry = aEntries[0];
+
+    RULE_GENERATION_CONTEXT ctx;
+    ctx.ruleName = firstEntry->ruleName;
+    ctx.conditionExpression = firstEntry->condition;
+
+    // Generate layer clause from first entry with layer info (all entries in a
+    // merged group share the same layerSource because it's part of the grouping key)
+    for( const auto* entry : aEntries )
+    {
+        if( entry->layerCondition.any() && aBoard )
+        {
+            if( !entry->layerSource.IsEmpty() )
+                ctx.layerClause = formatLayerClause( entry->layerSource );
+            else
+                ctx.layerClause = generateLayerClause( entry->layerCondition );
+
+            break;
+        }
+    }
+
+    // Collect all constraint clauses from all entries
+    std::vector<wxString> allClauses;
+
+    for( const auto* entry : aEntries )
+    {
+        if( entry->constraintData )
+        {
+            RULE_GENERATION_CONTEXT entryCtx;
+            entryCtx.ruleName = entry->ruleName;
+            entryCtx.conditionExpression = entry->condition;
+            entryCtx.constraintCode = entry->constraintData->GetConstraintCode();
+
+            auto clauses = entry->constraintData->GetConstraintClauses( entryCtx );
+
+            for( const wxString& clause : clauses )
+            {
+                if( !clause.IsEmpty() )
+                    allClauses.push_back( clause );
+            }
+        }
+    }
+
+    // Build the merged rule
+    wxString rule;
+    rule << wxS( "(rule " ) << DRC_RE_BASE_CONSTRAINT_DATA::formatRuleName( ctx.ruleName )
+         << wxS( "\n" );
+
+    if( !ctx.layerClause.IsEmpty() )
+        rule << wxS( "\t" ) << ctx.layerClause << wxS( "\n" );
+
+    for( const wxString& clause : allClauses )
+        rule << wxS( "\t" ) << clause << wxS( "\n" );
+
+    if( !ctx.conditionExpression.IsEmpty() )
+    {
+        rule << wxS( "\t(condition \"" )
+             << EscapeString( ctx.conditionExpression, CTX_QUOTED_STR ) << wxS( "\")\n" );
+    }
+
+    // Add severity if any entry has non-default severity
+    for( const auto* entry : aEntries )
+    {
+        if( entry->severity != RPT_SEVERITY_UNDEFINED && entry->severity != RPT_SEVERITY_ERROR )
+        {
+            rule << wxS( "\t" ) << generateSeverityClause( entry->severity ) << wxS( "\n" );
+            break;
+        }
+    }
+
+    rule << wxS( ")" );
+
+    return rule;
+}

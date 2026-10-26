@@ -1,0 +1,126 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef ALTIUM_PROJECT_VARIANTS_H
+#define ALTIUM_PROJECT_VARIANTS_H
+
+#include <map>
+#include <vector>
+#include <wx/string.h>
+
+#include <kiid.h>
+
+class PROJECT;
+
+/**
+ * A single component variation within an Altium project variant.
+ *
+ * In Altium, each variant can override individual components. Kind=1 means
+ * "Not Fitted" (DNP), Kind=0 means "Alternate" with optional field overrides
+ * supplied via the AlternatePart string.
+ */
+struct ALTIUM_VARIANT_ENTRY
+{
+    wxString                         designator;
+
+    // Component's own unique id (final segment of the Altium path); the value used for matching.
+    wxString                         uniqueId;
+
+    int                              kind = 0;
+    std::map<wxString, wxString>     alternateFields;
+};
+
+
+/**
+ * A project-level assembly variant parsed from an Altium .PrjPcb file.
+ *
+ * Each [ProjectVariantN] section in the .PrjPcb becomes one of these.
+ */
+struct ALTIUM_PROJECT_VARIANT
+{
+    wxString                                 name;
+    wxString                                 description;
+    std::vector<ALTIUM_VARIANT_ENTRY>        variations;
+};
+
+
+/**
+ * Parse a single pipe-delimited Altium "Variation" string into its component entry.
+ *
+ * Exposed for unit testing; consumers normally obtain entries via ParseAltiumProjectVariants().
+ */
+ALTIUM_VARIANT_ENTRY ParseVariationString( const wxString& aValue );
+
+
+/**
+ * Parse all [ProjectVariantN] sections from an Altium .PrjPcb project file.
+ *
+ * @param aPrjPcbPath Full path to the .PrjPcb file.
+ * @return Vector of project variants with their per-component entries.
+ */
+std::vector<ALTIUM_PROJECT_VARIANT> ParseAltiumProjectVariants( const wxString& aPrjPcbPath );
+
+
+/**
+ * Parse all [ParameterN] sections from an Altium .PrjPcb project file.
+ *
+ * Altium stores project-wide special strings (PCB_Revision, Company_Name, ...) here as
+ * Name/Value pairs. They are what board text such as ".PCB_Revision" resolves against, so
+ * they map to KiCad project text variables.
+ *
+ * @param aPrjPcbPath Full path to the .PrjPcb file.
+ * @return Map of upper-cased parameter name to value, matching the case-insensitive variable
+ *         references emitted by AltiumPcbSpecialStringsToKiCadStrings.
+ */
+std::map<wxString, wxString> ParseAltiumProjectParameters( const wxString& aPrjPcbPath );
+
+
+/**
+ * Read the project's Power Port Names Take Priority netlist option.
+ *
+ * Off, Altium's default, a net label names a net ahead of a power port on it.
+ *
+ * @param aPrjPcbPath Full path to the .PrjPcb file.
+ */
+bool AltiumPowerPortNamesTakePriority( const wxString& aPrjPcbPath );
+
+
+/**
+ * Register Altium project parameters as KiCad project text variables so that imported board
+ * text referencing special strings (e.g. ".PCB_Revision") resolves to its value.
+ *
+ * Existing project variables are not overwritten, and names that collide with KiCad's reserved
+ * or contextually resolved variables are skipped to preserve native resolution.
+ */
+void ApplyAltiumProjectParametersToProject( PROJECT* aProject,
+                                            const std::map<wxString, wxString>& aParameters );
+
+
+/**
+ * Derive a stable KIID from an Altium component unique id.
+ *
+ * Altium unique ids are not hexadecimal, so KIID's string constructor cannot parse them and
+ * returns a fresh random uuid each call. This maps equal id strings to equal KIIDs.
+ *
+ * @param aUniqueId Altium component unique id.
+ * @return A KIID that is identical for identical input strings.
+ */
+KIID AltiumUniqueIdToKiid( const wxString& aUniqueId );
+
+#endif // ALTIUM_PROJECT_VARIANTS_H

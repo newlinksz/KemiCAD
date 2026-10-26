@@ -1,0 +1,96 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2012 SoftPLC Corporation, Dick Hollenbeck <dick@softplc.com>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+
+#include <config.h>
+#include <cstdint>
+#include <string>
+#include <sstream>
+#include <core/profile.h>
+
+#if defined( _WIN32 )
+
+#include <windows.h>
+
+int64_t GetRunningMicroSecs()
+{
+    FILETIME now;
+
+    GetSystemTimeAsFileTime( &now );
+    uint64_t t = ( UINT64( now.dwHighDateTime ) << 32 ) + now.dwLowDateTime;
+    t /= 10;
+
+    return int64_t( t );
+}
+
+#elif defined( HAVE_CLOCK_GETTIME )
+
+#include <ctime>
+
+int64_t GetRunningMicroSecs()
+{
+    struct timespec now;
+
+    clock_gettime( CLOCK_MONOTONIC, &now );
+
+    int64_t usecs = (int64_t) now.tv_sec * 1000000 + now.tv_nsec / 1000;
+    //    unsigned msecs = (now.tv_nsec / (1000*1000)) + now.tv_sec * 1000;
+
+    return usecs;
+}
+
+
+#elif defined( HAVE_GETTIMEOFDAY_FUNC )
+
+#include <sys/time.h>
+int64_t GetRunningMicroSecs()
+{
+    timeval tv;
+
+    gettimeofday( &tv, 0 );
+
+    return (int64_t) tv.tv_sec * 1000000 + tv.tv_usec;
+}
+
+#endif
+
+
+std::string LATENCY_PROBE::to_string() 
+{
+    std::stringstream ss;
+    TIME_POINT prev = m_start;
+    ss << "Probe stats for" << m_name << std::endl;
+    for (auto cp : m_checkpoints)
+    {
+        if( cp.isTimer )
+            ss << "tmr: " << std::left << std::setw(30) << cp.name << std::fixed << std::setprecision(3) << cp.timerDelta << std::endl;
+        else
+        {
+            ss << "chp: "<< std::left << std::setw(30) << cp.name;
+            ss << "since last : " << std::fixed << std::setprecision(3) << delta_ms( cp.timestamp, prev ) << " ";
+            ss << "accumulated: " << std::fixed << std::setprecision(3) << delta_ms( cp.timestamp, m_start ) << std::endl;
+
+            prev = cp.timestamp;
+        }
+    }
+
+    return ss.str();
+}
+

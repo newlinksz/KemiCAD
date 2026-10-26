@@ -1,0 +1,485 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#define BOOST_NO_AUTO_PTR
+
+#include <boost/test/unit_test.hpp>
+
+#include <qa_utils/wx_utils/wx_assert.h>
+
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <set>
+#include <vector>
+
+#include <wx/gdicmn.h>
+#include <wx/log.h>
+#include <wx/string.h>
+
+#include <wx_log_utils.h>
+
+
+template<class T>
+struct PRINTABLE_OPT
+{
+    PRINTABLE_OPT( const std::optional<T>& aOpt ) : m_Opt( aOpt ){};
+    PRINTABLE_OPT( const T& aVal ) : m_Opt( aVal ){};
+
+    std::optional<T> m_Opt;
+};
+
+
+/**
+ * Work around to allow printing std::optional types
+ */
+#define KI_CHECK_OPT_EQUAL( lhs, rhs )                                                            \
+    BOOST_CHECK_EQUAL( PRINTABLE_OPT( lhs ), PRINTABLE_OPT( rhs ) )
+
+
+template <class T>
+inline std::ostream& operator<<( std::ostream& aOs, const PRINTABLE_OPT<T>& aOptional )
+{
+    if( aOptional.m_Opt.has_value() )
+        aOs << *aOptional.m_Opt;
+    else
+        aOs << "nullopt";
+
+    return aOs;
+}
+
+
+template <class L, class R>
+inline bool operator==( const PRINTABLE_OPT<L>& aLhs, const PRINTABLE_OPT<R>& aRhs )
+{
+    if( !aLhs.m_Opt.has_value() && !aRhs.m_Opt.has_value() )
+        return true; // both nullopt
+
+    return aLhs.m_Opt.has_value() && aRhs.m_Opt.has_value() && *aLhs.m_Opt == *aRhs.m_Opt;
+}
+
+
+template <class L, class R>
+inline bool operator!=( const PRINTABLE_OPT<L>& aLhs, const PRINTABLE_OPT<R>& aRhs )
+{
+    return !( aLhs == aRhs );
+}
+
+
+// boost_test_print_type has to be in the same namespace as the printed type
+namespace std
+{
+
+/**
+ * Boost print helper for generic vectors
+ */
+template <typename T>
+std::ostream& boost_test_print_type( std::ostream& os, std::vector<T> const& aVec )
+{
+    os << "std::vector size " << aVec.size() << " [";
+
+    for( const auto& i : aVec )
+    {
+        os << "\n    " << i;
+    }
+
+    os << "]";
+    return os;
+}
+
+/**
+ * Boost print helper for generic maps
+ */
+template <typename K, typename V>
+std::ostream& boost_test_print_type( std::ostream& os, std::map<K, V> const& aMap )
+{
+    os << "std::map size " << aMap.size() << " [";
+
+    for( const auto& [key, value] : aMap )
+    {
+        os << "\n    " << key << " = " << value;
+    }
+
+    os << "]";
+    return os;
+}
+
+/**
+ * Boost print helper for generic pairs
+ */
+template <typename K, typename V>
+std::ostream& boost_test_print_type( std::ostream& os, std::pair<K, V> const& aPair )
+{
+    os << "[" << aPair.first << ", " << aPair.second << "]";
+    return os;
+}
+
+/**
+ * Boost print helper for generic sets
+ */
+template <typename T>
+std::ostream& boost_test_print_type( std::ostream& os, std::set<T> const& aSet )
+{
+    os << "set size " << aSet.size() << " [";
+    for( const auto& i : aSet )
+    {
+        os << "\n    " << i;
+    }
+
+    os << "]";
+    return os;
+}
+
+} // namespace std
+
+
+//-----------------------------------------------------------------------------+
+// Boost.Test printing helpers for wx types / wide string literals
+//-----------------------------------------------------------------------------+
+
+// C++20 removed operator<<(ostream&, const wchar_t*) (P1423R3), which breaks wxString streaming
+// via implicit wchar_t* conversion in Boost.Test's lazy_ostream (used by BOOST_TEST_CONTEXT,
+// BOOST_TEST_MESSAGE, BOOST_CHECK_MESSAGE, and BOOST_FAIL).
+inline std::ostream& boost_test_print_type( std::ostream& os, const wxString& v )
+{
+#if wxUSE_UNICODE
+    os << v.ToUTF8().data();
+#else
+    os << v.c_str();
+#endif
+    return os;
+}
+
+
+// Wide string literal arrays
+template <std::size_t N>
+std::ostream& boost_test_print_type( std::ostream& os, const wchar_t ( &ws )[N] )
+{
+    wxString tmp( ws );
+#if wxUSE_UNICODE
+    os << tmp.ToUTF8().data();
+#else
+    os << tmp;
+#endif
+    return os;
+}
+
+
+namespace boost { namespace unit_test
+{
+/**
+ * wxString looks like a container to Boost.Test because it has begin()/end().
+ *
+ * But we actually want to treat it NOT like a container so that it prints the
+ * value in constructions like BOOST_TEST( strA == strB )
+ */
+template<> struct is_forward_iterable<wxString> : public mpl::false_ {};
+
+}} // namespace boost::unit_test
+
+
+namespace boost { namespace test_tools { namespace tt_detail {
+
+template<std::size_t N>
+struct print_log_value<wchar_t[ N ]>
+{
+    void operator()( std::ostream& os, const wchar_t (&ws)[ N ] )
+    {
+        wxString tmp( ws );
+#if wxUSE_UNICODE
+        os << tmp.ToUTF8().data();
+#else
+        os << tmp;
+#endif
+    }
+};
+
+}}} // namespace boost::test_tools::tt_detail
+
+
+/**
+ * Boost print helper for wxPoint. Note operator\<\< for this type doesn't
+ * exist in non-DEBUG builds.
+ */
+std::ostream& boost_test_print_type( std::ostream& os, wxPoint const& aVec );
+
+namespace KI_TEST
+{
+
+template <typename EXP_CONT> using EXP_OBJ = typename EXP_CONT::value_type;
+template <typename FOUND_CONT> using FOUND_OBJ = typename FOUND_CONT::value_type;
+
+/**
+ * A match predicate: check that a "found" object is equivalent to or represents
+ * an "expected" object, perhaps of a different type.
+ *
+ * Exactly what "equivalent to" means depends heavily on the context and what
+ * is care about. For example, if you only care about a #FOOTPRINT's refdes,
+ * std::string is sufficient to indicate a "match".
+ *
+ * This can be used, for example, for checking a set of results without having
+ * to instantiate a full result object for checking by equality.
+ *
+ * @tparam EXP_OBJ      the "expected" object type
+ * @tparam FOUND_OBJ    the "found" object type
+ *
+ * @return true if the "found" object represents the "expected" object
+ */
+template <typename EXP_OBJ, typename FOUND_OBJ>
+using MATCH_PRED = std::function<bool( const EXP_OBJ&, const FOUND_OBJ& )>;
+
+/**
+ * Check that a container of "found" objects matches a container of "expected"
+ * objects. This means that:
+ *
+ * * Every "expected" object is "found"
+ * * Every "found" object is "expected"
+ *
+ * This is a very generic function: all you need are two containers of any type
+ * and a function to check if a given "found" object corresponds to a given
+ * "expected object". Conditions:
+ *
+ * * The expected object type needs `operator\<\<` (for logging)
+ * * The expected object container does not contain multiple references to the
+ *   same object.
+ * * Identical values are also can't be present as the predicate can't tell which
+ *   one to match up.
+ *
+ * Not needed:
+ *
+ * * Equality or ordering operators
+ *
+ * This is a slightly more complex way of doing it that, say, sorting both
+ * lists and checking element-by-element matches. However, it can tell you
+ * exactly which objects are problematic, as well as a simple go/no-go.
+ *
+ * When you have two containers of identical types (or you have a suitable
+ * `operator==`) and ordering is important, you can use `BOOST_CHECK_EQUAL_COLLECTIONS`
+ *
+ * @param aExpected  a container of "expected" items, usually from a test case
+ * @param aFound     a container of "found" items, usually the result of some routine under test
+ * @param aMatchPredicate a predicate that determines if a given "found" object
+ *                        matches a given "expected" object.
+ */
+template <typename EXP_CONT, typename FOUND_CONT, typename MATCH_PRED>
+void CheckUnorderedMatches( const EXP_CONT& aExpected, const FOUND_CONT& aFound,
+                            MATCH_PRED aMatchPredicate )
+{
+    using EXP_OBJ = typename EXP_CONT::value_type;
+
+    // set of object we've already found
+    std::set<const EXP_OBJ*> matched;
+
+    // fill the set of object that match
+    for( const auto& found : aFound )
+    {
+        for( const auto& expected : aExpected )
+        {
+            if( aMatchPredicate( expected, found ) )
+            {
+                matched.insert( &expected );
+                break;
+            }
+        }
+    }
+
+    // first check every expected object was "found"
+    for( const EXP_OBJ& exp : aExpected )
+    {
+        BOOST_CHECK_MESSAGE( matched.count( &exp ) > 0, "Expected item was not found. Expected: \n"
+                                                                << exp );
+    }
+
+    // check every "found" object was expected
+    for( const EXP_OBJ* found : matched )
+    {
+        const bool was_expected = std::find_if( aExpected.begin(), aExpected.end(),
+                [found]( const EXP_OBJ& aObj )
+                {
+                    return &aObj == found;
+                } ) != aExpected.end();
+
+        BOOST_CHECK_MESSAGE( was_expected, "Found item was not expected. Found: \n" << *found );
+    }
+}
+
+
+/**
+ * Predicate to check a collection has no duplicate elements
+ */
+template <typename T>
+bool CollectionHasNoDuplicates( const T& aCollection )
+{
+    T sorted = aCollection;
+    std::sort( sorted.begin(), sorted.end() );
+
+    return std::adjacent_find( sorted.begin(), sorted.end() ) == sorted.end();
+}
+
+
+/**
+ * A named data-driven test case.
+ *
+ * Inherit from this class to provide a printable name for a data-driven test case.
+ * (you can also not use this class and provide your own name printer).
+ */
+struct NAMED_CASE
+{
+    std::string m_CaseName;
+
+    friend std::ostream& operator<<( std::ostream& os, const NAMED_CASE& aCase )
+    {
+        os << aCase.m_CaseName;
+        return os;
+    }
+};
+
+
+/**
+ * A test macro to check a wxASSERT is thrown.
+ *
+ * wxCHECK/wxASSERT only fire when wxDEBUG_LEVEL \> 0, so the macro must key off
+ * that rather than KiCad's own DEBUG define. QABUILD defines neither DEBUG nor
+ * NDEBUG but is still built against a wxWidgets with assertions enabled, so the
+ * previous \#ifdef DEBUG gate silently skipped checks in that configuration.
+ */
+#if wxDEBUG_LEVEL > 0
+#define CHECK_WX_ASSERT( STATEMENT ) BOOST_CHECK_THROW( STATEMENT, KI_TEST::WX_ASSERT_ERROR );
+#else
+#define CHECK_WX_ASSERT( STATEMENT )
+#endif
+
+
+/**
+ * Counts error-level records so a failed save can be checked for reports beyond the one it
+ * throws. Warnings are ignored; only errors reach the user as a dialog.
+ */
+class COUNTING_WXLOG : public wxLog
+{
+public:
+    COUNTING_WXLOG( wxLogLevelValues aMaxLevel ) :
+            m_maxLevel( aMaxLevel )
+    {
+    }
+
+    unsigned GetCount() const { return m_count; }
+
+protected:
+    void DoLogRecord( wxLogLevel aLevel, const wxString&, const wxLogRecordInfo& ) override
+    {
+        if( aLevel <= m_maxLevel )
+            m_count++;
+    }
+
+private:
+    wxLogLevelValues m_maxLevel;
+    unsigned         m_count = 0;
+};
+
+
+/**
+ * A scoped application of a wxLog target that counts error-level messages.
+ *
+ * On destruction, the number of error-level messages logged is written to
+ * the given reference.
+ */
+class SCOPED_COUNTING_WXLOG : public SCOPED_WXLOG_TARGET
+{
+public:
+    /**
+     * @param aLogCount pointer to the counter. Will be written-back at destruction.
+     *                  If null, the count is not written back. This is useful if you
+     *                  have a tightly-defined scope and want to check the count after
+     *                  the scope ends.
+     * @param aMaxLevel the maximum log level to count (default: wxLOG_Error)
+     */
+    SCOPED_COUNTING_WXLOG( unsigned* aLogCount, wxLogLevelValues aMaxLevel = wxLOG_Error ) :
+            SCOPED_WXLOG_TARGET( &m_logger ),
+            m_logger( aMaxLevel ),
+            m_logCountRef( aLogCount )
+    {
+    }
+
+    ~SCOPED_COUNTING_WXLOG()
+    {
+        // Update the caller's log count reference with the number of logs recorded
+        if( m_logCountRef )
+            *m_logCountRef = m_logger.GetCount();
+    }
+
+    /*
+     * Gets the current count of matching log messages.
+     */
+    unsigned GetCount() const { return m_logger.GetCount(); }
+
+private:
+    COUNTING_WXLOG m_logger;
+    unsigned*      m_logCountRef;
+};
+
+
+/**
+ * Get the configured location of Eeschema test data.
+ *
+ * By default, this is the test data in the source tree, but can be overridden
+ * by the KICAD_TEST_EESCHEMA_DATA_DIR environment variable.
+ *
+ * @return a filename referring to the test data dir to use.
+ */
+std::string GetEeschemaTestDataDir();
+
+std::string GetTestDataRootDir();
+
+/**
+ * Load the contents of a file into a vector of bytes.
+ *
+ * If this fails, it throws a std::runtime_error with a descriptive message.
+ *
+ * @param aFilePath the path to the file to load
+ * @param aLoadBytes the number of bytes to load, or all bytes if not specified
+ */
+std::vector<uint8_t> LoadBinaryData( const std::string& aFilePath, std::optional<size_t> aLoadBytes = std::nullopt );
+
+/**
+ * Load the contents of a file into a string.
+ *
+ * The file is read in binary mode, so the string is byte-exact.
+ * This is a thin wrapper around #KI_TEST::LoadBinaryData(),
+ * so it fails in the same way.
+ *
+ * No assumptions are made about the encoding of the file: it is up
+ * to the caller to interpret the string as appropriate.
+ *
+ * @param aPath the path to the file to load
+ * @return the file's contents
+ */
+std::string LoadStringData( const wxString& aPath );
+
+/**
+ * Some tests on some platforms require a display connection to run.
+ * This function checks if a display is available on those platforms
+ * (GTK).
+ *
+ * On platforms where this doesn't matter, this always returns true.
+ */
+bool CanDoDisplayTests();
+
+} // namespace KI_TEST

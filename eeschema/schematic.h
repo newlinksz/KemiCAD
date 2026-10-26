@@ -1,0 +1,825 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef KICAD_SCHEMATIC_H
+#define KICAD_SCHEMATIC_H
+
+#include <eda_item.h>
+#include <embedded_files.h>
+#include <erc/erc_exclusion.h>
+#include <properties/property_mgr.h>
+#include <schematic_holder.h>
+#include <sch_rtree.h>
+#include <sch_sheet_path.h>
+#include <schematic_settings.h>
+#include <project.h>
+#include <import_net_map.h>
+
+#include <memory>
+#include <optional>
+#include <vector>
+
+
+struct HISTORY_FILE_DATA;
+class BUS_ALIAS;
+class CONNECTION_GRAPH;
+class EDA_BASE_FRAME;
+class ERC_SETTINGS;
+class LIB_SYMBOL;
+class PROJECT;
+class SCH_COMMIT;
+class SCH_LINE;
+class SCH_SCREEN;
+class SCH_SHEET;
+class SCH_SHEET_LIST;
+class SCH_GLOBALLABEL;
+class SCH_REFERENCE;
+class PROGRESS_REPORTER;
+class TOOL_MANAGER;
+class PICKED_ITEMS_LIST;
+
+namespace SCH_CONNECTIVITY
+{
+class FACADE;
+class NETCHAIN_MANAGER;
+}
+
+namespace KIFONT
+{
+class OUTLINE_FONT;
+}
+
+namespace KIGFX
+{
+class SCH_VIEW;
+}
+
+
+class SCHEMATIC;
+
+class SCHEMATIC_LISTENER
+{
+public:
+    virtual ~SCHEMATIC_LISTENER() {}
+    virtual void OnSchItemsAdded( SCHEMATIC& aSch, std::vector<SCH_ITEM*>& aSchItem ) {}
+    virtual void OnSchItemsRemoved( SCHEMATIC& aSch, std::vector<SCH_ITEM*>& aSchItem ) {}
+    virtual void OnSchItemsChanged( SCHEMATIC& aSch, std::vector<SCH_ITEM*>& aSchItem ) {}
+
+    // This is called when the user changes to a new sheet, not when a sheet is altered.
+    // Sheet alteration events will call OnSchItems*
+    virtual void OnSchSheetChanged( SCHEMATIC& aSch ) {}
+
+    virtual void OnSchSelectionChanged( SCHEMATIC& aSch ) {}
+};
+
+enum SCH_CLEANUP_FLAGS
+{
+    NO_CLEANUP,
+    LOCAL_CLEANUP,
+    GLOBAL_CLEANUP
+};
+
+/**
+ * A schematic staged off to the side by an importer, ready to be swapped into a live
+ * #SCHEMATIC in one step.
+ *
+ * Everything reachable from here is owned by the content until SCHEMATIC::AdoptContent() takes
+ * it, so an import that fails while staging leaves the live schematic untouched.  A schematic,
+ * its screens and its sheets are woven together tightly enough that only the schematic can
+ * unpick the outgoing objects in a safe order, which is why importers hand over a whole
+ * content object instead of writing to the three layers themselves.
+ */
+struct SCHEMATIC_CONTENT
+{
+    /// Sheet whose screen receives the content.  Null names the schematic's virtual root.
+    SCH_SHEET* targetSheet = nullptr;
+
+    /// Screen that replaces the target sheet's screen outright.  When this is null the items
+    /// and library cache below replace the contents of the screen the target sheet already has.
+    std::unique_ptr<SCH_SCREEN> screen;
+
+    /// Spatial index that replaces the target screen's own.  It must already name every item
+    /// the target screen keeps, not just the imported ones.
+    EE_RTREE screenItems;
+
+    /// Screen holding only the library cache that the target screen adopts.
+    std::unique_ptr<SCH_SCREEN> screenLibSymbols;
+
+    /// Items in @a screenItems that nothing else owns yet.
+    std::vector<std::unique_ptr<SCH_ITEM>> itemOwners;
+
+    /// Replacement top level sheets.  Empty leaves the schematic's own in place.
+    std::vector<SCH_SHEET*> topLevelSheets;
+
+    SCH_SHEET_LIST                    hierarchy;
+    std::optional<SCH_SHEET_PATH>     currentSheet;
+    std::unique_ptr<CONNECTION_GRAPH> connectionGraph;
+
+    /// Keep the schematic's net chains instead of the staged graph's, for append.
+    bool preserveNetChains = false;
+
+    std::optional<EMBEDDED_FILES>     embeddedFiles;
+    wxString                          drawingSheetFileName;
+};
+
+/**
+ * Holds all the data relating to one schematic.
+ *
+ * A schematic may consist of one or more sheets (and one root sheet)
+ * Right now, Eeschema can have only one schematic open at a time, but this could change.
+ * Please keep this possibility in mind when adding to this object.
+ */
+class SCHEMATIC : public EDA_ITEM, public EMBEDDED_FILES, public PROJECT::_ELEM
+{
+public:
+    SCHEMATIC( PROJECT* aPrj );
+
+    virtual ~SCHEMATIC();
+
+    virtual wxString GetClass() const override
+    {
+        return wxT( "SCHEMATIC" );
+    }
+
+    /// Initialize this schematic to a blank one, unloading anything existing.
+    void Reset();
+
+    const IMPORT_NET_MAP* GetImportNetMap() const
+    {
+        return m_importNetMap ? &*m_importNetMap : nullptr;
+    }
+
+    void SetImportNetMap( IMPORT_NET_MAP aMap ) { m_importNetMap = std::move( aMap ); }
+
+    /// Return a reference to the project this schematic is part of
+    PROJECT& Project() const { return *m_project; }
+    void SetProject( PROJECT* aPrj );
+
+    const std::map<wxString, wxString>* GetProperties() { return &m_properties; }
+
+    SCH_SHEET_LIST BuildSheetListSortedByPageNumbers() const;
+
+    SCH_SHEET_LIST BuildUnorderedSheetList() const;
+
+    /**
+     * Return the full schematic flattened hierarchical sheet list.
+     */
+    SCH_SHEET_LIST Hierarchy() const;
+
+    /**
+     * True when any sheet in the hierarchy has unsaved changes.
+     *
+     * Answers the question without copying the sheet list, which matters on the paths that ask
+     * repeatedly, such as an idle-time check.
+     */
+    bool IsHierarchyModified() const;
+
+    /**
+     * Check if the hierarchy has been built.
+     *
+     * @return true if RefreshHierarchy() has been called and the hierarchy is populated.
+     */
+    bool HasHierarchy() const { return !m_hierarchy.empty(); }
+
+    void RefreshHierarchy();
+
+    SCH_ITEM* ResolveItem( const KIID& aID, SCH_SHEET_PATH* aPathOut = nullptr,
+                           bool aAllowNullptrReturn = false ) const
+    {
+        return m_hierarchy.ResolveItem( aID, aPathOut, aAllowNullptrReturn );
+    }
+
+    SCH_SHEET& Root() const
+    {
+        return *m_rootSheet;
+    }
+
+    /**
+     * Get the list of top-level sheets.
+     *
+     * @return vector of pointers to top-level sheets (children of virtual root).
+     */
+    std::vector<SCH_SHEET*> GetTopLevelSheets() const;
+
+    SCH_SHEET* GetTopLevelSheet( int aIndex = 0 ) const;
+
+    /**
+     * Check if a UUID names one of this schematic's top level sheets.
+     *
+     * @param aUuid is the sheet UUID to look for.
+     * @return true if aUuid belongs to a top-level sheet, or to the root sheet when it is not
+     *         virtual.
+     */
+    bool IsTopLevelSheetUuid( const KIID& aUuid ) const;
+
+    /**
+     * Strip the leading virtual root from a stored instance path, which SCH_SHEET_PATH::Path()
+     * omits but stored instances may still name.
+     *
+     * @param aPath is an instance path in either form.
+     * @return @a aPath in SCH_SHEET_PATH::Path() form.
+     */
+    KIID_PATH NormalizeInstancePath( const KIID_PATH& aPath ) const;
+
+    /**
+     * Test whether an instance path is rooted in this schematic's top level sheets.  A
+     * schematic file can be shared between projects, so the stored project name isn't reliable.
+     *
+     * @param aPath is an instance path, with or without a leading virtual root.
+     * @return true when @a aPath is rooted in this schematic.
+     */
+    bool IsInstancePathInProject( const KIID_PATH& aPath ) const;
+
+    /**
+     * Replace the top level sheets, rebuilding the hierarchy and connectivity around them.
+     *
+     * Each sheet is parented to the root sheet rather than the root screen, so the schematic
+     * stays reachable without a screen.
+     *
+     * @note SCHEMATIC::AdoptContent() is the other writer of the top level sheet list.  Any
+     *       invariant added here has to be mirrored there.
+     */
+    void SetTopLevelSheets( const std::vector<SCH_SHEET*>& aSheets );
+
+    /**
+     * Take a staged schematic over from an importer in one indivisible step.
+     *
+     * The outgoing screen, top level sheets and connection graph are only destroyed once the
+     * hierarchy and current sheet that still name them have been replaced, so the destination is
+     * never left half replaced.  This is @c noexcept because there is no coherent way to unwind a
+     * partly adopted document; an allocation failure inside it terminates rather than corrupting
+     * the caller's schematic.
+     *
+     * @param aContent is the staged schematic; it is left empty.
+     */
+    void AdoptContent( SCHEMATIC_CONTENT&& aContent ) noexcept;
+
+    /**
+     * Add a new top-level sheet to the schematic.
+     *
+     * @param aSheet is the sheet to add as a top-level sheet.
+     */
+    void AddTopLevelSheet( SCH_SHEET* aSheet );
+
+    /**
+     * Remove a top-level sheet from the schematic.
+     *
+     * @param aSheet is the sheet to remove.
+     * @return true if the sheet was successfully removed.
+     */
+    bool RemoveTopLevelSheet( SCH_SHEET* aSheet );
+
+    /**
+     * Check if a sheet is a top-level sheet (direct child of virtual root).
+     *
+     * @param aSheet is the sheet to check.
+     * @return true if the sheet is a top-level sheet.
+     */
+    bool IsTopLevelSheet( const SCH_SHEET* aSheet ) const;
+
+    /// A simple test if the schematic is loaded, not a complete one
+    bool IsValid() const
+    {
+        return m_project && m_rootSheet != nullptr;
+    }
+
+    /// Helper to retrieve the screen of the root sheet
+    SCH_SCREEN* RootScreen() const;
+
+    void GetContextualTextVars( wxArrayString* aVars ) const;
+
+    bool ResolveTextVar( const SCH_SHEET_PATH* aSheetPath, wxString* token, int aDepth ) const;
+
+    /// Helper to retrieve the filename from the root sheet screen
+    wxString GetFileName() const;
+
+    SCH_SHEET_PATH& CurrentSheet() const
+    {
+        return *m_currentSheet;
+    }
+
+    void SetCurrentSheet( const SCH_SHEET_PATH& aPath )
+    {
+        *m_currentSheet = aPath;
+    }
+
+    SCH_SCREEN* GetCurrentScreen() const { return CurrentSheet().LastScreen(); }
+
+    SCH_CONNECTIVITY::FACADE& Connectivity() const { return *m_connectivity; }
+    SCH_CONNECTIVITY::NETCHAIN_MANAGER& NetChains() const { return *m_netChains; }
+
+    CONNECTION_GRAPH* ConnectionGraph() const
+    {
+        return m_connectionGraph;
+    }
+
+    const wxString& GetHighlightedNetChain() const { return m_highlightedNetChain; }
+    void SetHighlightedNetChain( const wxString& aNetChain ) { m_highlightedNetChain = aNetChain; }
+
+    SCHEMATIC_SETTINGS& Settings() const;
+
+    ERC_SETTINGS& ErcSettings() const;
+
+    std::vector<SCH_MARKER*> ResolveERCExclusions();
+
+    EMBEDDED_FILES* GetEmbeddedFiles() override;
+    const EMBEDDED_FILES* GetEmbeddedFiles() const;
+
+    /**
+     * Return a pointer to a bus alias object for the given label, or null if one
+     * doesn't exist.
+     */
+    std::shared_ptr<BUS_ALIAS> GetBusAlias( const wxString& aLabel ) const;
+
+    void AddBusAlias( std::shared_ptr<BUS_ALIAS> aAlias );
+
+    void SetBusAliases( const std::vector<std::shared_ptr<BUS_ALIAS>>& aAliases );
+
+    // An explicit project table, including an empty one, supersedes legacy sheet definitions.
+    bool HasProjectBusAliases() const;
+
+    const std::vector<std::shared_ptr<BUS_ALIAS>>& GetAllBusAliases() const
+    {
+        return m_busAliases;
+    }
+
+    /**
+     * Return the set of netname candidates for netclass assignment.
+     *
+     * The list will include both composite names (buses) and atomic net names.  Names are
+     * fetched from available labels, power pins, etc.
+     */
+    std::set<wxString> GetNetClassAssignmentCandidates();
+
+    /**
+     * Resolves text vars that refer to other items.
+     *
+     * @note The actual resolve is delegated to the symbol/sheet in question.  This routine
+     *       just does the look-up and delegation.
+     */
+    bool ResolveCrossReference( wxString* token, int aDepth ) const;
+
+    std::map<wxString, std::set<int>>& GetPageRefsMap() { return m_labelToPageRefsMap; }
+
+    std::map<int, wxString> GetVirtualPageToSheetNamesMap() const;
+    std::map<int, wxString> GetVirtualPageToSheetPagesMap() const;
+
+    wxString ConvertRefsToKIIDs( const wxString& aSource ) const;
+    wxString ConvertKIIDsToRefs( const wxString& aSource ) const;
+
+    /**
+     * Update the symbol value and footprint instance data for legacy designs.
+     *
+     * Prior to schematic file format version 20200828 and legacy file format version, only
+     * symbol reference field and unit were saved in the instance data.  The value and footprint
+     * fields must be carried forward from the original symbol to prevent data loss.
+     */
+    void SetLegacySymbolInstanceData();
+
+    /**
+     * Get the unique file name for the current sheet.
+     *
+     * This file name is unique and must be used instead of the screen file name when one must
+     * create files for each sheet in the hierarchy.  The name is
+     * &ltroot sheet filename&gt-&ltsheet path&gt and has no extension.
+     * If filename is too long name is &ltsheet filename&gt-&ltsheet number&gt
+     *
+     * @return a filename that can be used in plot and print functions for the current screen
+     * and sheet path.
+     */
+    wxString GetUniqueFilenameForCurrentSheet();
+
+    /**
+     * Set the m_ScreenNumber and m_NumberOfScreens members for screens.
+     *
+     * @note This must be called after deleting or adding a sheet and when entering a sheet.
+     */
+    void SetSheetNumberAndCount();
+
+    /**
+     * Update the schematic's page reference map for all global labels, and refresh the labels
+     * so that they are redrawn with up-to-date references.
+     */
+    void RecomputeIntersheetRefs();
+
+    void SyncLibSymbolPinMaps( const wxString& aSchLibSymbolName, const LIB_SYMBOL& aSource, SCH_COMMIT* aCommit );
+
+    /**
+     * Clear operating points from a .op simulation.
+     */
+    void ClearOperatingPoints()
+    {
+        m_operatingPoints.clear();
+    }
+
+    /**
+     * Set operating points from a .op simulation.
+     *
+     * Called after the simulation completes.
+     */
+    void SetOperatingPoint( const wxString& aNetChain, double aValue )
+    {
+        m_operatingPoints[ aNetChain ] = aValue;
+    }
+
+    wxString GetOperatingPoint( const wxString& aNetName, int aPrecision, const wxString& aRange );
+
+    /**
+     * Add junctions to this schematic where required.
+     *
+     * This function is needed for some plugins (e.g. Legacy and Cadstar) in order to retain
+     * connectivity after loading.
+     * @param aOnSplit receives the retained wire and its new segment to preserve import provenance.
+     */
+    int FixupJunctionsAfterImport( const std::function<void( SCH_LINE*, SCH_LINE* )>& aOnSplit = {} );
+
+    /**
+     * Scan existing markers and record data from any that are Excluded.
+     */
+    void RecordERCExclusions();
+
+    size_t GetUnresolvedERCExclusionCount() const { return m_unresolvedErcExclusions.size(); }
+
+    void ClearUnresolvedERCExclusions( int aErrorCode = -1 );
+
+    /**
+     * Update markers to match recorded exclusions.
+     */
+    void ResolveERCExclusionsPostUpdate();
+
+    /**
+     * Must be used if Add() is used using a BULK_x ADD_MODE to generate a change event for
+     * listeners.
+     */
+    void OnItemsAdded( std::vector<SCH_ITEM*>& aNewItems );
+
+    /**
+     * Must be used if Remove() is used using a BULK_x REMOVE_MODE to generate a change event
+     * for listeners.
+     */
+    void OnItemsRemoved( std::vector<SCH_ITEM*>& aRemovedItems );
+
+    /**
+      * Notify the schematic and its listeners that an item on the schematic has
+      * been modified in some way.
+      */
+    void OnItemsChanged( std::vector<SCH_ITEM*>& aItems );
+
+    /**
+      * Notify the schematic and its listeners that the current sheet has been changed.
+      *
+      * This is called when the user navigates to a different sheet, not when the sheet is
+      * altered.
+      */
+    void OnSchSheetChanged();
+
+    /**
+     * Notify the schematic and its listeners that the editor selection has changed.
+     */
+    void OnSchSelectionChanged();
+
+    /**
+     * Add a listener to the schematic to receive calls whenever something on the
+     * schematic has been modified.
+     *
+     * The schematic does not take ownership of the listener object.  Make sure to call
+     * RemoveListener before deleting the listener object.  The order of listener invocations
+     * is not guaranteed.  If the specified listener object has been added before, it will
+     * not be added again.
+     */
+    void AddListener( SCHEMATIC_LISTENER* aListener );
+
+    /**
+     * Remove the specified listener.
+     *
+     * If it has not been added before, it will do nothing.
+     */
+    void RemoveListener( SCHEMATIC_LISTENER* aListener );
+
+    /**
+     * Remove all listeners.
+     */
+    void RemoveAllListeners();
+
+    void RunOnNestedEmbeddedFiles( const std::function<void( EMBEDDED_FILES* )>& aFunction ) override;
+
+    /**
+     * Embed fonts in the schematic.
+     */
+    void EmbedFonts() override;
+
+    /**
+     * Get a set of fonts used in the schematic.
+     */
+    std::set<KIFONT::OUTLINE_FONT*> GetFonts() const override;
+
+    /**
+     * Return a list of schematic files in the current project that contain instance data for
+     * multiple projects.
+     *
+     * @return all of the #SCH_SCREEN objects that contain instance data for multiple projects.
+     */
+    std::set<const SCH_SCREEN*> GetSchematicsSharedByMultipleProjects() const;
+
+    /**
+     * Test if the schematic is a complex hierarchy.
+     *
+     * @return true if the schematic is a complex hierarchy or false if it's a simple hierarchy.
+     */
+    bool IsComplexHierarchy() const;
+
+    void SetSchematicHolder( SCHEMATIC_HOLDER* aHolder ) { m_schematicHolder = aHolder; }
+
+    /**
+     * Perform routine schematic cleaning including breaking wire and buses and deleting
+     * identical objects superimposed on top of each other.
+     *
+     * @param aCommit Transaction container used to record changes for undo/redo
+     * @param aScreen is the screen to examine, or nullptr to examine the current screen
+     */
+    void CleanUp( SCH_COMMIT* aCommit, SCH_SCREEN* aScreen = nullptr );
+
+    // Prepare source geometry and intersheet references before rebuilding connectivity.
+    void CleanUpConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS aCleanupFlags,
+                             const std::set<SCH_SCREEN*>& aLocalScreens = {} );
+
+    // Fully rebuild the selected connectivity backend without changing source geometry.
+    void RebuildConnectivity( std::function<void( SCH_ITEM* )>* aChangedItemHandler = nullptr,
+                              PROGRESS_REPORTER* aProgressReporter = nullptr,
+                              KIGFX::SCH_VIEW* aSchView = nullptr );
+
+    /**
+     * Generate the connection data for the entire schematic hierarchy.
+     *
+     * @param aCommit
+     * @param aCleanupFlags
+     * @param aToolManager
+     * @param aProgressReporter
+     * @param aSchView
+     * @param aChangedItemHandler
+     * @param aLastChangeList
+     * @param aCleanupDone the commit already applied cleanup; flags still select the rebuild scope.
+     */
+    void RecalculateConnections( SCH_COMMIT* aCommit, SCH_CLEANUP_FLAGS aCleanupFlags,
+                                 TOOL_MANAGER* aToolManager,
+                                 PROGRESS_REPORTER* aProgressReporter = nullptr,
+                                 KIGFX::SCH_VIEW* aSchView = nullptr,
+                                 std::function<void( SCH_ITEM* )>* aChangedItemHandler = nullptr,
+                                 PICKED_ITEMS_LIST*                aLastChangeList = nullptr,
+                                 bool aCleanupDone = false );
+
+    /**
+     * Store all existing annotations in the REFDES_TRACKER.
+     * This is useful when adding existing sheets or enabling tracking for the first time.
+     * It will not change the existing annotations, but will allow the REFDES_TRACKER
+     * to track the existing annotations and prevent duplicates.
+     */
+    void CacheExistingAnnotation();
+
+    /**
+     * Check if the schematic contains the specified reference.
+     *
+     * @param aRef is the reference to check for.
+     * @return true if the schematic contains the reference, false otherwise.
+     */
+    bool Contains( const SCH_REFERENCE& aRef ) const;
+
+    void CreateDefaultScreens();
+
+    /**
+     * Return an array of variant names for using in wxWidgets UI controls.
+     *
+     * Most wxWidgets UI controls that support multiple entries take a wxArrayString as an argument.  This
+     * is a convenience method so it's not necessary to convert a std::set<wxString> to a wxArrayString at
+     * the point of use.
+     *
+     * @note This also adds the pseudo "<default>" entry  to the beginning of the array followed by all other
+     *       variant names sorted using the #StrNumCmp function.
+     */
+    wxArrayString GetVariantNamesForUI() const;
+
+    /**
+     * Return the current variant being edited.
+     *
+     * @return the name of the current variant being edited.  An empty string is the default variant.
+     */
+    wxString GetCurrentVariant() const;
+
+    void SetCurrentVariant( const wxString& aVariantName );
+
+    /**
+     * Delete all information for @a aVariantName.
+     *
+     * @param aVariantName is the name of the variant to remove.
+     * @param aCommit is the commit object to handle undo/redo actions.
+     */
+    void DeleteVariant( const wxString& aVariantName, SCH_COMMIT* aCommit = nullptr );
+
+    void AddVariant( const wxString& aVariantName );
+
+    /**
+     * Rename a variant from @a aOldName to @a aNewName.
+     *
+     * This updates the variant name in all symbols and sheets throughout the schematic.
+     *
+     * @param aOldName is the current name of the variant to rename.
+     * @param aNewName is the new name for the variant.
+     * @param aCommit is an optional SCH_COMMIT for undo/redo support.
+     */
+    void RenameVariant( const wxString& aOldName, const wxString& aNewName,
+                        SCH_COMMIT* aCommit = nullptr );
+
+    /**
+     * Copy a variant from @a aSourceVariant to @a aNewVariant.
+     *
+     * This creates a new variant with data copied from the source variant for all
+     * symbols and sheets throughout the schematic.
+     *
+     * @param aSourceVariant is the name of the variant to copy from.
+     * @param aNewVariant is the name of the new variant to create.
+     * @param aCommit is an optional SCH_COMMIT for undo/redo support.
+     */
+    void CopyVariant( const wxString& aSourceVariant, const wxString& aNewVariant,
+                      SCH_COMMIT* aCommit = nullptr );
+
+    /**
+     * Return the set of variant names (without the default placeholder).
+     */
+    const std::set<wxString>& GetVariantNames() const { return m_variantNames; }
+
+    /**
+     * Return true if a variant with this name exists in the schematic (case-insensitively).
+     */
+    bool HasVariant( const wxString& aVariantName ) const;
+
+    /**
+     * Return the description for a variant.
+     *
+     * @param aVariantName is the name of the variant.
+     * @return the description or an empty string if the variant has no description.
+     */
+    wxString GetVariantDescription( const wxString& aVariantName ) const;
+
+    /**
+     * Set the description for a variant.
+     *
+     * @param aVariantName is the name of the variant.
+     * @param aDescription is the description to set.
+     */
+    void SetVariantDescription( const wxString& aVariantName, const wxString& aDescription );
+
+    /**
+     * This is a throw away method for variant testing.
+     *
+     * Once the schematic loading is properly fixed due to SetRoot() method breakage, this method should
+     * be removed.
+     */
+    void LoadVariants();
+
+#if defined(DEBUG)
+    void Show( int nestLevel, std::ostream& os ) const override {}
+#endif
+
+    PROJECT::ELEM ProjectElementType() override { return PROJECT::ELEM::SCHEMATIC; }
+
+    /**
+     * Serialize schematic sheets into HISTORY_FILE_DATA for non-blocking history commit.
+     *
+     * This method is used as a saver callback for LOCAL_HISTORY during autosave operations.
+     * Serialization runs on the UI thread; Prettify and file I/O happen in the background.
+     *
+     * @param aProjectPath The path to check against this schematic's project path
+     * @param aFileData Output vector to append serialized data for history inclusion
+     */
+    void SaveToHistory( const wxString& aProjectPath, std::vector<HISTORY_FILE_DATA>& aFileData );
+
+    /**
+     * Liveness token handed to LOCAL_HISTORY::RegisterSaver so a shared autosave timer skips this
+     * schematic's saver once the schematic is destroyed instead of serializing freed memory.
+     */
+    std::weak_ptr<void> GetHistoryLifetimeToken() const { return m_historyLifetime; }
+
+private:
+    bool resolveCrossReference( wxString* aToken, int aDepth ) const;
+
+    friend class SCH_EDIT_FRAME;
+
+    template <typename Func, typename... Args>
+    void InvokeListeners( Func&& aFunc, Args&&... args )
+    {
+        for( auto&& l : m_listeners )
+            ( l->*aFunc )( std::forward<Args>( args )... );
+    }
+
+    void ensureVirtualRoot();
+    void ensureDefaultTopLevelSheet();
+    void ensureCurrentSheetIsTopLevel();
+    void rebuildHierarchyState( bool aResetConnectionGraph );
+
+    PROJECT* m_project;
+    std::optional<IMPORT_NET_MAP> m_importNetMap;
+
+    /// Sentinel whose expiry signals to LOCAL_HISTORY that this schematic has been destroyed.
+    std::shared_ptr<void> m_historyLifetime = std::make_shared<char>();
+
+    /// The virtual root sheet (has no screen, contains all top-level sheets)
+    SCH_SHEET* m_rootSheet;
+
+    /// List of top-level sheets (direct children of virtual root)
+    std::vector<SCH_SHEET*> m_topLevelSheets;
+
+    /**
+     * The sheet path of the sheet currently being edited or displayed.
+     *
+     * @note This was moved here from #SCH_EDIT_FRAME because currently many places in the code
+     * want to know the current sheet.  Potentially this can be moved back to the UI code once
+     * the only places that want to know it are UI-related.
+     */
+    SCH_SHEET_PATH* m_currentSheet;
+
+    /// Hold and calculate connectivity information of this schematic.
+    CONNECTION_GRAPH* m_connectionGraph;
+    std::unique_ptr<SCH_CONNECTIVITY::FACADE> m_connectivity;
+    std::unique_ptr<SCH_CONNECTIVITY::NETCHAIN_MANAGER> m_netChains;
+
+    wxString m_highlightedNetChain;
+
+    /**
+     * Holds a map of labels to the page sequence (virtual page number) that they appear on.
+     *
+     * It is used for updating global label intersheet references.
+     */
+    std::map<wxString, std::set<int>> m_labelToPageRefsMap;
+
+    /**
+     * Properties for text variable substitution (and perhaps other uses in future).
+     */
+    std::map<wxString, wxString>      m_properties;
+
+    /**
+     * Simulation operating points for text variable substitution.
+     */
+    std::map<wxString, double>        m_operatingPoints;
+
+    /**
+     * Cache of the entire schematic hierarchy sorted by sheet page number.
+     */
+    SCH_SHEET_LIST m_hierarchy;
+
+    /// Exclusions whose saved identity cannot currently be reconstructed as a marker.
+    std::vector<ERC_EXCLUSION> m_unresolvedErcExclusions;
+
+    /**
+     * Currently installed listeners.
+     */
+    std::vector<SCHEMATIC_LISTENER*> m_listeners;
+
+    /**
+     * What currently "Holds" the schematic, i.e. a edit frame if available
+     */
+    SCHEMATIC_HOLDER* m_schematicHolder;
+
+    void loadBusAliasesFromProject();
+
+    void updateProjectBusAliases();
+
+    std::vector<std::shared_ptr<BUS_ALIAS>> m_busAliases;
+
+    wxString m_currentVariant;
+
+    std::set<wxString> m_variantNames;
+
+    /// Re-entry guard to prevent infinite recursion between ensureDefaultTopLevelSheet and
+    /// RefreshHierarchy when setting up new schematics
+    bool m_settingTopLevelSheets = false;
+
+    /// Reactive text-variable dependency adapter. Installed as a listener
+    /// during SCHEMATIC construction.
+    std::unique_ptr<class SCHEMATIC_TEXT_VAR_ADAPTER> m_textVarAdapter;
+
+    /// PROPERTY_MANAGER listener subscription installed in the ctor. RAII so
+    /// concurrent SCHEMATIC instances (e.g. a temporary one opened for a diff
+    /// compare) can come and go without clobbering each other's registrations.
+    PROPERTY_LISTENER_SUBSCRIPTION m_fieldListenerSubscription;
+
+public:
+    class SCHEMATIC_TEXT_VAR_ADAPTER* GetTextVarAdapter() const { return m_textVarAdapter.get(); }
+};
+
+#endif

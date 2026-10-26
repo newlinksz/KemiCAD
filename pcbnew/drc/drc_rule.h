@@ -1,0 +1,241 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <bitset>
+#include <optional>
+
+#include <wx/intl.h>
+
+#include <kiid.h>
+#include <core/typeinfo.h>
+#include <core/minoptmax.h>
+#include <drc/drc_constraint_types.h>
+#include <layer_ids.h>
+#include <lset.h>
+#include <eda_units.h>
+#include <zones.h>
+#include <libeval_compiler/libeval_compiler.h>
+#include <widgets/report_severity.h>
+
+
+class BOARD_ITEM;
+class PCBEXPR_UCODE;
+class DRC_CONSTRAINT;
+class DRC_RULE_CONDITION;
+
+namespace kiapi::board
+{
+    class CustomRule;
+    class CustomRuleConstraint;
+}
+
+
+class DRC_RULE
+{
+public:
+    DRC_RULE();
+    DRC_RULE( const wxString& aName );
+
+    virtual ~DRC_RULE();
+
+    virtual bool AppliesTo( const BOARD_ITEM* a, const BOARD_ITEM* b = nullptr ) const
+    {
+        return true;
+    };
+
+    void AddConstraint( DRC_CONSTRAINT& aConstraint );
+    std::optional<DRC_CONSTRAINT> FindConstraint( DRC_CONSTRAINT_T aType );
+
+    static wxString FormatRuleFromProto( const kiapi::board::CustomRule& aRule,
+                                                  wxString* aErrorText = nullptr );
+
+    bool IsImplicit() const { return m_implicitSource != DRC_IMPLICIT_SOURCE::NONE; }
+
+    void SetImplicitSource( const DRC_IMPLICIT_SOURCE aImplicitSource ) { m_implicitSource = aImplicitSource; }
+
+    DRC_IMPLICIT_SOURCE GetImplicitSource() const { return m_implicitSource; }
+
+public:
+    bool                        m_Unary;
+    KIID                        m_ImplicitItemId;
+    BOARD_ITEM*                 m_ImplicitItem;
+    wxString                    m_Name;
+    wxString                    m_ImplicitNetclass;   ///< Netclass named by an implicit netclass rule's condition
+    wxString                    m_LayerSource;
+    LSET                        m_LayerCondition;
+    DRC_RULE_CONDITION*         m_Condition;
+    std::vector<DRC_CONSTRAINT> m_Constraints;
+    SEVERITY                    m_Severity;
+
+private:
+    DRC_IMPLICIT_SOURCE m_implicitSource;
+};
+
+
+class DRC_CONSTRAINT
+{
+public:
+    DRC_CONSTRAINT( DRC_CONSTRAINT_T aType = NULL_CONSTRAINT,
+                    const wxString& aName = wxEmptyString ) :
+            m_Type( aType ),
+            m_Value(),
+            m_DisallowFlags( 0 ),
+            m_ZoneConnection( ZONE_CONNECTION::INHERITED ),
+            m_Test( nullptr ),
+            m_ImplicitMin( false ),
+            m_name( aName ),
+            m_parentRule( nullptr ),
+            m_minRule( nullptr ),
+            m_optRule( nullptr ),
+            m_maxRule( nullptr )
+    {
+    }
+
+    enum class OPTIONS : std::size_t
+    {
+        SKEW_WITHIN_DIFF_PAIRS = 0,
+        SPACE_DOMAIN,
+        TIME_DOMAIN,
+
+        // Keep this last value - used to statically size the options bitset
+        NUM_OPTIONS
+    };
+
+    bool IsNull() const
+    {
+        return m_Type == NULL_CONSTRAINT;
+    }
+
+    bool IsUnary() const;
+
+    const MINOPTMAX<int>& GetValue() const { return m_Value; }
+    MINOPTMAX<int>& Value() { return m_Value; }
+
+    /**
+     * Attribute the constraint, including each min, opt and max value it has, to \a aParentRule.
+     */
+    void SetParentRule( DRC_RULE *aParentRule )
+    {
+        m_parentRule = aParentRule;
+        m_minRule = m_Value.HasMin() ? aParentRule : nullptr;
+        m_optRule = m_Value.HasOpt() ? aParentRule : nullptr;
+        m_maxRule = m_Value.HasMax() ? aParentRule : nullptr;
+    }
+
+    /**
+     * @return the last rule applied.  When several rules apply, each overrides only the values it
+     *         sets, so use GetMinRule(), GetOptRule() or GetMaxRule() to find where a value came from.
+     */
+    DRC_RULE* GetParentRule() const { return m_parentRule; }
+
+    void SetValueRules( DRC_RULE* aMinRule, DRC_RULE* aOptRule, DRC_RULE* aMaxRule )
+    {
+        m_minRule = aMinRule;
+        m_optRule = aOptRule;
+        m_maxRule = aMaxRule;
+    }
+
+    DRC_RULE* GetMinRule() const { return m_minRule; }
+    DRC_RULE* GetOptRule() const { return m_optRule; }
+    DRC_RULE* GetMaxRule() const { return m_maxRule; }
+
+    void SetName( const wxString& aName ) { m_name = aName; }
+
+    wxString GetName() const { return GetRuleName( m_parentRule ); }
+
+    /**
+     * @return a user-facing name for \a aRule, or this constraint's own name when \a aRule is null
+     *         (for constraints from board setup or local overrides rather than rules).
+     */
+    wxString GetRuleName( const DRC_RULE* aRule ) const
+    {
+        if( aRule )
+        {
+            if( aRule->IsImplicit() )
+                return aRule->m_Name;
+            else
+                return wxString::Format( _( "rule '%s'" ), aRule->m_Name );
+        }
+
+        return m_name;
+    }
+
+    SEVERITY GetSeverity() const
+    {
+        if( m_parentRule )
+            return m_parentRule->m_Severity;
+        else
+            return RPT_SEVERITY_UNDEFINED;
+    }
+
+    void SetOption( OPTIONS option ) { m_options.set( static_cast<std::size_t>( option ), true ); }
+
+    void ClearOption( OPTIONS option ) { m_options.set( static_cast<std::size_t>( option ), false ); }
+
+    bool GetOption( OPTIONS option ) const
+    {
+        return m_options.test( static_cast<std::size_t>( option ) );
+    }
+
+    void SetOptionsFromOther( const DRC_CONSTRAINT& aOther ) { m_options = aOther.m_options; }
+
+    void ToProto( kiapi::board::CustomRuleConstraint& aProto ) const;
+
+public:
+    DRC_CONSTRAINT_T    m_Type;
+    MINOPTMAX<int>      m_Value;
+    int                 m_DisallowFlags;
+    ZONE_CONNECTION     m_ZoneConnection;
+    DRC_RULE_CONDITION* m_Test;
+    bool                m_ImplicitMin;
+
+    // Reference layer for NET_CHAIN_RETURN_PATH_CONSTRAINT.  Empty means "no
+    // reference layer specified".  Stored as a user-visible layer name so it
+    // can survive save/load without layer-id renumbering.
+    wxString            m_ReferenceLayer;
+
+    // Optional reference-zone net for NET_CHAIN_RETURN_PATH_CONSTRAINT.  Empty
+    // accepts any zone on the reference layer; non-empty filters zones by net
+    // name (wildcards via WildCompareString).
+    wxString            m_ReferenceNet;
+
+private:
+    wxString            m_name;          // For just-in-time constraints
+    DRC_RULE*           m_parentRule;    // For constraints found in rules
+    DRC_RULE*           m_minRule;       // Rules that supplied each value, which can differ
+    DRC_RULE*           m_optRule;       // from m_parentRule when several rules apply
+    DRC_RULE*           m_maxRule;
+    std::bitset<static_cast<int>( OPTIONS::NUM_OPTIONS )> m_options;       // Constraint-specific option bits
+                                                                           // (indexed from DRC_CONSTRAINT::OPTIONS)
+};
+
+
+const DRC_CONSTRAINT* GetConstraint( const BOARD_ITEM* aItem, const BOARD_ITEM* bItem,
+                                     int aConstraint, PCB_LAYER_ID aLayer,
+                                     wxString* aRuleName = nullptr );
+
+
+/**
+ * ${Class:X} inside a DRC rule is a component-class selector consumed by testFootprintSelector(),
+ * not a text variable. Text-variable expansion and unresolved-variable checks must leave it intact.
+ * aToken is the contents between ${ and }.
+ */
+bool IsComponentClassSelector( const wxString& aToken );

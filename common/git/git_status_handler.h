@@ -1,0 +1,87 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.TXT for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 3
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef GIT_STATUS_HANDLER_H
+#define GIT_STATUS_HANDLER_H
+
+#include <git/git_repo_mixin.h>
+#include <import_export.h>
+#include <wx/string.h>
+#include <map>
+#include <set>
+
+class LIBGIT_BACKEND;
+
+struct FileStatus
+{
+    wxString filePath;
+    KIGIT_COMMON::GIT_STATUS status;
+    unsigned int gitStatus;  // Raw git status flags
+};
+
+class APIEXPORT GIT_STATUS_HANDLER : public KIGIT_REPO_MIXIN
+{
+public:
+    GIT_STATUS_HANDLER( KIGIT_COMMON* aCommon );
+    virtual ~GIT_STATUS_HANDLER();
+
+    /**
+     * Get detailed file status for all files in the specified path
+     * @param aPathspec Path specification to filter files (empty for all files)
+     * @param aChangedOnly Omit unmodified tracked files, for callers that only list changes
+     * @return Map of absolute file paths to their status information
+     */
+    std::map<wxString, FileStatus> GetFileStatus( const wxString& aPathspec = wxEmptyString,
+                                                  bool            aChangedOnly = false );
+
+    /**
+     * Get the current branch name
+     * @return Current branch name, or empty string if not available
+     */
+    wxString GetCurrentBranchName();
+
+    /**
+     * Get status for modified files based on local/remote changes
+     * @param aLocalChanges Set of files with local changes
+     * @param aRemoteChanges Set of files with remote changes
+     * @param aFileStatus Map to update with ahead/behind status
+     */
+    void UpdateRemoteStatus( const std::set<wxString>& aLocalChanges,
+                             const std::set<wxString>& aRemoteChanges,
+                             std::map<wxString, FileStatus>& aFileStatus );
+
+    /**
+     * Get the repository working directory path
+     * @return Working directory path, or empty string if not available
+     */
+    wxString GetWorkingDirectory();
+
+    void UpdateProgress( int aCurrent, int aTotal, const wxString& aMessage ) override;
+
+private:
+    friend class LIBGIT_BACKEND;
+    /**
+     * Convert git status flags to KIGIT_COMMON::GIT_STATUS
+     * @param aGitStatus Raw git status flags
+     * @return Converted status
+     */
+    KIGIT_COMMON::GIT_STATUS ConvertStatus( unsigned int aGitStatus );
+};
+
+#endif // GIT_STATUS_HANDLER_H

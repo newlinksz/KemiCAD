@@ -1,0 +1,104 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <variant>
+#include <vector>
+
+#include <math/vector2d.h>
+#include <math/box2.h>
+
+#include <geometry/circle.h>
+#include <geometry/half_line.h>
+#include <geometry/line.h>
+#include <geometry/seg.h>
+#include <geometry/shape_arc.h>
+#include <geometry/shape_ellipse.h>
+#include <geometry/shape_rect.h>
+
+/**
+ * A variant type that can hold any of the supported geometry types
+ * for intersection calculations.
+ */
+using INTERSECTABLE_GEOM = std::variant<LINE, HALF_LINE, SEG, CIRCLE, SHAPE_ARC, SHAPE_ELLIPSE, BOX2I>;
+
+/**
+ * How two geometries meet, beyond where they cross.
+ *
+ * The point list cannot express either case.  A graze gives one point, same as a crossing.  A
+ * shared extent gives none, same as no contact.
+ *
+ * Set only inside the bounded extent of both geometries.  SHAPE_ELLIPSE never sets either.
+ */
+struct INTERSECTION_CONTACT
+{
+    /// Touch at one point, no crossing.
+    bool m_Tangent = false;
+
+    /// Collinear or concentric, more than one point shared.  Arcs are concentric only if the
+    /// carriers they rebuild from their three points match exactly.
+    bool m_Overlapping = false;
+};
+
+/**
+ * A visitor that visits INTERSECTABLE_GEOM variant objects with another
+ * (which is held as state: m_otherGeometry).
+ *
+ * This provides a unified way to intersect any supported geometry with
+ * any other supported geometry.
+ */
+struct INTERSECTION_VISITOR
+{
+public:
+    /**
+     * @param aOtherGeometry The other geometry to intersect the visited geometry with.
+     * @param aIntersections A vector to store the intersections in. Does not have to
+     *                       be empty, the visitor will append to it.
+     */
+    INTERSECTION_VISITOR( const INTERSECTABLE_GEOM& aOtherGeometry,
+                          std::vector<VECTOR2I>&    aIntersections );
+
+    /**
+     * @param aOtherGeometry
+     * @param aIntersections
+     * @param aContact Receives how the geometries meet.  Flags are only set, never cleared, so one
+     *                 contact accumulates across visits.
+     */
+    INTERSECTION_VISITOR( const INTERSECTABLE_GEOM& aOtherGeometry, std::vector<VECTOR2I>& aIntersections,
+                          INTERSECTION_CONTACT& aContact );
+
+    /*
+     * One of these operator() overloads will be called by std::visit
+     * as needed to visit (i.e. intersect) the geometry with the (stored)
+     * other geometry.
+     */
+    void operator()( const SEG& aSeg ) const;
+    void operator()( const LINE& aLine ) const;
+    void operator()( const HALF_LINE& aLine ) const;
+    void operator()( const CIRCLE& aCircle ) const;
+    void operator()( const SHAPE_ARC& aArc ) const;
+    void operator()( const SHAPE_ELLIPSE& aEllipse ) const;
+    void operator()( const BOX2I& aArc ) const;
+
+private:
+    const INTERSECTABLE_GEOM& m_otherGeometry;
+    std::vector<VECTOR2I>&    m_intersections;
+    INTERSECTION_CONTACT*     m_contact = nullptr;
+};

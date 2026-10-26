@@ -1,0 +1,6 @@
+#define BRAND_RESOURCE
+
+#define RC_VER_FILE_DESCRIPTION "KemiCAD Python Interface " BRAND_RC_VER_STR
+#define RC_VER_INTERNALNAME "_kipython"
+#define RC_VER_ORIGINALFILENAME "_kipython.dll"
+#include "kiwin32-dll.rc"

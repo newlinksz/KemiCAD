@@ -1,0 +1,2583 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * @file test_ipc2581_export.cpp
+ * Test suite for IPC-2581 export validation
+ *
+ * Tests per GitLab issues:
+ * - #22690: Surface finish data not exported
+ * - #19912: OtherSideView may be incorrect for bottom components
+ */
+
+#include <pcbnew_utils/board_test_utils.h>
+#include <pcbnew_utils/board_file_utils.h>
+#include <qa_utils/env_var_utils.h>
+#include <qa_utils/file_utils.h>
+#include <qa_utils/wx_utils/unit_test_utils.h>
+
+#include <pcbnew/pcb_io/ipc2581/pcb_io_ipc2581.h>
+#include <pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
+#include <pcbnew/pcb_io/ipc2581/ipc2581_export_job.h>
+#include <pcbnew/drill/drill_enumerator.h>
+#include <pcbnew/exporters/fab_model/fab_pin.h>
+
+#include <board.h>
+#include <board_design_settings.h>
+#include <board_stackup_manager/board_stackup.h>
+#include <footprint.h>
+#include <netinfo.h>
+#include <pad.h>
+#include <pcb_shape.h>
+#include <pcb_textbox.h>
+#include <pcb_track.h>
+#include <base_units.h>
+#include <jobs/job_export_pcb_ipc2581.h>
+#include <reporter.h>
+
+#include <wx/dir.h>
+#include <wx/file.h>
+#include <wx/filename.h>
+#include <wx/process.h>
+#include <wx/txtstrm.h>
+#include <wx/utils.h>
+#include <wx/xml/xml.h>
+#include <wx/wfstream.h>
+#include <wx/zipstrm.h>
+
+#include <cmath>
+#include <fstream>
+#include <regex>
+#include <set>
+#include <sstream>
+#include <tuple>
+
+
+namespace
+{
+
+void CollectXmlElements( wxXmlNode* aNode, const wxString& aName, std::vector<wxXmlNode*>& aResult )
+{
+    for( wxXmlNode* node = aNode; node; node = node->GetNext() )
+    {
+        if( node->GetName() == aName )
+            aResult.push_back( node );
+
+        CollectXmlElements( node->GetChildren(), aName, aResult );
+    }
+}
+
+
+wxXmlNode* FindXmlChild( wxXmlNode* aParent, const wxString& aName )
+{
+    for( wxXmlNode* child = aParent->GetChildren(); child; child = child->GetNext() )
+    {
+        if( child->GetName() == aName )
+            return child;
+    }
+
+    return nullptr;
+}
+
+
+/**
+ * Check if xmllint is available on this system
+ */
+bool IsXmllintAvailable()
+{
+    wxArrayString output;
+    wxArrayString errors;
+    int result = wxExecute( "xmllint --version", output, errors, wxEXEC_SYNC );
+    return result == 0;
+}
+
+
+/** Require IPC-2581 schema validation when the QA switch is set */
+bool XmllintRequired()
+{
+    wxString value;
+    return wxGetEnv( wxS( "KICAD_QA_REQUIRE_XMLLINT" ), &value ) && value == wxS( "1" );
+}
+
+
+wxString XmllintFailureMessage( int aExitCode, const wxArrayString& aErrors )
+{
+    if( aExitCode == 0 )
+        return wxEmptyString;
+
+    if( aErrors.IsEmpty() )
+        return wxString::Format( "xmllint exited with status %d", aExitCode );
+
+    wxString errorMsg;
+
+    for( const wxString& line : aErrors )
+        errorMsg += line + "\n";
+
+    return errorMsg;
+}
+
+
+/**
+ * Validate an XML file against an XSD schema using xmllint
+ * @return empty string on success, error message on failure
+ */
+wxString ValidateXmlWithXsd( const wxString& aXmlPath, const wxString& aXsdPath )
+{
+    wxString cmd = wxString::Format( "xmllint --noout --schema \"%s\" \"%s\"", aXsdPath, aXmlPath );
+
+    wxArrayString output;
+    wxArrayString errors;
+    int           result = wxExecute( cmd, output, errors, wxEXEC_SYNC );
+
+    return XmllintFailureMessage( result, errors );
+}
+
+
+/**
+ * Check if a file contains a specific XML element or attribute pattern
+ */
+bool FileContainsPattern( const wxString& aFilePath, const wxString& aPattern )
+{
+    std::ifstream file( aFilePath.ToStdString() );
+
+    if( !file.is_open() )
+        return false;
+
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string content = buffer.str();
+
+    return content.find( aPattern.ToStdString() ) != std::string::npos;
+}
+
+
+wxXmlNode* FindXmlEntry( wxXmlNode* aRoot, const wxString& aName, const wxString& aId )
+{
+    std::vector<wxXmlNode*> entries;
+    CollectXmlElements( aRoot, aName, entries );
+
+    for( wxXmlNode* entry : entries )
+    {
+        if( entry->GetAttribute( wxS( "id" ) ) == aId )
+            return entry;
+    }
+
+    return nullptr;
+}
+
+
+wxXmlNode* SecondaryDrillProperty( wxXmlNode* aSpec, const wxString& aType )
+{
+    for( wxXmlNode* child = aSpec->GetChildren(); child; child = child->GetNext() )
+    {
+        if( child->GetName() == wxS( "SecondaryDrill" ) && child->GetAttribute( wxS( "type" ) ) == aType )
+            return FindXmlChild( child, wxS( "Property" ) );
+    }
+
+    return nullptr;
+}
+
+
+bool XmlRegionHasCoordinateNear( const std::string& aRegion, char aAxis, double aExpected, double aTolerance )
+{
+    std::regex coordinateRegex( std::string( 1, aAxis ) + "=\"(-?[0-9]+(?:\\.[0-9]+)?)\"" );
+
+    for( std::sregex_iterator it( aRegion.begin(), aRegion.end(), coordinateRegex ), end; it != end; ++it )
+    {
+        if( std::abs( std::stod( ( *it )[1].str() ) - aExpected ) <= aTolerance )
+            return true;
+    }
+
+    return false;
+}
+
+
+/**
+ * List of board files from qa/data/pcbnew to test for schema validation.
+ * These are relatively simple boards that exercise various features.
+ */
+static const std::vector<std::string> VALIDATION_TEST_BOARDS = {
+    "custom_pads.kicad_pcb",
+    "notched_zones.kicad_pcb",
+    "sliver.kicad_pcb",
+    "tracks_arcs_vias.kicad_pcb",
+    "issue7241.kicad_pcb",
+    "issue10906.kicad_pcb",
+    "issue22798.kicad_pcb",
+    "padstacks_complex.kicad_pcb",
+    "issue12609.kicad_pcb",
+    "issue22794.kicad_pcb",
+};
+
+} // anonymous namespace
+
+
+struct IPC2581_EXPORT_FIXTURE
+{
+    IPC2581_EXPORT_FIXTURE() :
+        m_xmllintAvailable( IsXmllintAvailable() )
+    {
+    }
+
+    ~IPC2581_EXPORT_FIXTURE()
+    {
+        // Clean up temporary files
+        for( const wxString& path : m_tempFiles )
+        {
+            if( wxFileExists( path ) )
+                wxRemoveFile( path );
+        }
+    }
+
+    wxString CreateTempFile( const wxString& aSuffix = wxT( "" ) )
+    {
+        wxString path = wxFileName::CreateTempFileName( wxT( "kicad_ipc2581_test" ) );
+
+        if( !aSuffix.IsEmpty() )
+            path += aSuffix;
+        else
+            path += wxT( ".xml" );
+
+        m_tempFiles.push_back( path );
+        return path;
+    }
+
+    wxString GetXsdPath( char aVersion ) const
+    {
+        wxString filename = ( aVersion == 'C' ) ? wxT( "IPC-2581C.xsd" ) : wxT( "IPC-2581B1.xsd" );
+        return KI_TEST::GetPcbnewTestDataDir() + "ipc2581/" + filename;
+    }
+
+    bool SchemaCheckEnabled( const wxString& aXsdPath, wxString& aError ) const
+    {
+        aError.clear();
+
+        if( !m_xmllintAvailable )
+            aError = wxS( "xmllint is unavailable" );
+        else if( !wxFileExists( aXsdPath ) )
+            aError = wxS( "IPC-2581 schema is missing: " ) + aXsdPath;
+
+        return aError.IsEmpty();
+    }
+
+    bool SchemaCheckReady( char aVersion ) const
+    {
+        wxString error;
+
+        if( SchemaCheckEnabled( GetXsdPath( aVersion ), error ) )
+            return true;
+
+        if( XmllintRequired() )
+            BOOST_ERROR( "KICAD_QA_REQUIRE_XMLLINT=1: " << error.ToStdString() );
+        else
+            BOOST_WARN_MESSAGE( false, error.ToStdString() );
+
+        return false;
+    }
+
+    std::unique_ptr<BOARD> LoadBoard( const std::string& aRelativePath )
+    {
+        std::string fullPath = KI_TEST::GetPcbnewTestDataDir() + aRelativePath;
+
+        return m_kicadPlugin.LoadBoard( fullPath );
+    }
+
+    bool ExportAndValidate( BOARD& aBoard, char aVersion, wxString& aErrorMsg,
+                           const std::string& aMode = std::string(),
+                           const std::string& aRefDes = std::string(),
+                           const std::string& aSections = std::string() )
+    {
+        wxString tempPath = CreateTempFile();
+
+        std::map<std::string, UTF8> props;
+        props["units"] = "mm";
+        props["version"] = std::string( 1, aVersion );
+        props["sigfig"] = "3";
+
+        if( !aMode.empty() )
+            props["mode"] = aMode;
+
+        if( !aRefDes.empty() )
+        {
+            props["refdes"] = aRefDes;
+            props["netnames"] = "anonymize";
+        }
+
+        if( !aSections.empty() )
+            props["sections"] = aSections;
+
+        try
+        {
+            m_ipc2581Plugin.SaveBoard( tempPath, aBoard, &props );
+        }
+        catch( const std::exception& e )
+        {
+            aErrorMsg = wxString::Format( "Export failed: %s", e.what() );
+            return false;
+        }
+
+        if( !wxFileExists( tempPath ) )
+        {
+            aErrorMsg = "Export file was not created";
+            return false;
+        }
+
+        wxString xsdPath = GetXsdPath( aVersion );
+        wxString unavailable;
+
+        if( !SchemaCheckEnabled( xsdPath, unavailable ) )
+        {
+            if( XmllintRequired() )
+            {
+                aErrorMsg = wxS( "KICAD_QA_REQUIRE_XMLLINT=1: " ) + unavailable;
+                return false;
+            }
+
+            return true;
+        }
+
+        aErrorMsg = ValidateXmlWithXsd( tempPath, xsdPath );
+        return aErrorMsg.IsEmpty();
+    }
+
+    bool                     m_xmllintAvailable;
+    std::vector<wxString>    m_tempFiles;
+    PCB_IO_IPC2581           m_ipc2581Plugin;
+    PCB_IO_KICAD_SEXPR       m_kicadPlugin;
+};
+
+
+BOOST_FIXTURE_TEST_SUITE( Ipc2581Export, IPC2581_EXPORT_FIXTURE )
+
+
+BOOST_AUTO_TEST_CASE( Ipc2581PadHoleMatchesNcDrill )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "odbpp/pad_roles.kicad_pcb" );
+    BOOST_REQUIRE( board );
+    using HOLE_KEY = std::tuple<int, int, int>;
+    std::multiset<HOLE_KEY> expected;
+    int slots = 0;
+
+    for( bool nonPlated : { false, true } )
+    {
+        DRILL_QUERY query;
+        query.m_Span = DRILL_SPAN( F_Cu, B_Cu, false, nonPlated );
+        query.m_NonPlatedOnly = nonPlated;
+
+        for( const DRILL_OPERATION& op : EnumerateDrillOperations( *board, query ) )
+        {
+            if( op.m_SourceItem->Type() != PCB_PAD_T )
+                continue;
+
+            if( op.m_IsSlot )
+                slots++;
+            else
+                expected.emplace( op.m_Position.x, -op.m_Position.y, op.m_Diameter );
+        }
+    }
+
+    BOOST_REQUIRE_GT( expected.size(), 0 );
+    BOOST_REQUIRE_GT( slots, 0 );
+
+    wxString output = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( output, *board, &props ) );
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( output ) );
+    std::vector<wxXmlNode*> holes;
+    CollectXmlElements( document.GetRoot(), wxS( "Hole" ), holes );
+    std::multiset<HOLE_KEY> actual;
+
+    auto toIu = []( const wxString& aValue )
+    {
+        return static_cast<int>( std::llround( std::stod( aValue.ToStdString() ) * PCB_IU_PER_MM ) );
+    };
+
+    for( wxXmlNode* hole : holes )
+    {
+        wxString plating = hole->GetAttribute( wxS( "platingStatus" ) );
+
+        if( plating == wxS( "PLATED" ) || plating == wxS( "NONPLATED" ) )
+        {
+            actual.emplace( toIu( hole->GetAttribute( wxS( "x" ) ) ),
+                            toIu( hole->GetAttribute( wxS( "y" ) ) ),
+                            toIu( hole->GetAttribute( wxS( "diameter" ) ) ) );
+        }
+    }
+
+    BOOST_CHECK( actual == expected );
+}
+
+
+BOOST_AUTO_TEST_CASE( Ipc2581User10FeaturesHaveDeclaredLayer )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "ipc2581/user10-content.kicad_pcb" );
+    BOOST_REQUIRE( board );
+    BOOST_REQUIRE( board->IsLayerEnabled( User_10 ) );
+
+    bool hasUser10Drawing = false;
+
+    for( BOARD_ITEM* drawing : board->Drawings() )
+        hasUser10Drawing |= drawing->GetLayer() == User_10;
+
+    BOOST_REQUIRE( hasUser10Drawing );
+    wxString output = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( output, *board, &props ) );
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( output ) );
+    std::vector<wxXmlNode*> layers;
+    std::vector<wxXmlNode*> features;
+    CollectXmlElements( document.GetRoot(), wxS( "Layer" ), layers );
+    CollectXmlElements( document.GetRoot(), wxS( "LayerFeature" ), features );
+    std::set<wxString> names;
+    bool user10Declared = false;
+    bool user10HasFeature = false;
+
+    for( wxXmlNode* layer : layers )
+    {
+        wxString name = layer->GetAttribute( wxS( "name" ) );
+        names.insert( name );
+
+        if( name == wxS( "User.10" ) )
+        {
+            user10Declared = true;
+            BOOST_CHECK_EQUAL( layer->GetAttribute( wxS( "layerFunction" ) ), wxString( wxS( "DOCUMENT" ) ) );
+            BOOST_CHECK_EQUAL( layer->GetAttribute( wxS( "polarity" ) ), wxString( wxS( "POSITIVE" ) ) );
+            BOOST_CHECK_EQUAL( layer->GetAttribute( wxS( "side" ) ), wxString( wxS( "NONE" ) ) );
+        }
+    }
+
+    for( wxXmlNode* feature : features )
+    {
+        wxString reference = feature->GetAttribute( wxS( "layerRef" ) );
+        BOOST_CHECK( !reference.IsEmpty() );
+        BOOST_CHECK( names.count( reference ) != 0 );
+
+        if( reference == wxS( "User.10" ) )
+            user10HasFeature = feature->GetChildren() != nullptr;
+    }
+
+    BOOST_CHECK( user10Declared );
+    BOOST_CHECK( user10HasFeature );
+
+    if( SchemaCheckReady( 'C' ) )
+    {
+        wxString schemaError = ValidateXmlWithXsd( output, GetXsdPath( 'C' ) );
+        BOOST_CHECK_MESSAGE( schemaError.IsEmpty(), schemaError.ToStdString() );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( Ipc2581LogicalNetUsesPackagePinName )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "ipc2581/netted_unnumbered.kicad_pcb" );
+    BOOST_REQUIRE( board );
+    FOOTPRINT* footprint = nullptr;
+    PAD* target = nullptr;
+    size_t padIndex = 0;
+    size_t matches = 0;
+
+    for( FOOTPRINT* fp : board->Footprints() )
+    {
+        for( size_t i = 0; i < fp->Pads().size(); ++i )
+        {
+            PAD* pad = fp->Pads()[i];
+
+            if( pad->GetNumber().IsEmpty() && pad->GetNetCode() > 0 )
+            {
+                ++matches;
+                footprint = fp;
+                target = pad;
+                padIndex = i;
+            }
+        }
+    }
+
+    BOOST_REQUIRE_EQUAL( matches, 1u );
+    wxString expectedPin = MakeFabPin( *target, padIndex ).m_name;
+    BOOST_REQUIRE( expectedPin.StartsWith( wxS( "PAD" ) ) );
+    wxString component = footprint->GetReference();
+    wxString netName = target->GetNetname();
+    BOOST_REQUIRE( component == wxS( "SMD1" ) );
+    BOOST_REQUIRE( netName == wxS( "AVDD" ) );
+    wxString output = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    IPC2581::SECTION_SET sections = IPC2581::LegacySections();
+    sections.Set( IPC2581::SECTION::LOGICAL_NET );
+    props["sections"] = IPC2581::SectionKeyString( sections ).ToStdString();
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( output, *board, &props ) );
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( output ) );
+    std::vector<wxXmlNode*> pins;
+    std::vector<wxXmlNode*> pinRefs;
+    std::vector<wxXmlNode*> logicalNets;
+    CollectXmlElements( document.GetRoot(), wxS( "Pin" ), pins );
+    CollectXmlElements( document.GetRoot(), wxS( "PinRef" ), pinRefs );
+    CollectXmlElements( document.GetRoot(), wxS( "LogicalNet" ), logicalNets );
+    BOOST_REQUIRE_GT( logicalNets.size(), 0u );
+    bool hasPackagePin = false;
+    bool hasPadPinRef = false;
+    bool hasLogicalPinRef = false;
+
+    for( wxXmlNode* pin : pins )
+        hasPackagePin |= pin->GetAttribute( wxS( "number" ) ) == expectedPin;
+
+    for( wxXmlNode* ref : pinRefs )
+    {
+        if( ref->GetAttribute( wxS( "componentRef" ) ) != component
+            || ref->GetAttribute( wxS( "pin" ) ) != expectedPin )
+        {
+            continue;
+        }
+
+        wxXmlNode* parent = ref->GetParent();
+
+        if( parent->GetName() == wxS( "Pad" ) )
+            hasPadPinRef = true;
+        else if( parent->GetName() == wxS( "LogicalNet" ) && parent->GetAttribute( wxS( "name" ) ) == netName )
+            hasLogicalPinRef = true;
+    }
+
+    BOOST_CHECK( hasPackagePin );
+    BOOST_CHECK( hasPadPinRef );
+    BOOST_CHECK( hasLogicalPinRef );
+}
+
+
+BOOST_AUTO_TEST_CASE( Ipc2581ViaProtectionUsesBoardDefaults )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "drc_via_stack/FillFromBoardHonoursTheBoardDefault.kicad_pcb" );
+    BOOST_REQUIRE( board );
+    const BOARD_DESIGN_SETTINGS& settings = board->GetDesignSettings();
+    BOOST_REQUIRE( settings.m_FillVias );
+    BOOST_REQUIRE( settings.m_TentViasFront );
+    BOOST_REQUIRE( settings.m_TentViasBack );
+    BOOST_REQUIRE_EQUAL( board->Tracks().size(), 2u );
+
+    for( const PCB_TRACK* track : board->Tracks() )
+    {
+        BOOST_REQUIRE( track->Type() == PCB_VIA_T );
+        const PCB_VIA* via = static_cast<const PCB_VIA*>( track );
+        BOOST_REQUIRE( !via->Padstack().IsFilled().has_value() );
+        BOOST_REQUIRE( !via->Padstack().IsTented( F_Cu ).has_value() );
+    }
+
+    wxString output = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( output, *board, &props ) );
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( output ) );
+    std::vector<wxXmlNode*> layers;
+    CollectXmlElements( document.GetRoot(), wxS( "Layer" ), layers );
+    std::set<wxString> fillingNames;
+    std::set<wxString> tentingNames;
+
+    for( wxXmlNode* layer : layers )
+    {
+        wxString function = layer->GetAttribute( wxS( "layerFunction" ) );
+
+        if( function == wxS( "HOLEFILL" ) && FindXmlChild( layer, wxS( "Span" ) ) )
+            fillingNames.insert( layer->GetAttribute( wxS( "name" ) ) );
+
+        if( function == wxS( "COATINGNONCOND" ) && !FindXmlChild( layer, wxS( "Span" ) ) )
+            tentingNames.insert( layer->GetAttribute( wxS( "name" ) ) );
+    }
+
+    BOOST_REQUIRE_EQUAL( fillingNames.size(), 2u );
+    BOOST_REQUIRE_EQUAL( tentingNames.size(), 1u );
+    std::vector<wxXmlNode*> padDefs;
+    CollectXmlElements( document.GetRoot(), wxS( "PadstackPadDef" ), padDefs );
+    std::set<wxString> padRefs;
+
+    for( wxXmlNode* padDef : padDefs )
+        padRefs.insert( padDef->GetAttribute( wxS( "layerRef" ) ) );
+
+    for( const wxString& name : fillingNames )
+        BOOST_CHECK( padRefs.contains( name ) );
+
+    for( const wxString& name : tentingNames )
+        BOOST_CHECK( padRefs.contains( name ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( CompressedExportKeepsXmlAtArchiveRoot )
+{
+    std::unique_ptr<BOARD>   board = LoadBoard( "issue14130.kicad_pcb" );
+    KI_TEST::SCOPED_TEMP_DIR dir( wxT( "ipc_archive" ) );
+    wxString                 output = wxString( ( dir.Path() / "ipc.zip" ).wstring() );
+    BOOST_REQUIRE( board );
+
+    JOB_EXPORT_PCB_IPC2581 job;
+    job.m_compress = true;
+    job.SetConfiguredOutputPath( output );
+
+    WX_STRING_REPORTER reporter;
+    BOOST_REQUIRE_MESSAGE( GenerateIpc2581File( job, board.get(), nullptr, &reporter ),
+                           reporter.GetMessages().ToStdString() );
+
+    wxFFileInputStream input( output );
+    wxZipInputStream   archive( input );
+    std::unique_ptr<wxArchiveEntry> entry( archive.GetNextEntry() );
+    BOOST_REQUIRE( entry );
+    BOOST_CHECK( entry->GetName() == wxS( "ipc.xml" ) );
+    std::unique_ptr<wxArchiveEntry> next( archive.GetNextEntry() );
+    BOOST_CHECK( !next );
+}
+
+
+BOOST_AUTO_TEST_CASE( EmptyIpcSectionSelectionFailsExport )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "issue14130.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    KI_TEST::SCOPED_TEMP_DIR dir( wxT( "ipc_empty_sections" ) );
+    wxString                 output = wxString( ( dir.Path() / "empty.xml" ).wstring() );
+    JOB_EXPORT_PCB_IPC2581   job;
+    job.FromJson( nlohmann::json{ { "mode", "USERDEF" }, { "sections", "" }, { "custom_sections", true } } );
+    job.SetConfiguredOutputPath( output );
+
+    WX_STRING_REPORTER reporter;
+    BOOST_CHECK( !GenerateIpc2581File( job, board.get(), nullptr, &reporter ) );
+    BOOST_CHECK( reporter.GetMessages().Contains( wxS( "No IPC-2581 content selected" ) ) );
+    BOOST_CHECK( !wxFileExists( output ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( Ipc2581VariantPropertySelectsPopulation )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "variant_test/variant_test.kicad_pcb" );
+    BOOST_REQUIRE( board );
+    BOOST_REQUIRE( board->HasVariant( wxS( "Variant A" ) ) );
+    wxString                 current = board->GetCurrentVariant();
+    KI_TEST::SCOPED_TEMP_DIR dir( wxT( "ipc_variant_property" ) );
+    wxString                 output = wxString( ( dir.Path() / "variant.xml" ).wstring() );
+    JOB_EXPORT_PCB_IPC2581   job;
+    job.m_variantNames = { wxS( "Variant A" ) };
+    job.m_colInternalId = wxS( "Datasheet" );
+    job.SetConfiguredOutputPath( output );
+    WX_STRING_REPORTER reporter;
+    BOOST_REQUIRE_MESSAGE( GenerateIpc2581File( job, board.get(), nullptr, &reporter ),
+                           reporter.GetMessages().ToStdString() );
+    BOOST_CHECK_EQUAL( board->GetCurrentVariant(), current );
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( output ) );
+    std::vector<wxXmlNode*> refdes;
+    CollectXmlElements( document.GetRoot(), wxS( "RefDes" ), refdes );
+    bool found = false;
+
+    for( wxXmlNode* node : refdes )
+    {
+        if( node->GetAttribute( wxS( "name" ) ) == wxS( "R2" ) )
+        {
+            BOOST_CHECK_EQUAL( node->GetAttribute( wxS( "populate" ) ), wxString( wxS( "true" ) ) );
+            found = true;
+        }
+    }
+
+    BOOST_CHECK( found );
+
+    std::vector<wxXmlNode*> components;
+    CollectXmlElements( document.GetRoot(), wxS( "Component" ), components );
+    bool foundPart = false;
+
+    for( wxXmlNode* node : components )
+    {
+        if( node->GetAttribute( wxS( "refDes" ) ) == wxS( "R1" ) )
+        {
+            BOOST_CHECK_EQUAL( node->GetAttribute( wxS( "part" ) ), wxString( wxS( "test" ) ) );
+            foundPart = true;
+        }
+    }
+
+    BOOST_CHECK( foundPart );
+}
+
+
+BOOST_AUTO_TEST_CASE( IpcBackBlindDrillSpanUsesStackOrder )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "issue23451/3Rs_bv.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    bool hasBackBlindVia = false;
+
+    for( PCB_TRACK* track : board->Tracks() )
+    {
+        if( track->Type() == PCB_VIA_T )
+        {
+            PCB_VIA* via = static_cast<PCB_VIA*>( track );
+            hasBackBlindVia |= via->TopLayer() == In2_Cu && via->BottomLayer() == B_Cu;
+        }
+    }
+
+    BOOST_REQUIRE( hasBackBlindVia );
+
+    wxString                    output = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( output, *board, &props ) );
+
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( output ) );
+    std::vector<wxXmlNode*> layers;
+    CollectXmlElements( document.GetRoot(), wxS( "Layer" ), layers );
+    int matchingSpans = 0;
+
+    for( wxXmlNode* layer : layers )
+    {
+        if( layer->GetAttribute( wxS( "layerFunction" ) ) != wxS( "DRILL" ) )
+            continue;
+
+        wxXmlNode* span = FindXmlChild( layer, wxS( "Span" ) );
+
+        if( span && span->GetAttribute( wxS( "fromLayer" ) ) == board->GetLayerName( In2_Cu )
+            && span->GetAttribute( wxS( "toLayer" ) ) == board->GetLayerName( B_Cu ) )
+        {
+            ++matchingSpans;
+        }
+    }
+
+    BOOST_CHECK_EQUAL( matchingSpans, 1 );
+}
+
+
+BOOST_AUTO_TEST_CASE( IpcExportLeavesBoardStackupUntouched )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "custom_pads.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    BOARD_DESIGN_SETTINGS&           settings = board->GetDesignSettings();
+    BOARD_STACKUP                    before = settings.GetStackupDescriptor();
+    std::vector<BOARD_STACKUP_ITEM*> beforeItems = settings.GetStackupDescriptor().GetList();
+    BOOST_REQUIRE( !beforeItems.empty() );
+
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "3";
+    m_ipc2581Plugin.SaveBoard( CreateTempFile(), *board, &props );
+
+    BOOST_CHECK_EQUAL( settings.GetStackupDescriptor().GetCount(), before.GetCount() );
+    BOOST_CHECK( settings.GetStackupDescriptor() == before );
+    BOOST_CHECK( settings.GetStackupDescriptor().GetList() == beforeItems );
+}
+
+
+/**
+ * Test that surface finish is exported correctly (Issue #22690)
+ *
+ * This test verifies that when a board has a surface finish defined:
+ * 1. A Spec element with SurfaceFinish is created
+ * 2. COATING_TOP and COATING_BOTTOM Layer elements are created with layerFunction="COATINGCOND"
+ * 3. StackupLayer entries reference the surface finish Spec
+ */
+BOOST_AUTO_TEST_CASE( SurfaceFinishExport )
+{
+    // Load a board with ENIG surface finish (issue3812.kicad_pcb has ENIG)
+    std::unique_ptr<BOARD> board = LoadBoard( "issue3812.kicad_pcb" );
+
+    BOOST_REQUIRE( board );
+
+    // Verify the board has ENIG finish
+    const BOARD_STACKUP& stackup = board->GetDesignSettings().GetStackupDescriptor();
+    BOOST_CHECK_EQUAL( stackup.m_FinishType, wxT( "ENIG" ) );
+
+    // Export to IPC-2581 version C
+    wxString tempPath = CreateTempFile();
+
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "3";
+
+    m_ipc2581Plugin.SaveBoard( tempPath, *board, &props );
+
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    // Verify SurfaceFinish element is present with correct type attribute
+    // Schema requires: <SurfaceFinish type="ENIG-N"/>
+    BOOST_CHECK_MESSAGE( FileContainsPattern( tempPath, wxT( "<SurfaceFinish" ) ),
+                         "SurfaceFinish element should be present" );
+    BOOST_CHECK_MESSAGE( FileContainsPattern( tempPath, wxT( "type=\"ENIG-N\"" ) ),
+                         "SurfaceFinish type should be ENIG-N" );
+
+    // Verify coating layers are present
+    BOOST_CHECK_MESSAGE( FileContainsPattern( tempPath, wxT( "COATING_TOP" ) ),
+                         "COATING_TOP layer should be present" );
+    BOOST_CHECK_MESSAGE( FileContainsPattern( tempPath, wxT( "COATING_BOTTOM" ) ),
+                         "COATING_BOTTOM layer should be present" );
+    BOOST_CHECK_MESSAGE( FileContainsPattern( tempPath, wxT( "layerFunction=\"COATINGCOND\"" ) ),
+                         "Coating layers should have layerFunction=COATINGCOND" );
+
+    // Note: XSD validation is done separately in SchemaValidation tests.
+    // This test focuses on verifying the surface finish elements are present.
+}
+
+
+/**
+ * Test that boards without surface finish don't generate coating layers
+ */
+BOOST_AUTO_TEST_CASE( NoSurfaceFinishExport )
+{
+    // Load a board without surface finish (vme-wren.kicad_pcb has "None")
+    std::unique_ptr<BOARD> board = LoadBoard( "vme-wren.kicad_pcb" );
+
+    BOOST_REQUIRE( board );
+
+    // Verify the board has no finish
+    const BOARD_STACKUP& stackup = board->GetDesignSettings().GetStackupDescriptor();
+    BOOST_CHECK( stackup.m_FinishType == wxT( "None" ) || stackup.m_FinishType.IsEmpty() );
+
+    // Export to IPC-2581 version C
+    wxString tempPath = CreateTempFile();
+
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "3";
+
+    m_ipc2581Plugin.SaveBoard( tempPath, *board, &props );
+
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    // Verify SurfaceFinish element is NOT present
+    BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "<SurfaceFinish" ) ),
+                         "SurfaceFinish element should not be present for 'None' finish" );
+
+    // Verify coating layers are NOT present
+    BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "COATING_TOP" ) ),
+                         "COATING_TOP layer should not be present" );
+    BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "COATING_BOTTOM" ) ),
+                         "COATING_BOTTOM layer should not be present" );
+
+    // Note: XSD validation is done separately in SchemaValidation tests.
+    // This test focuses on verifying coating layers are NOT present for "None" finish.
+}
+
+
+BOOST_AUTO_TEST_CASE( RequiredSchemaCheckRejectsMissingXmllint )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "padstacks_complex.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    KI_TEST::SCOPED_PROCESS_ENV_VAR requireXmllint( wxS( "KICAD_QA_REQUIRE_XMLLINT" ), std::nullopt );
+    m_xmllintAvailable = false;
+    wxString errorMsg;
+    BOOST_CHECK( ExportAndValidate( *board, 'C', errorMsg ) );
+    BOOST_CHECK( errorMsg.IsEmpty() );
+
+    requireXmllint.SetValue( wxS( "1" ) );
+    bool valid = ExportAndValidate( *board, 'C', errorMsg );
+    BOOST_CHECK( !valid );
+    BOOST_CHECK( errorMsg.Contains( wxS( "xmllint" ) ) );
+    BOOST_CHECK( errorMsg.Contains( wxS( "KICAD_QA_REQUIRE_XMLLINT" ) ) );
+
+    m_xmllintAvailable = true;
+    wxString missingXsd = GetXsdPath( 'C' ) + wxS( ".missing" );
+    BOOST_CHECK( !SchemaCheckEnabled( missingXsd, errorMsg ) );
+    BOOST_CHECK( errorMsg.Contains( missingXsd ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( SchemaValidationRejectsInvalidDocument )
+{
+    if( !SchemaCheckReady( 'C' ) )
+        return;
+
+    std::unique_ptr<BOARD> board = LoadBoard( "padstacks_complex.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    wxString                    validPath = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" } };
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( validPath, *board, &props ) );
+    BOOST_CHECK( ValidateXmlWithXsd( validPath, GetXsdPath( 'C' ) ).IsEmpty() );
+
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( validPath ) );
+    wxXmlNode* content = FindXmlChild( document.GetRoot(), wxS( "Content" ) );
+    BOOST_REQUIRE( content );
+    content->AddChild( new wxXmlNode( wxXML_ELEMENT_NODE, wxS( "KiCadNotInSchema" ) ) );
+
+    wxString invalidPath = CreateTempFile();
+    BOOST_REQUIRE( document.Save( invalidPath ) );
+    wxString error = ValidateXmlWithXsd( invalidPath, GetXsdPath( 'C' ) );
+    BOOST_CHECK( error.Contains( wxS( "KiCadNotInSchema" ) ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( XmllintFailureWithoutStderrIsReported )
+{
+    wxArrayString errors;
+    BOOST_CHECK( XmllintFailureMessage( 0, errors ).IsEmpty() );
+
+    wxString silentFailure = XmllintFailureMessage( -1, errors );
+    BOOST_CHECK( !silentFailure.IsEmpty() );
+    BOOST_CHECK( silentFailure.Contains( wxS( "-1" ) ) );
+
+    errors.Add( wxS( "broken.xml fails to validate" ) );
+    BOOST_CHECK_EQUAL( XmllintFailureMessage( 1, errors ), wxString( wxS( "broken.xml fails to validate\n" ) ) );
+}
+
+
+/**
+ * Validate IPC-2581B export against schema for multiple boards
+ *
+ * This test exports each board in VALIDATION_TEST_BOARDS to IPC-2581B format
+ * and validates against the IPC-2581B1.xsd schema using xmllint (if available).
+ */
+BOOST_AUTO_TEST_CASE( SchemaValidationVersionB )
+{
+    if( !SchemaCheckReady( 'B' ) )
+        return;
+
+    for( const std::string& boardFile : VALIDATION_TEST_BOARDS )
+    {
+        BOOST_TEST_CONTEXT( "Board: " << boardFile << " (Version B)" )
+        {
+            std::unique_ptr<BOARD> board = LoadBoard( boardFile );
+
+            if( !board )
+            {
+                BOOST_WARN_MESSAGE( false, "Could not load board: " + boardFile );
+                continue;
+            }
+
+            wxString errorMsg;
+            bool valid = ExportAndValidate( *board, 'B', errorMsg );
+
+            BOOST_CHECK_MESSAGE( valid, "IPC-2581B validation failed for " + boardFile + ": " + errorMsg );
+        }
+    }
+}
+
+
+/**
+ * Validate IPC-2581C export against schema for multiple boards
+ *
+ * This test exports each board in VALIDATION_TEST_BOARDS to IPC-2581C format
+ * and validates against the IPC-2581C.xsd schema using xmllint (if available).
+ */
+BOOST_AUTO_TEST_CASE( SchemaValidationVersionC )
+{
+    if( !SchemaCheckReady( 'C' ) )
+        return;
+
+    for( const std::string& boardFile : VALIDATION_TEST_BOARDS )
+    {
+        BOOST_TEST_CONTEXT( "Board: " << boardFile << " (Version C)" )
+        {
+            std::unique_ptr<BOARD> board = LoadBoard( boardFile );
+
+            if( !board )
+            {
+                BOOST_WARN_MESSAGE( false, "Could not load board: " + boardFile );
+                continue;
+            }
+
+            wxString errorMsg;
+            bool valid = ExportAndValidate( *board, 'C', errorMsg );
+
+            BOOST_CHECK_MESSAGE( valid, "IPC-2581C validation failed for " + boardFile + ": " + errorMsg );
+        }
+    }
+}
+
+
+/**
+ * Test export of boards with complex features
+ *
+ * Tests boards with zones, custom pads, and other features that may
+ * exercise edge cases in the IPC-2581 exporter.
+ */
+/**
+ * Every IPC-2581 data set must produce a schema-valid file in both revisions, including
+ * with net names and reference designators withheld.
+ */
+BOOST_AUTO_TEST_CASE( FunctionModeSchemaValidation )
+{
+    if( !SchemaCheckReady( 'C' ) )
+        return;
+
+    static const std::vector<std::string> modes = { "userdef",  "bom",  "stackup", "fabrication",
+                                                    "assembly", "test", "stencil" };
+
+    // Boards chosen for differing content: inner copper, custom pad shapes, and vias
+    static const std::vector<std::string> boards = { "padstacks_complex.kicad_pcb",
+                                                     "custom_pads.kicad_pcb",
+                                                     "tracks_arcs_vias.kicad_pcb" };
+
+    for( const std::string& boardFile : boards )
+    {
+        std::unique_ptr<BOARD> board = LoadBoard( boardFile );
+
+        if( !board )
+        {
+            BOOST_WARN_MESSAGE( false, "Could not load board: " + boardFile );
+            continue;
+        }
+
+        for( const std::string& mode : modes )
+        {
+            for( char version : { 'B', 'C' } )
+            {
+                if( !SchemaCheckReady( version ) )
+                    continue;
+
+                for( const std::string& refdes : { std::string(), std::string( "omit" ) } )
+                {
+                    BOOST_TEST_CONTEXT( "Board: " << boardFile << " Mode: " << mode
+                                        << " Version: " << version
+                                        << " RefDes: " << ( refdes.empty() ? "include" : refdes ) )
+                    {
+                        wxString errorMsg;
+                        bool     valid = ExportAndValidate( *board, version, errorMsg, mode,
+                                                            refdes );
+
+                        BOOST_CHECK_MESSAGE( valid, "validation failed: " + errorMsg );
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/**
+ * Section keys the Table 4 data sets never produce on their own, where a referring
+ * attribute has to be suppressed rather than its section dragged back in.
+ */
+BOOST_AUTO_TEST_CASE( FunctionModeSuppressedReferences )
+{
+    if( !SchemaCheckReady( 'C' ) )
+        return;
+
+    // Components without packages, without a BOM, and without padstacks respectively
+    static const std::vector<std::string> sectionKeys = { "AOU", "ACOU", "KACOU", "ABOU" };
+
+    std::unique_ptr<BOARD> board = LoadBoard( "padstacks_complex.kicad_pcb" );
+
+    BOOST_REQUIRE( board );
+
+    for( const std::string& sections : sectionKeys )
+    {
+        for( char version : { 'B', 'C' } )
+        {
+            if( !SchemaCheckReady( version ) )
+                continue;
+
+            BOOST_TEST_CONTEXT( "Sections: " << sections << " Version: " << version )
+            {
+                wxString errorMsg;
+                bool     valid = ExportAndValidate( *board, version, errorMsg, "userdef",
+                                                    std::string(), sections );
+
+                // Revision B cannot express components without packages and must say so
+                if( version == 'B' && sections.find( 'C' ) == std::string::npos )
+                    BOOST_CHECK_MESSAGE( !valid, "IPC-2581B accepted components with no package" );
+                else
+                    BOOST_CHECK_MESSAGE( valid, "validation failed: " + errorMsg );
+            }
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( ComplexBoardExport )
+{
+    // Test boards with specific complex features
+    static const std::vector<std::string> complexBoards = {
+        "intersectingzones.kicad_pcb",
+        "custom_pads.kicad_pcb",
+    };
+
+    for( const std::string& boardFile : complexBoards )
+    {
+        BOOST_TEST_CONTEXT( "Complex board: " << boardFile )
+        {
+            std::unique_ptr<BOARD> board = LoadBoard( boardFile );
+
+            if( !board )
+            {
+                BOOST_WARN_MESSAGE( false, "Could not load board: " + boardFile );
+                continue;
+            }
+
+            // Test both versions
+            for( char version : { 'B', 'C' } )
+            {
+                BOOST_TEST_CONTEXT( "Version " << version )
+                {
+                    wxString errorMsg;
+                    bool valid = ExportAndValidate( *board, version, errorMsg );
+
+                    BOOST_CHECK_MESSAGE( valid,
+                        wxString::Format( "Export/validation failed for %s version %c: %s",
+                                          boardFile, version, errorMsg ) );
+                }
+            }
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( DegenerateTrackArcExportsAsLine )
+{
+    BOARD board;
+    board.SetCopperLayerCount( 2 );
+
+    NETINFO_ITEM* net = new NETINFO_ITEM( &board, wxT( "TestNet" ), 1 );
+    board.Add( net );
+
+    PCB_ARC* arc = new PCB_ARC( &board );
+    arc->SetStart( VECTOR2I( 110737101, 51206997 ) );
+    arc->SetMid( VECTOR2I( 110737003, 51206898 ) );
+    arc->SetEnd( VECTOR2I( 110736905, 51206799 ) );
+    arc->SetWidth( pcbIUScale.mmToIU( 0.11684 ) );
+    arc->SetLayer( F_Cu );
+    arc->SetNet( net );
+    board.Add( arc );
+
+    wxString tempPath = CreateTempFile();
+
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "6";
+
+    m_ipc2581Plugin.SaveBoard( tempPath, board, &props );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    BOOST_CHECK( FileContainsPattern( tempPath, wxT( "<Line " ) ) );
+    BOOST_CHECK( !FileContainsPattern( tempPath, wxT( "<Arc " ) ) );
+}
+
+
+/**
+ * Test that text boxes use their calculated drawing position in IPC-2581 output.
+ *
+ * Unlike ordinary text, PCB_TEXTBOX stores its anchor in the box geometry and
+ * overrides GetDrawPos() to calculate it.  GetTextPos() is normally zero, so
+ * using it places the exported text at the board origin.
+ */
+BOOST_AUTO_TEST_CASE( TextBoxUsesDrawPosition )
+{
+    BOARD board;
+
+    PCB_TEXTBOX* textbox = new PCB_TEXTBOX( &board );
+    textbox->SetLayer( F_SilkS );
+    textbox->SetStart( { pcbIUScale.mmToIU( 100 ), pcbIUScale.mmToIU( 50 ) } );
+    textbox->SetEnd( { pcbIUScale.mmToIU( 120 ), pcbIUScale.mmToIU( 60 ) } );
+    textbox->SetText( wxT( "IPC textbox" ) );
+    textbox->SetTextSize( { pcbIUScale.mmToIU( 1 ), pcbIUScale.mmToIU( 1 ) } );
+    textbox->SetTextThickness( pcbIUScale.mmToIU( 0.15 ) );
+    textbox->SetHorizJustify( GR_TEXT_H_ALIGN_LEFT );
+    textbox->SetVertJustify( GR_TEXT_V_ALIGN_TOP );
+    textbox->SetMarginLeft( 0 );
+    textbox->SetMarginTop( 0 );
+    textbox->SetBorderEnabled( false );
+    board.Add( textbox );
+
+    wxString tempPath = CreateTempFile();
+
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "6";
+
+    m_ipc2581Plugin.SaveBoard( tempPath, board, &props );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    std::ifstream xmlFile( tempPath.ToStdString() );
+    BOOST_REQUIRE( xmlFile.is_open() );
+
+    std::string xmlContent( ( std::istreambuf_iterator<char>( xmlFile ) ), std::istreambuf_iterator<char>() );
+    size_t      textStart = xmlContent.find( "value=\"IPC textbox\"" );
+    BOOST_REQUIRE_MESSAGE( textStart != std::string::npos, "Export should contain the text box feature" );
+
+    size_t setEnd = xmlContent.find( "</Set>", textStart );
+    BOOST_REQUIRE( setEnd != std::string::npos );
+
+    std::string textFeature = xmlContent.substr( textStart, setEnd - textStart );
+
+    BOOST_CHECK_MESSAGE( XmlRegionHasCoordinateNear( textFeature, 'x', 100.0, 5.0 ),
+                         "Text box geometry should use its X drawing position" );
+    BOOST_CHECK_MESSAGE( XmlRegionHasCoordinateNear( textFeature, 'y', -50.0, 5.0 ),
+                         "Text box geometry should use its Y drawing position" );
+}
+
+
+/**
+ * Pads with authored F.Mask layers emit IPC-2581 mask features
+ * Issue #16658
+ */
+BOOST_AUTO_TEST_CASE( SmdPadSolderMaskExport_Issue16658 )
+{
+    // Load a board with standard SMD components (capacitors using SMD footprints)
+    std::unique_ptr<BOARD> board = LoadBoard( "issue16658/issue16658.kicad_pcb" );
+
+    BOOST_REQUIRE( board );
+
+    bool hasMaskedSmtPad = false;
+
+    for( FOOTPRINT* fp : board->Footprints() )
+    {
+        for( PAD* pad : fp->Pads() )
+        {
+            if( pad->GetAttribute() == PAD_ATTRIB::SMD && pad->IsOnLayer( F_Mask ) )
+                hasMaskedSmtPad = true;
+        }
+    }
+
+    BOOST_REQUIRE_MESSAGE( hasMaskedSmtPad, "Test board should have an authored F.Mask SMD pad" );
+
+    // Export to IPC-2581 version C
+    wxString tempPath = CreateTempFile();
+
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "3";
+
+    m_ipc2581Plugin.SaveBoard( tempPath, *board, &props );
+
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    // Verify that F_Mask layer features are present in the export
+    // (this was the bug - mask layers were empty for SMD pads)
+    bool hasFMaskLayer = FileContainsPattern( tempPath, wxT( "layerRef=\"F.Mask\"" ) )
+                         || FileContainsPattern( tempPath, wxT( "layerRef=\"TSM\"" ) );
+
+    BOOST_CHECK_MESSAGE( hasFMaskLayer,
+                         "IPC-2581 export should contain F.Mask layer features for SMD pads" );
+
+    // Also check for LayerFeature element with mask layer reference
+    bool hasLayerFeature = FileContainsPattern( tempPath, wxT( "<LayerFeature" ) );
+    BOOST_CHECK_MESSAGE( hasLayerFeature, "IPC-2581 export should contain LayerFeature elements" );
+}
+
+
+/**
+ * Extract the text of the first LayerFeature block for a given layer reference.
+ * Returns an empty string when no such LayerFeature exists.
+ */
+static std::string LayerFeatureRegion( const std::string& aXml, const std::string& aLayerRef )
+{
+    const std::string open = "<LayerFeature layerRef=\"" + aLayerRef + "\"";
+    size_t start = aXml.find( open );
+
+    if( start == std::string::npos )
+        return std::string();
+
+    size_t end = aXml.find( "</LayerFeature>", start );
+
+    if( end == std::string::npos )
+        return std::string();
+
+    return aXml.substr( start, end - start );
+}
+
+
+BOOST_AUTO_TEST_CASE( TentedThermalViaPadsDoNotOpenMask )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "connect/connect.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    wxString tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    m_ipc2581Plugin.SaveBoard( tempPath, *board, &props );
+
+    std::ifstream stream( tempPath.ToStdString(), std::ios::binary );
+    BOOST_REQUIRE( stream );
+    std::string xml( std::istreambuf_iterator<char>{ stream }, std::istreambuf_iterator<char>{} );
+    const std::string thermalPin = "<PinRef componentRef=\"U102\" pin=\"65\"";
+    auto countThermalPins = [&]( const std::string& aLayer )
+    {
+        std::string mask = LayerFeatureRegion( xml, aLayer );
+        BOOST_REQUIRE( !mask.empty() );
+        size_t count = 0;
+        size_t pos = 0;
+
+        while( ( pos = mask.find( thermalPin, pos ) ) != std::string::npos )
+        {
+            ++count;
+            pos += thermalPin.size();
+        }
+
+        return count;
+    };
+
+    BOOST_CHECK_EQUAL( countThermalPins( "F.Mask" ), 1u );
+    BOOST_CHECK_EQUAL( countThermalPins( "B.Mask" ), 0u );
+}
+
+
+/**
+ * Test that footprints with empty references produce valid XML attributes.
+ *
+ * Footprints with blank GetReference() must not produce empty refDes,
+ * RefDes/@name, or PinRef/@componentRef attributes, which are
+ * schema-invalid qualified names.
+ */
+BOOST_AUTO_TEST_CASE( EmptyRefDesProducesValidXml )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "padstacks_complex.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    for( char version : { 'B', 'C' } )
+    {
+        BOOST_TEST_CONTEXT( "Version " << version )
+        {
+            wxString tempPath = CreateTempFile();
+
+            std::map<std::string, UTF8> props;
+            props["units"] = "mm";
+            props["version"] = std::string( 1, version );
+            props["sigfig"] = "3";
+
+            m_ipc2581Plugin.SaveBoard( tempPath, *board, &props );
+            BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+            BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "refDes=\"\"" ) ),
+                                 "Empty refDes attribute found" );
+            BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "<RefDes name=\"\"" ) ),
+                                 "Empty RefDes/@name attribute found" );
+            BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "componentRef=\"\"" ) ),
+                                 "Empty PinRef/@componentRef attribute found" );
+        }
+
+        m_ipc2581Plugin = PCB_IO_IPC2581();
+    }
+}
+
+
+/**
+ * Test that flipped component rotation is not inverted (Finding A / Issue #18013)
+ *
+ * IPC-2581C 3.3.2 defines positive rotation as CCW from board top.
+ * mirror="true" handles the X-axis negation for bottom components.
+ * The component rotation must be the normalized board-top angle,
+ * NOT its inverse.
+ */
+BOOST_AUTO_TEST_CASE( FlippedComponentRotation )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "issue12609.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    wxString tempPath = CreateTempFile();
+
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "3";
+
+    m_ipc2581Plugin.SaveBoard( tempPath, *board, &props );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    // C5 is on B.Cu at 90 degrees. Its Component Xform must be rotation="90.0",
+    // not the inverted "270.0". Check by finding Component refDes="C5" and verifying
+    // its Xform has rotation="90.0".
+    std::ifstream xmlFile( tempPath.ToStdString() );
+    BOOST_REQUIRE( xmlFile.is_open() );
+
+    std::string xmlContent( ( std::istreambuf_iterator<char>( xmlFile ) ),
+                            std::istreambuf_iterator<char>() );
+
+    // Find the C5 component and check its rotation
+    size_t c5Pos = xmlContent.find( "refDes=\"C5\"" );
+
+    if( c5Pos == std::string::npos )
+        c5Pos = xmlContent.find( "refDes=\"NOREF_" );
+
+    BOOST_REQUIRE_MESSAGE( c5Pos != std::string::npos,
+                           "C5 component should exist in export" );
+
+    // Look for the Xform within the next 200 chars after refDes="C5"
+    std::string c5Region = xmlContent.substr( c5Pos, 200 );
+    BOOST_CHECK_MESSAGE( c5Region.find( "rotation=\"90.0\"" ) != std::string::npos
+                         || c5Region.find( "rotation=\"90.00\"" ) != std::string::npos,
+                         "C5 component rotation should be 90, not inverted. Region: "
+                         + c5Region );
+}
+
+
+/**
+ * Test that Content section includes BomRef when BOM is emitted
+ */
+BOOST_AUTO_TEST_CASE( ContentBomRef )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "issue12609.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    wxString tempPath = CreateTempFile();
+
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "3";
+
+    m_ipc2581Plugin.SaveBoard( tempPath, *board, &props );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    bool hasBom = FileContainsPattern( tempPath, wxT( "<Bom " ) );
+    bool hasBomRef = FileContainsPattern( tempPath, wxT( "<BomRef " ) );
+
+    if( hasBom )
+    {
+        BOOST_CHECK_MESSAGE( hasBomRef,
+                             "Content should have BomRef when Bom section is present" );
+    }
+}
+
+
+/**
+ * Test that knockout text with holes emits schema-valid XML (Issue #23968)
+ *
+ * Knockout text renders as a filled polygon with each glyph contour becoming
+ * a separate outline. The IPC-2581 FeaturesType allows only one Feature child,
+ * so when a knockout text produces more than one Contour it must be wrapped
+ * in a UserSpecial (which itself is a Feature that may contain any number
+ * of child Features).
+ *
+ * test_copper_graphics.kicad_pcb contains a knockout text "Otherwise" on
+ * B.Cu, whose 'O' glyph produces two contours (outer and inner), which
+ * reproduces the multi-contour case.
+ */
+BOOST_AUTO_TEST_CASE( KnockoutTextMultiContour_Issue23968 )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "test_copper_graphics.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    for( char version : { 'B', 'C' } )
+    {
+        BOOST_TEST_CONTEXT( "Version " << version )
+        {
+            wxString errorMsg;
+            bool valid = ExportAndValidate( *board, version, errorMsg );
+
+            BOOST_CHECK_MESSAGE( valid,
+                    wxString::Format( "Knockout text export should be schema-valid "
+                                      "(version %c): %s", version, errorMsg ) );
+        }
+
+        m_ipc2581Plugin = PCB_IO_IPC2581();
+    }
+}
+
+
+/** Saved pad carries a front countersink and back counterbore */
+BOOST_AUTO_TEST_CASE( SecondaryDrillPostMachiningSpecs )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "odbpp/pad_backdrill.kicad_pcb" );
+    BOOST_REQUIRE( board );
+    const PAD* machinedPad = dynamic_cast<const PAD*>(
+            board->ResolveItem( KIID( wxS( "34428461-7652-43ea-869c-ef8abe86da6c" ) ), true ) );
+
+    BOOST_REQUIRE( machinedPad );
+    BOOST_REQUIRE( machinedPad->GetFrontPostMachiningMode() == PAD_DRILL_POST_MACHINING_MODE::COUNTERSINK );
+    BOOST_REQUIRE( machinedPad->GetBackPostMachiningMode() == PAD_DRILL_POST_MACHINING_MODE::COUNTERBORE );
+
+    wxString                    output = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    IPC2581::SECTION_SET        sections{ IPC2581::SECTION::PADSTACKS, IPC2581::SECTION::DRILL_ROUT,
+                                   IPC2581::SECTION::OUTER_COPPER, IPC2581::SECTION::INNER_COPPER };
+    props["sections"] = IPC2581::SectionKeyString( sections ).ToStdString();
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( output, *board, &props ) );
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( output ) );
+    std::vector<wxXmlNode*> specs;
+    std::vector<wxXmlNode*> holes;
+    CollectXmlElements( document.GetRoot(), wxS( "Spec" ), specs );
+    CollectXmlElements( document.GetRoot(), wxS( "Hole" ), holes );
+    std::map<wxString, wxXmlNode*> specsByName;
+
+    for( wxXmlNode* spec : specs )
+        specsByName.emplace( spec->GetAttribute( wxS( "name" ) ), spec );
+
+    int matchingHoles = 0;
+
+    for( wxXmlNode* hole : holes )
+    {
+        std::map<wxString, wxXmlNode*> bySide;
+
+        for( wxXmlNode* ref = hole->GetChildren(); ref; ref = ref->GetNext() )
+        {
+            if( ref->GetName() != wxS( "SpecRef" ) )
+                continue;
+
+            auto spec = specsByName.find( ref->GetAttribute( wxS( "id" ) ) );
+
+            if( spec == specsByName.end() )
+                continue;
+
+            wxXmlNode* side = SecondaryDrillProperty( spec->second, wxS( "SIDE" ) );
+
+            if( side )
+                bySide.emplace( side->GetAttribute( wxS( "text" ) ), spec->second );
+        }
+
+        if( bySide.count( wxS( "TOP" ) ) == 0 || bySide.count( wxS( "BOTTOM" ) ) == 0 )
+            continue;
+
+        ++matchingHoles;
+
+        for( const auto& [side, spec] : bySide )
+        {
+            wxXmlNode* diameter = SecondaryDrillProperty( spec, wxS( "MAJOR_DIAMETER" ) );
+            BOOST_REQUIRE( diameter );
+            BOOST_CHECK_EQUAL( diameter->GetAttribute( wxS( "unit" ) ), wxString( wxS( "MM" ) ) );
+            double value = 0;
+            BOOST_REQUIRE( diameter->GetAttribute( wxS( "value" ) ).ToDouble( &value ) );
+            BOOST_CHECK_SMALL( value - ( side == wxS( "TOP" ) ? 1.2 : 1.4 ), 0.000001 );
+
+            wxXmlNode* depth = SecondaryDrillProperty( spec, wxS( "DEPTH" ) );
+            wxXmlNode* angle = SecondaryDrillProperty( spec, wxS( "ANGLE" ) );
+
+            if( side == wxS( "TOP" ) )
+            {
+                BOOST_CHECK( depth == nullptr );
+                BOOST_REQUIRE( angle );
+                BOOST_CHECK_EQUAL( angle->GetAttribute( wxS( "unit" ) ), wxString( wxS( "DEGREES" ) ) );
+                BOOST_REQUIRE( angle->GetAttribute( wxS( "value" ) ).ToDouble( &value ) );
+                BOOST_CHECK_SMALL( value - 90.0, 0.000001 );
+            }
+            else
+            {
+                BOOST_CHECK( angle == nullptr );
+                BOOST_REQUIRE( depth );
+                BOOST_CHECK_EQUAL( depth->GetAttribute( wxS( "unit" ) ), wxString( wxS( "MM" ) ) );
+                BOOST_REQUIRE( depth->GetAttribute( wxS( "value" ) ).ToDouble( &value ) );
+                BOOST_CHECK_SMALL( value - 0.3, 0.000001 );
+            }
+        }
+    }
+
+    BOOST_CHECK_EQUAL( matchingHoles, 1 );
+    BOOST_CHECK( !FileContainsPattern( output, wxT( "post-machining=" ) ) );
+
+    if( SchemaCheckReady( 'C' ) )
+    {
+        wxString schemaError = ValidateXmlWithXsd( output, GetXsdPath( 'C' ) );
+        BOOST_CHECK_MESSAGE( schemaError.IsEmpty(), schemaError.ToStdString() );
+    }
+
+    wxString bOutput = CreateTempFile();
+    props["version"] = "B";
+    props.erase( "sections" );
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( bOutput, *board, &props ) );
+    BOOST_CHECK( !FileContainsPattern( bOutput, wxT( "<SecondaryDrill" ) ) );
+    BOOST_CHECK( !FileContainsPattern( bOutput, wxT( "post-machining=" ) ) );
+}
+
+
+/** Offset slot location is the drill center saved by pcbnew */
+BOOST_AUTO_TEST_CASE( SlotCavityUsesDrillPosition )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "issue25101.kicad_pcb" );
+    BOOST_REQUIRE( board );
+    const PAD* pad = dynamic_cast<const PAD*>(
+            board->ResolveItem( KIID( wxS( "3fad97f9-a9d0-4388-8119-c4cdfce21fd9" ) ), true ) );
+    BOOST_REQUIRE( pad );
+    BOOST_REQUIRE( IsDrillSlot( *pad ) );
+    VECTOR2I offset = pad->GetOffset( pad->Padstack().EffectiveLayerFor( pad->GetLayer() ) );
+    BOOST_REQUIRE( offset.x != 0 || offset.y != 0 );
+
+    wxString                    output = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( output, *board, &props ) );
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( output ) );
+    std::vector<wxXmlNode*> slots;
+    CollectXmlElements( document.GetRoot(), wxS( "SlotCavity" ), slots );
+    BOOST_REQUIRE_GE( slots.size(), 4u );
+    VECTOR2I holeCenter = pad->GetEffectiveHoleShape()->GetCenter();
+    double expectedX = pcbIUScale.IUTomm( holeCenter.x );
+    double expectedY = -pcbIUScale.IUTomm( holeCenter.y );
+    double nearest = 1e9;
+
+    for( wxXmlNode* slot : slots )
+    {
+        wxXmlNode* location = FindXmlChild( slot, wxS( "Location" ) );
+        BOOST_REQUIRE( location );
+        double x = 0;
+        double y = 0;
+        BOOST_REQUIRE( location->GetAttribute( wxS( "x" ) ).ToDouble( &x ) );
+        BOOST_REQUIRE( location->GetAttribute( wxS( "y" ) ).ToDouble( &y ) );
+        nearest = std::min( nearest, std::hypot( x - expectedX, y - expectedY ) );
+    }
+
+    BOOST_CHECK_SMALL( nearest, 0.001 );
+}
+
+
+/** Full pad_backdrill exports pass the B1 and C schemas including SlotCavity */
+BOOST_AUTO_TEST_CASE( SlotCavityFullBoardSchema )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "odbpp/pad_backdrill.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    for( char version : { 'B', 'C' } )
+    {
+        wxString                    output = CreateTempFile();
+        std::map<std::string, UTF8> props = { { "units", "mm" },
+                                            { "version", version == 'B' ? "B" : "C" },
+                                            { "sigfig", "6" } };
+        BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( output, *board, &props ) );
+
+        if( version == 'B' )
+        {
+            wxXmlDocument document;
+            BOOST_REQUIRE( document.Load( output ) );
+            std::vector<wxXmlNode*> slots;
+            CollectXmlElements( document.GetRoot(), wxS( "SlotCavity" ), slots );
+            BOOST_REQUIRE_GE( slots.size(), 1u );
+
+            for( wxXmlNode* slot : slots )
+            {
+                BOOST_REQUIRE( FindXmlChild( slot, wxS( "Outline" ) ) );
+
+                for( wxXmlNode* child = slot->GetChildren(); child; child = child->GetNext() )
+                {
+                    if( child->GetType() == wxXML_ELEMENT_NODE )
+                        BOOST_CHECK( child->GetName() == wxS( "Outline" ) );
+                }
+            }
+        }
+
+        if( !SchemaCheckReady( version ) )
+            return;
+
+        wxString schemaError = ValidateXmlWithXsd( output, GetXsdPath( version ) );
+        BOOST_CHECK_MESSAGE( schemaError.IsEmpty(), "Revision " << version << ": " << schemaError.ToStdString() );
+    }
+}
+
+
+/**
+ * Verify IPC-2581 backdrill encoding matches the schema and expresses the
+ * correct must-not-cut layer.
+ *
+ * KiCad's PADSTACK::DRILL_PROPS::end is the must-cut layer (per the UI
+ * "must-cut" labels). The IPC-2581 standard expects the must-not-cut layer,
+ * which is the next signal layer past the must-cut layer. The exporter must
+ * emit one Spec containing three sibling Backdrill children with type
+ * START_LAYER, MUST_NOT_CUT_LAYER, and MAX_STUB_LENGTH, each carrying its
+ * value in a Property child.
+ */
+BOOST_AUTO_TEST_CASE( BackdrillSpecEncoding )
+{
+    // Build a minimal 6-layer synthetic board so we can place a via whose
+    // backdrill targets a specific must-cut layer.
+    BOARD board;
+    board.SetCopperLayerCount( 6 );
+
+    BOARD_DESIGN_SETTINGS& dsn = board.GetDesignSettings();
+    dsn.GetStackupDescriptor().BuildDefaultStackupList( &dsn, 6 );
+
+    // Front-side backdrill: drill from F_Cu, must cut through In3_Cu. The
+    // must-not-cut layer should therefore resolve to In4_Cu (the next signal
+    // layer past must-cut going inward from the start surface).
+    PCB_VIA* via = new PCB_VIA( &board );
+    via->SetPadstackMode( PADSTACK::MODE::NORMAL );
+    via->SetPosition( VECTOR2I( pcbIUScale.mmToIU( 5 ), pcbIUScale.mmToIU( 5 ) ) );
+    via->SetLayerPair( F_Cu, B_Cu );
+    via->SetDrill( pcbIUScale.mmToIU( 0.30 ) );
+    via->SetWidth( PADSTACK::ALL_LAYERS, pcbIUScale.mmToIU( 0.60 ) );
+    via->SetSecondaryDrillSize( pcbIUScale.mmToIU( 0.40 ) );
+    via->SetSecondaryDrillStartLayer( F_Cu );
+    via->SetSecondaryDrillEndLayer( In3_Cu );
+    via->SetFrontPostMachiningMode( PAD_DRILL_POST_MACHINING_MODE::COUNTERSINK );
+    board.Add( via );
+
+    wxString tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "4";
+
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( tempPath, board, &props ) );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    BOOST_CHECK_MESSAGE(
+            FileContainsPattern( tempPath, wxT( "<Backdrill type=\"START_LAYER\"" ) ),
+            "Backdrill spec should declare a START_LAYER child" );
+    BOOST_CHECK_MESSAGE(
+            FileContainsPattern( tempPath, wxT( "<Backdrill type=\"MUST_NOT_CUT_LAYER\"" ) ),
+            "Backdrill spec should declare a MUST_NOT_CUT_LAYER child" );
+    BOOST_CHECK_MESSAGE(
+            FileContainsPattern( tempPath, wxT( "<Backdrill type=\"MAX_STUB_LENGTH\"" ) ),
+            "Backdrill spec should declare a MAX_STUB_LENGTH child" );
+
+    // Schema requires layer references via Property layerOrGroupRef, not as
+    // Backdrill attributes.
+    BOOST_CHECK_MESSAGE( FileContainsPattern( tempPath, wxT( "layerOrGroupRef=" ) ),
+                         "Backdrill must convey layers through Property layerOrGroupRef" );
+    BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "startLayerRef=" ) ),
+                         "Backdrill should not use schema-invalid startLayerRef attribute" );
+    BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "mustNotCutLayerRef=" ) ),
+                         "Backdrill should not use schema-invalid mustNotCutLayerRef attribute" );
+    BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "maxStubLength=" ) ),
+                         "Backdrill should not use schema-invalid maxStubLength attribute" );
+    BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "postMachining=" ) ),
+                         "Backdrill should not use the non-standard postMachining attribute" );
+
+    // The must-not-cut layer for a backdrill from F_Cu through In3_Cu in a
+    // 6-layer stack must resolve to In4_Cu, not the must-cut layer itself.
+    BOOST_CHECK_MESSAGE(
+            FileContainsPattern( tempPath, wxT( "layerOrGroupRef=\"In4.Cu\"" ) ),
+            "Front backdrill must-not-cut layer should be In4.Cu" );
+
+    // The third (primary) backdrill spec slot has been removed; through-drills
+    // must not be exported as backdrill specs.
+    BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "BD_1C" ) ),
+                         "Exporter should not emit a primary backdrill spec slot" );
+
+    // A mode without a positive diameter does not create a secondary drill
+    BOOST_CHECK( !FileContainsPattern( tempPath, wxT( "<Backdrill type=\"OTHER\"" ) ) );
+    BOOST_CHECK( !FileContainsPattern( tempPath, wxT( "<SecondaryDrill" ) ) );
+}
+
+
+/**
+ * Authored mask and paste pad layers govern exposed-pad IPC-2581 features
+ * Issue #24318
+ */
+BOOST_AUTO_TEST_CASE( ExposedPadPasteRespected_Issue24318 )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "connect/connect.kicad_pcb" );
+    BOOST_REQUIRE( board );
+    bool thermalMask = false;
+    bool normalPaste = false;
+    bool copperOnly = false;
+    bool maskAperture = false;
+
+    for( FOOTPRINT* footprint : board->Footprints() )
+    {
+        for( PAD* pad : footprint->Pads() )
+        {
+            if( footprint->GetReference() == wxS( "U102" ) )
+            {
+                if( pad->GetNumber() == wxS( "65" ) && pad->IsOnLayer( F_Mask ) )
+                {
+                    thermalMask = true;
+                    BOOST_CHECK( !pad->IsOnLayer( F_Paste ) );
+                }
+
+                if( pad->GetNumber() == wxS( "1" ) && pad->IsOnLayer( F_Paste ) )
+                    normalPaste = true;
+            }
+            else if( footprint->GetReference() == wxS( "J301" ) )
+            {
+                if( pad->GetNumber() == wxS( "1" ) && pad->IsOnLayer( F_Cu )
+                    && !pad->IsOnLayer( F_Mask ) && !pad->IsOnLayer( F_Paste ) )
+                {
+                    copperOnly = true;
+                }
+
+                if( pad->IsOnLayer( F_Mask ) && !pad->IsOnLayer( F_Cu ) )
+                    maskAperture = true;
+            }
+        }
+    }
+
+    BOOST_REQUIRE( thermalMask );
+    BOOST_REQUIRE( normalPaste );
+    BOOST_REQUIRE( copperOnly );
+    BOOST_REQUIRE( maskAperture );
+    wxString tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "4" } };
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( tempPath, *board, &props ) );
+
+    std::ifstream stream( tempPath.ToStdString(), std::ios::binary );
+    BOOST_REQUIRE( stream );
+    std::string xml( std::istreambuf_iterator<char>{ stream }, std::istreambuf_iterator<char>{} );
+    std::string paste = LayerFeatureRegion( xml, "F.Paste" );
+    std::string mask = LayerFeatureRegion( xml, "F.Mask" );
+    BOOST_REQUIRE( !paste.empty() );
+    BOOST_REQUIRE( !mask.empty() );
+
+    BOOST_CHECK( paste.find( "<PinRef componentRef=\"U102\" pin=\"65\"" ) == std::string::npos );
+    BOOST_CHECK( paste.find( "<PinRef componentRef=\"U102\" pin=\"1\"" ) != std::string::npos );
+    BOOST_CHECK( paste.find( "<PinRef componentRef=\"J301\" pin=\"1\"" ) == std::string::npos );
+    BOOST_CHECK( mask.find( "<PinRef componentRef=\"U102\" pin=\"65\"" ) != std::string::npos );
+    BOOST_CHECK( mask.find( "<PinRef componentRef=\"J301\" pin=\"1\"" ) == std::string::npos );
+}
+
+
+/**
+ * Test that a rounded gr_rect keeps its corner radius on export (Issue #24754).
+ *
+ * The exporter used to emit a RectRound with all corner flags off and a radius of
+ * stroke_width/2, discarding the shape's real corner radius. A gr_rect with a 0.75 mm corner
+ * radius must round its corners and carry that radius in the RectRound primitive.
+ */
+BOOST_AUTO_TEST_CASE( GrRectCornerRadius_Issue24754 )
+{
+    BOARD board;
+    board.SetCopperLayerCount( 2 );
+
+    PCB_SHAPE* rect = new PCB_SHAPE( &board, SHAPE_T::RECTANGLE );
+    rect->SetLayer( Edge_Cuts );
+    rect->SetStart( VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ) );
+    rect->SetEnd( VECTOR2I( pcbIUScale.mmToIU( 11.5 ), pcbIUScale.mmToIU( 17 ) ) );
+    rect->SetStroke( STROKE_PARAMS( pcbIUScale.mmToIU( 0.05 ), LINE_STYLE::SOLID ) );
+    rect->SetFilled( false );
+    rect->SetCornerRadius( pcbIUScale.mmToIU( 0.75 ) );
+    board.Add( rect );
+
+    wxString tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "4";
+
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( tempPath, board, &props ) );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    std::string xml = KI_TEST::LoadStringData( tempPath );
+
+    // The RectRound must round its corners and carry the 0.75 mm radius, not stroke_width/2.
+    size_t rectPos = xml.find( "<RectRound" );
+    BOOST_REQUIRE_MESSAGE( rectPos != std::string::npos, "Export should contain a RectRound" );
+
+    std::string rectNode = xml.substr( rectPos, xml.find( '>', rectPos ) - rectPos );
+
+    BOOST_CHECK_MESSAGE( rectNode.find( "radius=\"0.750\"" ) != std::string::npos,
+                         "Rounded gr_rect must export its 0.75 mm corner radius. Node: "
+                         + rectNode );
+    BOOST_CHECK_MESSAGE( rectNode.find( "upperRight=\"true\"" ) != std::string::npos
+                         && rectNode.find( "lowerLeft=\"true\"" ) != std::string::npos,
+                         "Rounded gr_rect must set its corner flags. Node: " + rectNode );
+    BOOST_CHECK_MESSAGE( rectNode.find( "radius=\"0.025\"" ) == std::string::npos,
+                         "Corner radius must not collapse to stroke_width/2. Node: " + rectNode );
+}
+
+
+/**
+ * Test that a back-only masked through-hole pad gets no F.Mask opening (Issue #24753).
+ *
+ * A pad on *.Cu with an explicit B.Mask (and no F.Mask) must not be added to the F.Mask
+ * LayerFeature. The implicit-mask heuristic only applies when the pad authors no mask side.
+ */
+BOOST_AUTO_TEST_CASE( BackOnlyMaskNoFrontOpening_Issue24753 )
+{
+    BOARD board;
+    board.SetCopperLayerCount( 2 );
+
+    FOOTPRINT* fp = new FOOTPRINT( &board );
+    fp->SetReference( wxT( "J29" ) );
+    fp->SetPosition( VECTOR2I( pcbIUScale.mmToIU( 50 ), pcbIUScale.mmToIU( 50 ) ) );
+    board.Add( fp );
+
+    // Through-hole pad masked on the back only: *.Cu + B.Mask, deliberately no F.Mask.
+    PAD* pad = new PAD( fp );
+    pad->SetPadstackMode( PADSTACK::MODE::NORMAL );
+    pad->SetNumber( wxT( "1" ) );
+    pad->SetAttribute( PAD_ATTRIB::PTH );
+    pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::OVAL );
+    pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( pcbIUScale.mmToIU( 2.5 ), pcbIUScale.mmToIU( 4.0 ) ) );
+    pad->SetDrillSize( VECTOR2I( pcbIUScale.mmToIU( 1.65 ), pcbIUScale.mmToIU( 1.65 ) ) );
+    pad->SetLayerSet( LSET( { F_Cu, B_Cu, B_Mask } ) );
+    fp->Add( pad );
+
+    wxString tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "4";
+
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( tempPath, board, &props ) );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    std::string xml = KI_TEST::LoadStringData( tempPath );
+
+    // The pad must appear on B.Mask (authored) but never on F.Mask.
+    std::string fMask = LayerFeatureRegion( xml, "F.Mask" );
+    BOOST_CHECK_MESSAGE( fMask.find( "<PinRef componentRef=\"J29\" pin=\"1\"" ) == std::string::npos,
+                         "Back-only masked pad must not appear on F.Mask layer feature" );
+
+    std::string bMask = LayerFeatureRegion( xml, "B.Mask" );
+    BOOST_CHECK_MESSAGE( bMask.find( "<PinRef componentRef=\"J29\" pin=\"1\"" ) != std::string::npos,
+                         "Back-only masked pad should appear on B.Mask layer feature" );
+}
+
+
+/**
+ * Test that a roundrect pad's mask aperture shrinks its radius with its size (Issue #24751).
+ *
+ * A roundrect pad with a negative mask margin has a smaller mask aperture, and its corner
+ * radius must shrink by the per-side margin too. The exporter used to reuse the copper radius,
+ * and the shape-dict key ignored the layer/expansion so the mask referenced the copper shape.
+ */
+BOOST_AUTO_TEST_CASE( RoundRectMaskRadius_Issue24751 )
+{
+    BOARD board;
+    board.SetCopperLayerCount( 2 );
+
+    FOOTPRINT* fp = new FOOTPRINT( &board );
+    fp->SetReference( wxT( "R1" ) );
+    fp->SetPosition( VECTOR2I( pcbIUScale.mmToIU( 40 ), pcbIUScale.mmToIU( 40 ) ) );
+    board.Add( fp );
+
+    PAD* pad = new PAD( fp );
+    pad->SetPadstackMode( PADSTACK::MODE::NORMAL );
+    pad->SetNumber( wxT( "1" ) );
+    pad->SetAttribute( PAD_ATTRIB::SMD );
+    pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::ROUNDRECT );
+    pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( pcbIUScale.mmToIU( 0.45 ), pcbIUScale.mmToIU( 0.30 ) ) );
+    pad->SetRoundRectRadiusRatio( PADSTACK::ALL_LAYERS, 0.3333333333 );
+    pad->SetLayerSet( LSET( { F_Cu, F_Mask } ) );
+    pad->SetLocalSolderMaskMargin( pcbIUScale.mmToIU( -0.05 ) );
+    fp->Add( pad );
+
+    wxString tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "4";
+
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( tempPath, board, &props ) );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    std::string xml = KI_TEST::LoadStringData( tempPath );
+
+    // Copper roundrect radius is 0.10 mm; with a -0.05 mm per-side margin the mask aperture is
+    // 0.35 x 0.20 with radius 0.05 mm. Both distinct primitives must be present.
+    BOOST_CHECK_MESSAGE( xml.find( "radius=\"0.10\"" ) != std::string::npos,
+                         "Copper roundrect should keep its 0.10 mm radius" );
+    BOOST_CHECK_MESSAGE( xml.find( "radius=\"0.050\"" ) != std::string::npos,
+                         "Mask roundrect aperture must shrink its radius to 0.05 mm" );
+    BOOST_CHECK_MESSAGE( xml.find( "width=\"0.350\"" ) != std::string::npos,
+                         "Mask roundrect aperture should be 0.35 mm wide" );
+}
+
+
+/**
+ * Test that a multi-layer footprint graphic is emitted on every layer (Issue #24752).
+ *
+ * An fp_poly on F.Cu + F.Mask used to export only on its primary layer (F.Cu). KiCad plots it
+ * on both, so the F.Mask copy must be present too.
+ */
+BOOST_AUTO_TEST_CASE( MultiLayerFootprintGraphic_Issue24752 )
+{
+    BOARD board;
+    board.SetCopperLayerCount( 2 );
+
+    FOOTPRINT* fp = new FOOTPRINT( &board );
+    fp->SetReference( wxT( "G1" ) );
+    fp->SetPosition( VECTOR2I( pcbIUScale.mmToIU( 30 ), pcbIUScale.mmToIU( 30 ) ) );
+    board.Add( fp );
+
+    PCB_SHAPE* poly = new PCB_SHAPE( fp, SHAPE_T::POLY );
+    poly->SetLayerSet( LSET( { F_Cu, F_Mask } ) );
+    poly->SetFilled( true );
+    poly->SetStroke( STROKE_PARAMS( 0, LINE_STYLE::SOLID ) );
+
+    SHAPE_POLY_SET polySet;
+    polySet.NewOutline();
+    polySet.Append( pcbIUScale.mmToIU( 30 ), pcbIUScale.mmToIU( 30 ) );
+    polySet.Append( pcbIUScale.mmToIU( 31 ), pcbIUScale.mmToIU( 30 ) );
+    polySet.Append( pcbIUScale.mmToIU( 31 ), pcbIUScale.mmToIU( 31 ) );
+    polySet.Append( pcbIUScale.mmToIU( 30 ), pcbIUScale.mmToIU( 31 ) );
+    poly->SetPolyShape( polySet );
+    fp->Add( poly );
+
+    wxString tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "4";
+
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( tempPath, board, &props ) );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    std::string xml = KI_TEST::LoadStringData( tempPath );
+
+    // The polygon graphic must show up under both F.Cu and F.Mask.
+    std::string fCu = LayerFeatureRegion( xml, "F.Cu" );
+    std::string fMask = LayerFeatureRegion( xml, "F.Mask" );
+
+    BOOST_CHECK_MESSAGE( fCu.find( "UserPrimitiveRef" ) != std::string::npos,
+                         "Footprint graphic should be present on F.Cu" );
+    BOOST_CHECK_MESSAGE( fMask.find( "UserPrimitiveRef" ) != std::string::npos,
+                         "Multi-layer footprint graphic must also appear on F.Mask" );
+}
+
+
+/**
+ * Test that the per-layer solder mask margin expands the exported mask primitive
+ * (Issue #24749).
+ *
+ * The standard-primitive cache was keyed on pad geometry alone, so the copper
+ * primitive (no expansion) processed first was reused verbatim for the mask
+ * layer, dropping the solder mask margin. A 1.0 mm circular pad with a 0.5 mm
+ * mask margin must therefore export a 2.0 mm mask circle, not a 1.0 mm one.
+ */
+BOOST_AUTO_TEST_CASE( SolderMaskMarginExpandsMaskPrimitive_Issue24749 )
+{
+    BOARD board;
+
+    FOOTPRINT* fp = new FOOTPRINT( &board );
+    fp->SetReference( wxT( "FID4" ) );
+    fp->SetPosition( VECTOR2I( pcbIUScale.mmToIU( 50 ), pcbIUScale.mmToIU( 50 ) ) );
+    board.Add( fp );
+
+    PAD* pad = new PAD( fp );
+    pad->SetPadstackMode( PADSTACK::MODE::NORMAL );
+    pad->SetNumber( wxT( "1" ) );
+    pad->SetAttribute( PAD_ATTRIB::SMD );
+    pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CIRCLE );
+    pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( pcbIUScale.mmToIU( 1.0 ), pcbIUScale.mmToIU( 1.0 ) ) );
+    pad->SetLayerSet( LSET( { F_Cu, F_Mask } ) );
+    pad->SetLocalSolderMaskMargin( pcbIUScale.mmToIU( 0.5 ) );
+    fp->Add( pad );
+
+    wxString tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "4";
+
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( tempPath, board, &props ) );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    std::ifstream xmlFile( tempPath.ToStdString() );
+    BOOST_REQUIRE( xmlFile.is_open() );
+
+    std::string xml( ( std::istreambuf_iterator<char>( xmlFile ) ),
+                     std::istreambuf_iterator<char>() );
+
+    // Resolve the primitive id referenced by the F.Mask padstack entry, then confirm
+    // that primitive's circle diameter is the mask-expanded 2.0 mm, not the 1.0 mm copper size.
+    const std::string maskRef = "<PadstackPadDef layerRef=\"F.Mask\"";
+    size_t maskDefPos = xml.find( maskRef );
+    BOOST_REQUIRE_MESSAGE( maskDefPos != std::string::npos,
+                           "F.Mask padstack pad definition should be present" );
+
+    size_t refPos = xml.find( "StandardPrimitiveRef id=\"", maskDefPos );
+    BOOST_REQUIRE( refPos != std::string::npos );
+    refPos += std::string( "StandardPrimitiveRef id=\"" ).size();
+    size_t refEnd = xml.find( '"', refPos );
+    std::string maskPrimId = xml.substr( refPos, refEnd - refPos );
+
+    std::string entry = "<EntryStandard id=\"" + maskPrimId + "\"";
+    size_t entryPos = xml.find( entry );
+    BOOST_REQUIRE_MESSAGE( entryPos != std::string::npos,
+                           "Mask primitive EntryStandard should be defined" );
+
+    size_t diaPos = xml.find( "diameter=\"", entryPos );
+    BOOST_REQUIRE( diaPos != std::string::npos );
+    diaPos += std::string( "diameter=\"" ).size();
+    size_t diaEnd = xml.find( '"', diaPos );
+    double diameter = std::stod( xml.substr( diaPos, diaEnd - diaPos ) );
+
+    BOOST_CHECK_MESSAGE( std::abs( diameter - 2.0 ) < 1e-4,
+                         "F.Mask primitive diameter should be 2.0 mm (1.0 mm pad + 0.5 mm "
+                         "margin per side), got " << diameter );
+}
+
+
+/**
+ * Validate the minimal boards attached to issue #25149 against the IPC-2581C schema.
+ */
+BOOST_AUTO_TEST_CASE( SchemaValidation_Issue25149 )
+{
+    static const std::vector<std::string> boards = {
+        "ipc2581/dielectric-sublayer.kicad_pcb",
+        "ipc2581/edgecuts-circles-only.kicad_pcb",
+        "ipc2581/filled-silk-circle.kicad_pcb",
+        "ipc2581/filled-tented-via.kicad_pcb",
+        "ipc2581/textbox-border.kicad_pcb",
+        "ipc2581/thirty-copper-layers.kicad_pcb",
+        "ipc2581/whitespace-text.kicad_pcb",
+    };
+
+    for( const std::string& boardFile : boards )
+    {
+        BOOST_TEST_CONTEXT( "Board: " << boardFile )
+        {
+            std::unique_ptr<BOARD> board = LoadBoard( boardFile );
+            BOOST_REQUIRE( board );
+
+            wxString errorMsg;
+            bool     valid = ExportAndValidate( *board, 'C', errorMsg );
+
+            BOOST_CHECK_MESSAGE( valid, "IPC-2581C validation failed for " + boardFile + ": " + errorMsg );
+        }
+    }
+}
+
+
+/**
+ * A board with no closed outline must export without crashing and omit Profile
+ * (Issue #25149).
+ */
+BOOST_AUTO_TEST_CASE( NoClosedOutline_Issue25149 )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "ipc2581/edgecuts-circles-only.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    wxString tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "3";
+
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( tempPath, *board, &props ) );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    BOOST_CHECK_MESSAGE( !FileContainsPattern( tempPath, wxT( "<Profile" ) ),
+                         "A board with no closed outline must not write a Profile" );
+}
+
+
+/**
+ * Process-layer via pads must sit in a Set at the via position (Issue #25149).
+ */
+BOOST_AUTO_TEST_CASE( ProcessLayerViaPads_Issue25149 )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "ipc2581/filled-tented-via.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    wxString tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["version"] = "C";
+    props["sigfig"] = "3";
+
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( tempPath, *board, &props ) );
+    BOOST_REQUIRE( wxFileExists( tempPath ) );
+
+    std::string xml = KI_TEST::LoadStringData( tempPath );
+
+    std::string region = LayerFeatureRegion( xml, "F.Cu_2" );
+    BOOST_REQUIRE_MESSAGE( !region.empty(), "Export should contain the F.Cu_2 process layer" );
+
+    BOOST_CHECK_MESSAGE( region.find( "<Set" ) != std::string::npos,
+                         "Process-layer via pads must be wrapped in a Set" );
+    BOOST_CHECK_MESSAGE( region.find( "x=\"120.0\" y=\"-115.0\"" ) != std::string::npos,
+                         "Process-layer via pad must be at the via position" );
+    BOOST_CHECK_MESSAGE( region.find( "x=\"0.0\" y=\"0.0\"" ) == std::string::npos,
+                         "Process-layer via pad must not be at (0,0)" );
+}
+
+
+BOOST_AUTO_TEST_CASE( RoundUnequalDrillHasPadstackHole )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "ipc2581/round_unequal_drill.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    const PAD* pad = dynamic_cast<const PAD*>(
+            board->ResolveItem( KIID( wxS( "bd1ca0c2-74bb-4a01-94e6-11796af0cb7e" ) ), true ) );
+    BOOST_REQUIRE( pad );
+    BOOST_REQUIRE( pad->GetDrillShape() == PAD_DRILL_SHAPE::CIRCLE );
+    BOOST_REQUIRE_NE( pad->GetDrillSizeX(), pad->GetDrillSizeY() );
+
+    wxString                    tempPath = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( tempPath, *board, &props ) );
+
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( tempPath ) );
+    wxXmlNode* root = document.GetRoot();
+    BOOST_REQUIRE( root );
+
+    double x = pcbIUScale.IUTomm( pad->GetPosition().x );
+    double y = -pcbIUScale.IUTomm( pad->GetPosition().y );
+
+    auto isAtPad = [&]( wxXmlNode* aNode )
+    {
+        return aNode && std::abs( wxAtof( aNode->GetAttribute( wxS( "x" ) ) ) - x ) <= 0.001
+               && std::abs( wxAtof( aNode->GetAttribute( wxS( "y" ) ) ) - y ) <= 0.001;
+    };
+
+    std::vector<wxXmlNode*> holes;
+    CollectXmlElements( root, wxS( "Hole" ), holes );
+    double layerHole = 0;
+
+    for( wxXmlNode* hole : holes )
+    {
+        if( hole->GetAttribute( wxS( "platingStatus" ) ) == wxS( "PLATED" ) && isAtPad( hole ) )
+            layerHole = wxAtof( hole->GetAttribute( wxS( "diameter" ) ) );
+    }
+
+    BOOST_REQUIRE_GT( layerHole, 0 );
+
+    std::set<wxString>      padstackNames;
+    std::vector<wxXmlNode*> pads;
+    CollectXmlElements( root, wxS( "Pad" ), pads );
+
+    for( wxXmlNode* padNode : pads )
+    {
+        if( padNode->HasAttribute( wxS( "padstackDefRef" ) ) && isAtPad( FindXmlChild( padNode, wxS( "Location" ) ) ) )
+            padstackNames.insert( padNode->GetAttribute( wxS( "padstackDefRef" ) ) );
+    }
+
+    BOOST_REQUIRE_EQUAL( padstackNames.size(), 1 );
+
+    std::vector<wxXmlNode*> padstacks;
+    CollectXmlElements( root, wxS( "PadStackDef" ), padstacks );
+    wxXmlNode* padstack = nullptr;
+
+    for( wxXmlNode* candidate : padstacks )
+    {
+        if( candidate->GetAttribute( wxS( "name" ) ) == *padstackNames.begin() )
+            padstack = candidate;
+    }
+
+    BOOST_REQUIRE( padstack );
+    wxXmlNode* padstackHole = FindXmlChild( padstack, wxS( "PadstackHoleDef" ) );
+    BOOST_REQUIRE_MESSAGE( padstackHole, "Round unequal drill padstack must define its hole" );
+    BOOST_CHECK_EQUAL( padstackHole->GetAttribute( wxS( "platingStatus" ) ), wxS( "PLATED" ) );
+    BOOST_CHECK_SMALL( wxAtof( padstackHole->GetAttribute( wxS( "diameter" ) ) ) - layerHole, 0.001 );
+    BOOST_CHECK_SMALL( layerHole - pcbIUScale.IUTomm( std::min( pad->GetDrillSizeX(), pad->GetDrillSizeY() ) ),
+                       0.001 );
+}
+
+
+BOOST_AUTO_TEST_CASE( SlotPostMachiningSpecRefs )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "odbpp/slot_machining.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    const PAD* machinedSlot = dynamic_cast<const PAD*>(
+            board->ResolveItem( KIID( wxS( "34428461-7652-43ea-869c-ef8abe86da6c" ) ), true ) );
+    BOOST_REQUIRE( machinedSlot );
+    BOOST_REQUIRE( IsDrillSlot( *machinedSlot ) );
+    BOOST_REQUIRE( machinedSlot->GetFrontPostMachiningMode() == PAD_DRILL_POST_MACHINING_MODE::COUNTERSINK );
+    BOOST_REQUIRE( machinedSlot->GetBackPostMachiningMode() == PAD_DRILL_POST_MACHINING_MODE::COUNTERBORE );
+
+    wxString                    output = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( output, *board, &props ) );
+
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( output ) );
+    std::vector<wxXmlNode*>        specs;
+    std::vector<wxXmlNode*>        slots;
+    std::map<wxString, wxXmlNode*> specsByName;
+    CollectXmlElements( document.GetRoot(), wxS( "Spec" ), specs );
+    CollectXmlElements( document.GetRoot(), wxS( "SlotCavity" ), slots );
+
+    for( wxXmlNode* spec : specs )
+        specsByName.emplace( spec->GetAttribute( wxS( "name" ) ), spec );
+
+    int machinedSlots = 0;
+
+    for( wxXmlNode* slot : slots )
+    {
+        std::map<wxString, double> diameterBySide;
+
+        for( wxXmlNode* ref = slot->GetParent()->GetChildren(); ref; ref = ref->GetNext() )
+        {
+            if( ref->GetName() != wxS( "SpecRef" ) )
+                continue;
+
+            auto spec = specsByName.find( ref->GetAttribute( wxS( "id" ) ) );
+            BOOST_REQUIRE( spec != specsByName.end() );
+            wxXmlNode* side = SecondaryDrillProperty( spec->second, wxS( "SIDE" ) );
+            wxXmlNode* diameter = SecondaryDrillProperty( spec->second, wxS( "MAJOR_DIAMETER" ) );
+            BOOST_REQUIRE( side && diameter );
+            diameterBySide[side->GetAttribute( wxS( "text" ) )] = wxAtof( diameter->GetAttribute( wxS( "value" ) ) );
+        }
+
+        if( diameterBySide.empty() )
+            continue;
+
+        ++machinedSlots;
+        BOOST_CHECK_SMALL( diameterBySide[wxS( "TOP" )] - 1.2, 0.000001 );
+        BOOST_CHECK_SMALL( diameterBySide[wxS( "BOTTOM" )] - 1.4, 0.000001 );
+    }
+
+    BOOST_CHECK_EQUAL( machinedSlots, 1 );
+
+    if( SchemaCheckReady( 'C' ) )
+    {
+        wxString schemaError = ValidateXmlWithXsd( output, GetXsdPath( 'C' ) );
+        BOOST_CHECK_MESSAGE( schemaError.IsEmpty(), schemaError.ToStdString() );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( NpthMaskOnlyOpeningUsesAuthoredSize )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "issue5990.kicad_pcb" );
+    BOOST_REQUIRE( board );
+    const PAD* source = nullptr;
+    size_t     sourceCount = 0;
+
+    for( FOOTPRINT* footprint : board->Footprints() )
+    {
+        for( PAD* pad : footprint->Pads() )
+        {
+            if( pad->GetAttribute() == PAD_ATTRIB::NPTH && pad->IsOnLayer( F_Mask ) && !pad->IsOnLayer( F_Cu )
+                && pad->GetDrillSizeX() == pcbIUScale.mmToIU( 2.7 )
+                && pad->GetSize( F_Mask ).x == pcbIUScale.mmToIU( 5.0 ) )
+            {
+                if( !source )
+                    source = pad;
+
+                ++sourceCount;
+            }
+        }
+    }
+
+    BOOST_REQUIRE( source );
+    BOOST_REQUIRE_EQUAL( sourceCount, 4u );
+    BOOST_REQUIRE( source->FlashLayer( F_Mask ) );
+
+    wxString                    output = CreateTempFile();
+    std::map<std::string, UTF8> props = { { "units", "mm" }, { "version", "C" }, { "sigfig", "6" } };
+    BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( output, *board, &props ) );
+    wxXmlDocument document;
+    BOOST_REQUIRE( document.Load( output ) );
+    wxXmlNode* root = document.GetRoot();
+    BOOST_REQUIRE( root );
+
+    auto circleDiameter = [&]( wxXmlNode* aParent )
+    {
+        wxXmlNode* ref = FindXmlChild( aParent, wxS( "StandardPrimitiveRef" ) );
+        wxXmlNode* entry =
+                ref ? FindXmlEntry( root, wxS( "EntryStandard" ), ref->GetAttribute( wxS( "id" ) ) ) : nullptr;
+        wxXmlNode* circle = entry ? FindXmlChild( entry, wxS( "Circle" ) ) : nullptr;
+
+        if( !circle )
+        {
+            ref = FindXmlChild( aParent, wxS( "UserPrimitiveRef" ) );
+            entry = ref ? FindXmlEntry( root, wxS( "EntryUser" ), ref->GetAttribute( wxS( "id" ) ) ) : nullptr;
+            wxXmlNode* special = entry ? FindXmlChild( entry, wxS( "UserSpecial" ) ) : nullptr;
+            circle = special ? FindXmlChild( special, wxS( "Circle" ) ) : nullptr;
+        }
+
+        return circle ? wxAtof( circle->GetAttribute( wxS( "diameter" ) ) ) : -1.0;
+    };
+
+    std::vector<wxXmlNode*> padstacks;
+    CollectXmlElements( root, wxS( "PadStackDef" ), padstacks );
+    wxString targetName;
+    double   padstackDiameter = -1.0;
+    size_t   padstackCount = 0;
+
+    for( wxXmlNode* padstack : padstacks )
+    {
+        wxXmlNode* hole = FindXmlChild( padstack, wxS( "PadstackHoleDef" ) );
+
+        if( !hole || hole->GetAttribute( wxS( "platingStatus" ) ) != wxS( "NONPLATED" )
+            || std::abs( wxAtof( hole->GetAttribute( wxS( "diameter" ) ) ) - 2.7 ) > 0.001 )
+        {
+            continue;
+        }
+
+        for( wxXmlNode* paddef = padstack->GetChildren(); paddef; paddef = paddef->GetNext() )
+        {
+            if( paddef->GetName() == wxS( "PadstackPadDef" )
+                && paddef->GetAttribute( wxS( "layerRef" ) ) == wxS( "F.Mask" ) )
+            {
+                targetName = padstack->GetAttribute( wxS( "name" ) );
+                padstackDiameter = circleDiameter( paddef );
+                ++padstackCount;
+            }
+        }
+    }
+
+    BOOST_REQUIRE_EQUAL( padstackCount, 1u );
+    BOOST_REQUIRE( !targetName.IsEmpty() );
+    BOOST_CHECK_SMALL( padstackDiameter - 5.0, 0.001 );
+    std::vector<wxXmlNode*> features;
+    CollectXmlElements( root, wxS( "LayerFeature" ), features );
+    size_t matched = 0;
+
+    for( wxXmlNode* feature : features )
+    {
+        if( feature->GetAttribute( wxS( "layerRef" ) ) != wxS( "F.Mask" ) )
+            continue;
+
+        std::vector<wxXmlNode*> pads;
+        CollectXmlElements( feature->GetChildren(), wxS( "Pad" ), pads );
+
+        for( wxXmlNode* pad : pads )
+        {
+            if( pad->GetAttribute( wxS( "padstackDefRef" ) ) == targetName )
+            {
+                BOOST_CHECK_SMALL( circleDiameter( pad ) - 5.0, 0.001 );
+                ++matched;
+            }
+        }
+    }
+
+    BOOST_CHECK_EQUAL( matched, sourceCount );
+}
+
+
+BOOST_AUTO_TEST_CASE( Ipc2581ComponentAndPartNamesStayInTheirOwnNamespaces )
+{
+    std::unique_ptr<BOARD> board = LoadBoard( "variant_test/variant_test.kicad_pcb" );
+    BOOST_REQUIRE( board );
+
+    std::multiset<wxString> sourceRefs;
+
+    for( FOOTPRINT* footprint : board->Footprints() )
+        sourceRefs.insert( footprint->GetReference() );
+
+    BOOST_REQUIRE_EQUAL( sourceRefs.count( wxS( "R2" ) ), 2 );
+
+    for( char version : { 'B', 'C' } )
+    {
+        BOOST_TEST_CONTEXT( "Revision " << version )
+        {
+            wxString                    path = CreateTempFile();
+            std::map<std::string, UTF8> props = { { "units", "mm" },
+                                                  { "version", std::string( 1, version ) },
+                                                  { "OEMRef", "Reference" } };
+            BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( path, *board, &props ) );
+
+            wxXmlDocument document;
+            BOOST_REQUIRE( document.Load( path ) );
+            wxXmlNode* root = document.GetRoot();
+            BOOST_REQUIRE( root );
+
+            std::vector<wxXmlNode*> components;
+            std::vector<wxXmlNode*> bomItems;
+            std::vector<wxXmlNode*> avlItems;
+            std::vector<wxXmlNode*> pinRefs;
+            std::vector<wxXmlNode*> logicalNetPins;
+            CollectXmlElements( root, wxS( "Component" ), components );
+            CollectXmlElements( root, wxS( "BomItem" ), bomItems );
+            CollectXmlElements( root, wxS( "AvlItem" ), avlItems );
+            CollectXmlElements( root, wxS( "PinRef" ), pinRefs );
+            CollectXmlElements( root, wxS( "LogicalNetPin" ), logicalNetPins );
+
+            std::multiset<wxString> parts;
+            std::set<wxString>      componentRefs;
+
+            for( wxXmlNode* component : components )
+            {
+                parts.insert( component->GetAttribute( wxS( "part" ) ) );
+                componentRefs.insert( component->GetAttribute( wxS( "refDes" ) ) );
+            }
+
+            BOOST_CHECK( parts == sourceRefs );
+            BOOST_CHECK_EQUAL( componentRefs.size(), components.size() );
+
+            std::map<wxString, wxString> partByRef;
+            std::set<wxString>           bomParts;
+
+            for( wxXmlNode* item : bomItems )
+            {
+                wxString part = item->GetAttribute( wxS( "OEMDesignNumberRef" ) );
+                bomParts.insert( part );
+                std::vector<wxXmlNode*> refs;
+                CollectXmlElements( item->GetChildren(), wxS( "RefDes" ), refs );
+
+                if( part == wxS( "R2" ) )
+                {
+                    BOOST_CHECK_EQUAL( item->GetAttribute( wxS( "quantity" ) ), wxString( wxS( "2" ) ) );
+                    BOOST_CHECK_EQUAL( refs.size(), 2 );
+                }
+
+                for( wxXmlNode* ref : refs )
+                    BOOST_CHECK( partByRef.emplace( ref->GetAttribute( wxS( "name" ) ), part ).second );
+            }
+
+            BOOST_CHECK_EQUAL( partByRef.size(), components.size() );
+
+            for( wxXmlNode* component : components )
+            {
+                wxString ref = component->GetAttribute( wxS( "refDes" ) );
+                BOOST_CHECK_EQUAL( partByRef[ref], component->GetAttribute( wxS( "part" ) ) );
+            }
+
+            std::set<wxString> avlParts;
+
+            for( wxXmlNode* item : avlItems )
+                avlParts.insert( item->GetAttribute( wxS( "OEMDesignNumber" ) ) );
+
+            BOOST_CHECK( bomParts == avlParts );
+            BOOST_CHECK( bomParts == std::set<wxString>( sourceRefs.begin(), sourceRefs.end() ) );
+
+            for( wxXmlNode* ref : pinRefs )
+                BOOST_CHECK( componentRefs.count( ref->GetAttribute( wxS( "componentRef" ) ) ) );
+
+            for( wxXmlNode* ref : logicalNetPins )
+                BOOST_CHECK( componentRefs.count( ref->GetAttribute( wxS( "componentRef" ) ) ) );
+
+            if( SchemaCheckReady( version ) )
+                BOOST_CHECK( ValidateXmlWithXsd( path, GetXsdPath( version ) ).IsEmpty() );
+        }
+    }
+
+    for( char version : { 'B', 'C' } )
+    {
+        BOOST_TEST_CONTEXT( "Omitted reference, revision " << version )
+        {
+            wxString                    path = CreateTempFile();
+            std::map<std::string, UTF8> props = { { "units", "mm" },
+                                                  { "version", std::string( 1, version ) },
+                                                  { "OEMRef", "Reference" },
+                                                  { "refdes", "omit" } };
+            BOOST_REQUIRE_NO_THROW( m_ipc2581Plugin.SaveBoard( path, *board, &props ) );
+
+            wxXmlDocument document;
+            BOOST_REQUIRE( document.Load( path ) );
+
+            std::vector<wxXmlNode*> components;
+            std::vector<wxXmlNode*> bomRefs;
+            std::vector<wxXmlNode*> pinRefs;
+            CollectXmlElements( document.GetRoot(), wxS( "Component" ), components );
+            CollectXmlElements( document.GetRoot(), wxS( "RefDes" ), bomRefs );
+            CollectXmlElements( document.GetRoot(), wxS( "PinRef" ), pinRefs );
+
+            std::multiset<wxString> parts;
+            std::set<wxString>      anonRefs;
+
+            for( wxXmlNode* ref : bomRefs )
+            {
+                wxString name = ref->GetAttribute( wxS( "name" ) );
+                BOOST_CHECK( name.StartsWith( wxS( "CMP_" ) ) );
+                BOOST_CHECK( anonRefs.insert( name ).second );
+            }
+
+            for( wxXmlNode* component : components )
+            {
+                parts.insert( component->GetAttribute( wxS( "part" ) ) );
+                wxString ref = component->GetAttribute( wxS( "refDes" ) );
+
+                if( version == 'B' )
+                    BOOST_CHECK( anonRefs.count( ref ) );
+                else
+                    BOOST_CHECK( ref.IsEmpty() );
+            }
+
+            BOOST_CHECK( parts == sourceRefs );
+            BOOST_CHECK_EQUAL( anonRefs.size(), components.size() );
+
+            for( wxXmlNode* ref : pinRefs )
+            {
+                if( version == 'B' )
+                    BOOST_CHECK( anonRefs.count( ref->GetAttribute( wxS( "componentRef" ) ) ) );
+                else
+                    BOOST_CHECK( ref->GetAttribute( wxS( "componentRef" ) ).IsEmpty() );
+            }
+
+            if( SchemaCheckReady( version ) )
+                BOOST_CHECK( ValidateXmlWithXsd( path, GetXsdPath( version ) ).IsEmpty() );
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_SUITE_END()

@@ -1,0 +1,411 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.TXT for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * @file
+ * Tests for PROJECT_TEMPLATE class.
+ */
+
+#include <qa_utils/wx_utils/unit_test_utils.h>
+#include <project_template.h>
+#include <settings/settings_manager.h>
+
+#include <wx/dir.h>
+#include <wx/filename.h>
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+namespace fs = std::filesystem;
+
+
+class PROJECT_TEMPLATE_TEST_FIXTURE
+{
+public:
+    PROJECT_TEMPLATE_TEST_FIXTURE()
+    {
+        m_originalDir = fs::current_path();
+        m_tempDir = fs::temp_directory_path() / "kicad_template_test";
+        fs::remove_all( m_tempDir );
+        fs::create_directories( m_tempDir );
+    }
+
+    ~PROJECT_TEMPLATE_TEST_FIXTURE()
+    {
+        fs::current_path( m_originalDir );
+        fs::remove_all( m_tempDir );
+    }
+
+    void CreateTemplateStructure( const std::string& templateName,
+                                  const std::vector<std::string>& subdirs,
+                                  const std::vector<std::string>& files )
+    {
+        fs::path templatePath = m_tempDir / templateName;
+        fs::create_directories( templatePath );
+
+        fs::path metaPath = templatePath / "meta";
+        fs::create_directories( metaPath );
+
+        std::ofstream infoFile( ( metaPath / "info.html" ).string() );
+        infoFile << "<html><head><title>Test Template</title></head><body></body></html>";
+        infoFile.close();
+
+        for( const auto& subdir : subdirs )
+        {
+            fs::create_directories( templatePath / subdir );
+        }
+
+        for( const auto& file : files )
+        {
+            fs::path filePath = templatePath / file;
+            fs::create_directories( filePath.parent_path() );
+            std::ofstream f( filePath.string() );
+            f << "test content";
+            f.close();
+        }
+    }
+
+    fs::path m_originalDir;
+    fs::path m_tempDir;
+};
+
+
+BOOST_FIXTURE_TEST_SUITE( ProjectTemplate, PROJECT_TEMPLATE_TEST_FIXTURE )
+
+
+BOOST_AUTO_TEST_CASE( DirectoriesRenamedCorrectly )
+{
+    // Create a template with subdirectories that should be renamed
+    CreateTemplateStructure(
+            "issue22289",
+            { "issue22289-dir", "issue22289-backups", "other-dir" },
+            { "issue22289.kicad_pro", "issue22289.kicad_sch", "issue22289-dir/test.kicad_sym" } );
+
+    fs::path templatePath = m_tempDir / "issue22289";
+    fs::path destPath = m_tempDir / "myproject";
+    fs::create_directories( destPath );
+
+    PROJECT_TEMPLATE tmpl( wxString::FromUTF8( templatePath.string() ) );
+
+    // GetDestinationFiles expects a wxFileName with the project file path
+    wxFileName newProjectPath;
+    newProjectPath.SetPath( wxString::FromUTF8( destPath.string() ) );
+    newProjectPath.SetName( wxS( "myproject" ) );
+    newProjectPath.SetExt( wxS( "kicad_pro" ) );
+
+    std::vector<wxFileName> destFiles;
+    tmpl.GetDestinationFiles( newProjectPath, destFiles );
+
+    bool foundRenamedDir = false;
+    bool foundRenamedFile = false;
+    bool foundOtherDir = false;
+
+    for( const wxFileName& destFile : destFiles )
+    {
+        wxString fullPath = destFile.GetFullPath();
+
+        if( fullPath.Contains( wxS( "myproject-dir" ) ) )
+            foundRenamedDir = true;
+
+        if( fullPath.Contains( wxS( "issue22289-dir" ) ) )
+            BOOST_FAIL( "Directory should have been renamed from issue22289-dir to myproject-dir" );
+
+        if( fullPath.Contains( wxS( "other-dir" ) ) )
+            foundOtherDir = true;
+
+        if( destFile.GetName() == wxS( "myproject" ) && destFile.GetExt() == wxS( "kicad_pro" ) )
+            foundRenamedFile = true;
+    }
+
+    BOOST_CHECK_MESSAGE( foundRenamedDir, "Should find myproject-dir in destination files" );
+    BOOST_CHECK_MESSAGE( foundRenamedFile, "Should find myproject.kicad_pro in destination files" );
+    BOOST_CHECK_MESSAGE( foundOtherDir, "Should preserve other-dir (not matching template name)" );
+}
+
+
+BOOST_AUTO_TEST_CASE( CreateProjectRenamesDirectories )
+{
+    CreateTemplateStructure(
+            "testtemplate",
+            { "testtemplate-lib", "testtemplate" },
+            { "testtemplate.kicad_pro", "testtemplate-lib/component.kicad_sym",
+              "testtemplate/nested.txt" } );
+
+    fs::path templatePath = m_tempDir / "testtemplate";
+    fs::path destPath = m_tempDir / "newproject";
+    fs::create_directories( destPath );
+
+    PROJECT_TEMPLATE tmpl( wxString::FromUTF8( templatePath.string() ) );
+
+    // CreateProject expects a wxFileName with the project file path (including extension)
+    wxFileName newProjectPath;
+    newProjectPath.SetPath( wxString::FromUTF8( destPath.string() ) );
+    newProjectPath.SetName( wxS( "newproject" ) );
+    newProjectPath.SetExt( wxS( "kicad_pro" ) );
+
+    wxString errorMsg;
+    bool     result = tmpl.CreateProject( newProjectPath, &errorMsg );
+
+    BOOST_CHECK_MESSAGE( result, "CreateProject should succeed: " + errorMsg.ToStdString() );
+
+    BOOST_CHECK( fs::exists( destPath / "newproject.kicad_pro" ) );
+    BOOST_CHECK( fs::exists( destPath / "newproject-lib" ) );
+    BOOST_CHECK( fs::exists( destPath / "newproject-lib" / "component.kicad_sym" ) );
+
+    BOOST_CHECK_MESSAGE( !fs::exists( destPath / "testtemplate-lib" ),
+                         "Old directory name should not exist" );
+}
+
+
+BOOST_AUTO_TEST_CASE( ExactMatchDirectoryRenamed )
+{
+    // Test that a directory exactly matching the template name is renamed
+    CreateTemplateStructure( "mytemplate", { "mytemplate" },
+                             { "mytemplate.kicad_pro", "mytemplate/subfile.txt" } );
+
+    fs::path templatePath = m_tempDir / "mytemplate";
+    fs::path destPath = m_tempDir / "finalproject";
+    fs::create_directories( destPath );
+
+    PROJECT_TEMPLATE tmpl( wxString::FromUTF8( templatePath.string() ) );
+
+    // GetDestinationFiles expects a wxFileName with the project file path
+    wxFileName newProjectPath;
+    newProjectPath.SetPath( wxString::FromUTF8( destPath.string() ) );
+    newProjectPath.SetName( wxS( "finalproject" ) );
+    newProjectPath.SetExt( wxS( "kicad_pro" ) );
+
+    std::vector<wxFileName> destFiles;
+    tmpl.GetDestinationFiles( newProjectPath, destFiles );
+
+    bool foundExactRenamedDir = false;
+
+    for( const wxFileName& destFile : destFiles )
+    {
+        wxString fullPath = destFile.GetFullPath();
+
+        if( fullPath.Contains( wxS( "/finalproject/finalproject/" ) )
+            || fullPath.Contains( wxS( "\\finalproject\\finalproject\\" ) ) )
+        {
+            foundExactRenamedDir = true;
+        }
+
+        if( fullPath.Contains( wxS( "/finalproject/mytemplate/" ) )
+            || fullPath.Contains( wxS( "\\finalproject\\mytemplate\\" ) ) )
+        {
+            BOOST_FAIL( "Exact match directory should be renamed from mytemplate to finalproject" );
+        }
+    }
+
+    BOOST_CHECK_MESSAGE( foundExactRenamedDir, "Should find renamed subdirectory finalproject" );
+}
+
+
+BOOST_AUTO_TEST_CASE( TemplateWithoutMetaDirSetsErrorTitle )
+{
+    // Issue #23623: user template directories that are just regular KiCad projects
+    // (no meta/info.html) should not crash. The constructor should set an error
+    // title and GetTitle() should return that error without trying to open a
+    // nonexistent file.
+    fs::path noMetaPath = m_tempDir / "no_meta_template";
+    fs::create_directories( noMetaPath );
+
+    std::ofstream f( ( noMetaPath / "no_meta_template.kicad_pro" ).string() );
+    f << "{}";
+    f.close();
+
+    PROJECT_TEMPLATE tmpl( wxString::FromUTF8( noMetaPath.string() ) );
+
+    wxString* title = tmpl.GetTitle();
+    BOOST_REQUIRE( title != nullptr );
+    BOOST_CHECK_MESSAGE( !title->IsEmpty(), "Template without meta dir should have an error title" );
+
+    // Calling GetTitle() again should return the same cached result without
+    // attempting to open meta/info.html
+    wxString* title2 = tmpl.GetTitle();
+    BOOST_CHECK( *title == *title2 );
+}
+
+
+BOOST_AUTO_TEST_CASE( TemplateWithMetaDirButNoInfoHtml )
+{
+    // meta directory exists but info.html is missing
+    fs::path tmplPath = m_tempDir / "meta_no_html";
+    fs::create_directories( tmplPath / "meta" );
+
+    std::ofstream f( ( tmplPath / "meta_no_html.kicad_pro" ).string() );
+    f << "{}";
+    f.close();
+
+    PROJECT_TEMPLATE tmpl( wxString::FromUTF8( tmplPath.string() ) );
+
+    wxString* title = tmpl.GetTitle();
+    BOOST_REQUIRE( title != nullptr );
+    BOOST_CHECK_MESSAGE( !title->IsEmpty(),
+                         "Template with meta dir but no info.html should have an error title" );
+}
+
+
+// Regression test for https://gitlab.com/kicad/code/kicad/-/issues/24343
+// EnsureDefaultProjectTemplate must seed the built-in "default" template under the given base
+// directory and yield a directory that PROJECT_TEMPLATE can load as a valid template.
+BOOST_AUTO_TEST_CASE( EnsureDefaultTemplateSeedsBaseDir )
+{
+    wxString   baseDir = wxString::FromUTF8( ( m_tempDir / "default_seed" ).string() );
+    wxFileName seeded = EnsureDefaultProjectTemplate( baseDir );
+
+    BOOST_REQUIRE_MESSAGE( seeded.IsOk(), "Seeding the default template should succeed" );
+
+    // The default template must live directly under the requested base directory, not somewhere
+    // derived from an environment variable.
+    fs::path expected = m_tempDir / "default_seed" / "default";
+    BOOST_CHECK( fs::exists( expected ) );
+    BOOST_CHECK( fs::exists( expected / "meta" / "info.html" ) );
+    BOOST_CHECK( fs::exists( expected / "default.kicad_pro" ) );
+
+    // PROJECT_TEMPLATE must recognize the seeded directory as a valid template (meta dir and
+    // info.html present, so no error is reported).
+    PROJECT_TEMPLATE tmpl( seeded.GetPath() );
+
+    BOOST_CHECK_MESSAGE( tmpl.GetError().IsEmpty(),
+                         "Seeded default template should load without error: " + tmpl.GetError() );
+
+    wxString* title = tmpl.GetTitle();
+
+    BOOST_REQUIRE( title != nullptr );
+    BOOST_CHECK( !title->IsEmpty() );
+}
+
+
+BOOST_AUTO_TEST_CASE( ProjectCreatedFromDefaultTemplateLoads )
+{
+    wxString   baseDir = wxString::FromUTF8( ( m_tempDir / "default_load" ).string() );
+    wxFileName seeded = EnsureDefaultProjectTemplate( baseDir );
+
+    BOOST_REQUIRE( seeded.IsOk() );
+
+    fs::path destPath = m_tempDir / "fromdefault";
+    fs::create_directories( destPath );
+
+    PROJECT_TEMPLATE tmpl( seeded.GetPath() );
+
+    wxFileName newProjectPath;
+    newProjectPath.SetPath( wxString::FromUTF8( destPath.string() ) );
+    newProjectPath.SetName( wxS( "fromdefault" ) );
+    newProjectPath.SetExt( wxS( "kicad_pro" ) );
+
+    wxString errorMsg;
+
+    BOOST_REQUIRE_MESSAGE( tmpl.CreateProject( newProjectPath, &errorMsg ),
+                           "CreateProject should succeed: " + errorMsg.ToStdString() );
+
+    SETTINGS_MANAGER mgr;
+
+    BOOST_CHECK_MESSAGE( mgr.LoadProject( newProjectPath.GetFullPath() ),
+                         "A project made from the default template must load" );
+}
+
+
+// An empty base directory must not create anything and must report failure.
+BOOST_AUTO_TEST_CASE( EnsureDefaultTemplateRejectsEmptyBaseDir )
+{
+    wxFileName seeded = EnsureDefaultProjectTemplate( wxEmptyString );
+
+    BOOST_CHECK( !seeded.IsOk() );
+}
+
+
+// Calling EnsureDefaultProjectTemplate twice must be idempotent and not clobber existing content.
+BOOST_AUTO_TEST_CASE( EnsureDefaultTemplateIsIdempotent )
+{
+    wxString baseDir = wxString::FromUTF8( ( m_tempDir / "default_idempotent" ).string() );
+
+    wxFileName first = EnsureDefaultProjectTemplate( baseDir );
+    BOOST_REQUIRE( first.IsOk() );
+
+    // Overwrite the project file with custom content to verify it survives a second call.
+    fs::path proFile = m_tempDir / "default_idempotent" / "default" / "default.kicad_pro";
+    {
+        std::ofstream f( proFile.string() );
+        f << "{\"custom\":true}";
+    }
+
+    wxFileName second = EnsureDefaultProjectTemplate( baseDir );
+    BOOST_REQUIRE( second.IsOk() );
+    BOOST_CHECK_EQUAL( first.GetPath(), second.GetPath() );
+
+    std::ifstream     in( proFile.string() );
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+
+    BOOST_CHECK_EQUAL( buffer.str(), std::string( "{\"custom\":true}" ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( ReadOnlyTemplateProducesWritableProject )
+{
+    CreateTemplateStructure( "rotemplate", { "rotemplate-lib" },
+                             { "rotemplate.kicad_pro", "rotemplate.kicad_sch", "rotemplate-lib/component.kicad_sym" } );
+
+    fs::path templatePath = m_tempDir / "rotemplate";
+    fs::path destPath = m_tempDir / "rwproject";
+    fs::create_directories( destPath );
+
+    const std::vector<fs::path> templateFiles = { templatePath / "rotemplate.kicad_pro",
+                                                  templatePath / "rotemplate.kicad_sch",
+                                                  templatePath / "rotemplate-lib" / "component.kicad_sym" };
+
+    for( const fs::path& file : templateFiles )
+    {
+        fs::permissions( file, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write,
+                         fs::perm_options::remove );
+    }
+
+    PROJECT_TEMPLATE tmpl( wxString::FromUTF8( templatePath.string() ) );
+
+    wxFileName newProjectPath;
+    newProjectPath.SetPath( wxString::FromUTF8( destPath.string() ) );
+    newProjectPath.SetName( wxS( "rwproject" ) );
+    newProjectPath.SetExt( wxS( "kicad_pro" ) );
+
+    wxString errorMsg;
+    bool     created = tmpl.CreateProject( newProjectPath, &errorMsg );
+
+    // Restore write permission before asserting, so that a failed assertion still leaves the
+    // fixture able to remove the temporary directory.
+    for( const fs::path& file : templateFiles )
+        fs::permissions( file, fs::perms::owner_write, fs::perm_options::add );
+
+    BOOST_REQUIRE_MESSAGE( created, "CreateProject failed: " + errorMsg.ToStdString() );
+
+    const std::vector<fs::path> projectFiles = { destPath / "rwproject.kicad_pro", destPath / "rwproject.kicad_sch",
+                                                 destPath / "rwproject-lib" / "component.kicad_sym" };
+
+    for( const fs::path& file : projectFiles )
+    {
+        wxFileName fn( wxString::FromUTF8( file.string() ) );
+
+        BOOST_REQUIRE_MESSAGE( fn.FileExists(), file.string() + " was not created" );
+        BOOST_CHECK_MESSAGE( fn.IsFileWritable(), file.string() + " is read only" );
+    }
+}
+
+
+BOOST_AUTO_TEST_SUITE_END()

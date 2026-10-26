@@ -1,0 +1,478 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 1992-2017 jp.charras at wanadoo.fr
+ * Copyright (C) 2013-2017 SoftPLC Corporation, Dick Hollenbeck <dick@softplc.com>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <netlist_exporter_base.h>
+
+#include <string_utils.h>
+
+#include <trace_helpers.h>
+#include <connection_graph.h>
+#include <kiface_ids.h>
+#include <kiway.h>
+#include <lib_id.h>
+#include <sch_pin.h>
+#include <sch_reference_list.h>
+#include <sch_screen.h>
+#include <sch_symbol.h>
+#include <schematic.h>
+#include <advanced_config.h>
+#include <connectivity/conn_facade.h>
+#include <reporter.h>
+#include <richio.h>
+
+
+NETLIST_EXPORTER_BASE::CONNECTIVITY_SCOPE::CONNECTIVITY_SCOPE( NETLIST_EXPORTER_BASE& aExporter ) :
+        m_exporter( aExporter )
+{
+    if( m_exporter.m_connectivityDepth == 0 )
+        m_exporter.rebuildConnectivity();
+
+    ++m_exporter.m_connectivityDepth;
+}
+
+NETLIST_EXPORTER_BASE::CONNECTIVITY_SCOPE::~CONNECTIVITY_SCOPE()
+{
+    --m_exporter.m_connectivityDepth;
+}
+
+bool NETLIST_EXPORTER_BASE::WriteNetlist( const wxString& aOutFileName, unsigned aNetlistOptions,
+                                          REPORTER& aReporter )
+{
+    try
+    {
+        CONNECTIVITY_SCOPE connectivity( *this );
+        return writeNetlist( aOutFileName, aNetlistOptions, aReporter );
+    }
+    catch( const IO_ERROR& error )
+    {
+        aReporter.Report( error.What(), RPT_SEVERITY_ERROR );
+        return false;
+    }
+    catch( const std::exception& error )
+    {
+        aReporter.Report( wxString::Format( _( "Failed to export schematic: %s" ), error.what() ),
+                          RPT_SEVERITY_ERROR );
+        return false;
+    }
+}
+
+void NETLIST_EXPORTER_BASE::rebuildConnectivity()
+{
+    m_exportNets.clear();
+    m_exportItemNets.clear();
+    m_schematic->RebuildConnectivity();
+    m_exportSheets = m_schematic->Hierarchy();
+
+    if( ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
+    {
+        auto& facade = m_schematic->Connectivity();
+        std::map<KIID_PATH, const SCH_SHEET_PATH*> paths;
+
+        for( const SCH_SHEET_PATH& path : m_exportSheets )
+            paths.emplace( path.Path(), &path );
+
+        for( const auto& [key, row] : facade.Published().Rows() )
+        {
+            const auto& path = facade.Keys().Instance( key.inst );
+            const auto view = facade.Connection( key.item, path );
+
+            if( !view )
+                THROW_IO_ERROR( _( "Connectivity changed while preparing the netlist." ) );
+
+            const auto sheet = paths.find( path );
+
+            if( sheet == paths.end() )
+                THROW_IO_ERROR( _( "Connectivity contains an unknown sheet instance." ) );
+
+            m_exportItemNets[*sheet->second].emplace( key.item, view->Name() );
+        }
+
+        for( const SCH_CONNECTIVITY::NET_GROUP& group : facade.GetNetMap() )
+        {
+            EXPORT_NET result{ group.name, false, {} };
+
+            for( const SCH_CONNECTIVITY::NET_VIEW& net : group.instances )
+            {
+                if( !net.IsNet() )
+                    continue;
+
+                const auto path = paths.find( net.Instance() );
+
+                if( path == paths.end() )
+                    THROW_IO_ERROR( _( "Connectivity contains an unknown sheet instance." ) );
+
+                for( SCH_ITEM* item : net.Items() )
+                {
+                    result.hasNoConnect |= item->Type() == SCH_NO_CONNECT_T;
+
+                    if( item->Type() == SCH_PIN_T )
+                        result.pins.emplace_back( static_cast<SCH_PIN*>( item ), *path->second );
+                }
+            }
+
+            m_exportNets.push_back( std::move( result ) );
+        }
+
+        return;
+    }
+
+    for( const SCH_SHEET_PATH& path : m_exportSheets )
+    {
+        std::unordered_map<KIID, wxString>& itemNets = m_exportItemNets[path];
+
+        auto collect =
+                [&]( SCH_ITEM* item )
+                {
+                    if( SCH_CONNECTION* connection = item->Connection( &path ) )
+                        itemNets.emplace( item->m_Uuid, connection->Name() );
+                };
+
+        for( SCH_ITEM* item : path.LastScreen()->Items() )
+        {
+            collect( item );
+            item->RunOnChildren( collect, RECURSE_MODE::NO_RECURSE );
+        }
+    }
+
+    for( const auto& [key, subgraphs] : m_schematic->ConnectionGraph()->GetNetMap() )
+    {
+        EXPORT_NET result{ key.Name, false, {} };
+
+        for( CONNECTION_SUBGRAPH* subgraph : subgraphs )
+        {
+            result.hasNoConnect |= subgraph->GetNoConnect()
+                                   && subgraph->GetNoConnect()->Type() == SCH_NO_CONNECT_T;
+            const SCH_SHEET_PATH& path = subgraph->GetSheet();
+
+            for( SCH_ITEM* item : subgraph->GetItems() )
+            {
+                if( item->Type() == SCH_PIN_T )
+                    result.pins.emplace_back( static_cast<SCH_PIN*>( item ), path );
+            }
+        }
+
+        m_exportNets.push_back( std::move( result ) );
+    }
+}
+
+std::optional<wxString> NETLIST_EXPORTER_BASE::itemNetName( const SCH_ITEM& aItem,
+                                                            const SCH_SHEET_PATH& aPath ) const
+{
+    const auto sheet = m_exportItemNets.find( aPath );
+
+    if( sheet == m_exportItemNets.end() )
+        return std::nullopt;
+
+    const auto found = sheet->second.find( aItem.m_Uuid );
+    return found == sheet->second.end() ? std::nullopt : std::optional( found->second );
+}
+
+
+// a "less than" test on two LIB_SYMBOLs (.m_name wxStrings)
+bool LIB_SYMBOL_LESS_THAN::operator()( LIB_SYMBOL* const& libsymbol1, LIB_SYMBOL* const& libsymbol2 ) const
+{
+    // Use case specific GetName() wxString compare
+    return libsymbol1->GetLibId() < libsymbol2->GetLibId();
+}
+
+
+wxString NETLIST_EXPORTER_BASE::MakeCommandLine( const wxString& aFormatString, const wxString& aNetlistFile,
+                                                 const wxString& aFinalFile, const wxString& aProjectPath )
+{
+    // Expand format symbols in the command line:
+    // %B => base filename of selected output file, minus path and extension.
+    // %P => project directory name, without trailing '/' or '\'.
+    // %I => full filename of the input file (the intermediate net file).
+    // %O => complete filename and path (but without extension) of the user chosen output file.
+
+    wxString   ret     = aFormatString;
+    wxFileName in      = aNetlistFile;
+    wxFileName out     = aFinalFile;
+    wxString   str_out = out.GetFullPath();
+
+    ret.Replace( "%P", aProjectPath, true );
+    ret.Replace( "%B", out.GetName(), true );
+    ret.Replace( "%I", in.GetFullPath(), true );
+
+#ifdef __WINDOWS__
+    // A ugly hack to run xsltproc that has a serious bug on Window since a long time:
+    // the filename given after -o option (output filename) cannot use '\' in filename
+    // so replace if by '/' if possible (I mean if the filename does not start by "\\"
+    // that is a filename on a Windows server)
+
+    if( !str_out.StartsWith( "\\\\" ) )
+        str_out.Replace( "\\", "/" );
+#endif
+
+    ret.Replace( "%O", str_out, true );
+
+    return ret;
+}
+
+
+SCH_SYMBOL* NETLIST_EXPORTER_BASE::findNextSymbol( EDA_ITEM* aItem, const SCH_SHEET_PATH& aSheetPath )
+{
+    wxCHECK( aItem, nullptr );
+
+    wxString ref;
+
+    if( aItem->Type() != SCH_SYMBOL_T )
+        return nullptr;
+
+    // found next symbol
+    SCH_SYMBOL* symbol = (SCH_SYMBOL*) aItem;
+
+    // Power symbols and other symbols which have the reference starting with "#" are not
+    // included in netlist (pseudo or virtual symbols)
+    ref = symbol->GetRef( &aSheetPath );
+
+    if( ref[0] == wxChar( '#' ) )
+        return nullptr;
+
+    SCH_SCREEN* screen = aSheetPath.LastScreen();
+
+    wxCHECK( screen, nullptr );
+
+    auto it = screen->GetLibSymbols().find( symbol->GetSchSymbolLibraryName() );
+
+    if( it == screen->GetLibSymbols().end() )
+        return nullptr;
+
+    LIB_SYMBOL* libSymbol = it->second;
+
+    // If symbol is a "multi parts per package" type
+    if( libSymbol->GetUnitCount() > 1 )
+    {
+        // test if this reference has already been processed, and if so skip
+        if( m_referencesAlreadyFound.Lookup( ref ) )
+            return nullptr;
+    }
+
+    // record the usage of this library symbol entry.
+    m_libParts.insert( libSymbol ); // rejects non-unique pointers
+
+    return symbol;
+}
+
+
+std::vector<PIN_INFO> NETLIST_EXPORTER_BASE::CreatePinList( SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& aSheetPath )
+{
+    std::vector<PIN_INFO> pins;
+
+    if( !aSymbol )
+        return pins;
+
+    wxString ref( aSymbol->GetRef( &aSheetPath ) );
+
+    // Power symbols and other symbols which have the reference starting with "#" are not
+    // included in netlist (pseudo or virtual symbols)
+    if( ( ref[0] == wxChar( '#' ) ) || aSymbol->IsPower() )
+        return pins;
+
+    // if( aSymbol->m_FlagControlMulti == 1 )
+    //    continue;                                      /* yes */
+    // removed because with multiple instances of one schematic (several sheets pointing to
+    // 1 screen), this will be erroneously be toggled.
+
+    if( !aSymbol->GetLibSymbolRef() )
+        return pins;
+
+    // If symbol is a "multi parts per package" type
+    if( aSymbol->GetLibSymbolRef()->GetUnitCount() > 1 )
+    {
+        // Collect all pins for this reference designator by searching the entire design for
+        // other parts with the same reference designator.
+        findAllUnitsOfSymbol( aSymbol, aSheetPath, pins );
+    }
+
+    else // GetUnitCount() <= 1 means one part per package
+    {
+        for( const SCH_PIN* pin : aSymbol->GetPins( &aSheetPath ) )
+        {
+            if( const std::optional<wxString> netName = itemNetName( *pin, aSheetPath ) )
+                appendResolvedPins( pins, pin, aSheetPath, *netName );
+        }
+    }
+
+    // Sort pins in m_SortedSymbolPinList by pin number
+    std::sort( pins.begin(), pins.end(),
+               []( const PIN_INFO& lhs, const PIN_INFO& rhs )
+               {
+                   return StrNumCmp( lhs.num, rhs.num, true ) < 0;
+               } );
+
+    // Remove duplicate Pins in m_SortedSymbolPinList
+    eraseDuplicatePins( pins );
+
+    // record the usage of this library symbol
+    m_libParts.insert( aSymbol->GetLibSymbolRef().get() ); // rejects non-unique pointers
+
+    return pins;
+}
+
+
+std::vector<wxString> NETLIST_EXPORTER_BASE::resolvePadNumbers( const SCH_PIN*        aPin,
+                                                                const SCH_SHEET_PATH& aSheetPath ) const
+{
+    // Shared resolution kernel for all netlist paths (issue #2282) so they cannot drift.
+    if( m_kiway )
+    {
+        if( const SCH_SYMBOL* symbol = dynamic_cast<const SCH_SYMBOL*>( aPin->GetParentSymbol() ) )
+        {
+            wxString fpText = symbol->GetFootprintFieldText( &aSheetPath, RESOLVED, m_exportVariant );
+            LIB_ID   fpId;
+
+            if( !fpText.IsEmpty() && fpId.Parse( fpText, true ) < 0 )
+            {
+                const std::set<wxString>& pads = footprintPads( fpId.GetUniStringLibId() );
+
+                if( !pads.empty() )
+                {
+                    SCH_PIN::PAD_RESOLUTION state = SCH_PIN::PAD_RESOLUTION::MAPPED;
+                    wxString pad = aPin->GetEffectivePadNumber( aSheetPath, m_exportVariant, fpId, &pads, &state );
+
+                    if( state == SCH_PIN::PAD_RESOLUTION::UNMAPPED )
+                        return {};
+
+                    return ExpandStackedPinNotation( pad );
+                }
+            }
+        }
+    }
+
+    return ExpandStackedPinNotation( aPin->GetEffectivePadNumber( aSheetPath, m_exportVariant ) );
+}
+
+
+const std::set<wxString>& NETLIST_EXPORTER_BASE::footprintPads( const wxString& aFootprintId ) const
+{
+    auto it = m_footprintPadCache.find( aFootprintId );
+
+    if( it != m_footprintPadCache.end() )
+        return it->second;
+
+    std::set<wxString>& pads = m_footprintPadCache[aFootprintId];
+
+    if( m_kiway && !aFootprintId.IsEmpty() )
+    {
+        if( KIFACE* cvpcb = m_kiway->KiFACE( KIWAY::FACE_CVPCB ) )
+        {
+            typedef void ( *PAD_NUMBERS_FN_PTR )( const wxString&, PROJECT*, std::set<wxString>& );
+
+            if( auto fetch = (PAD_NUMBERS_FN_PTR) cvpcb->IfaceOrAddress( KIFACE_FOOTPRINT_PAD_NUMBERS ) )
+                fetch( aFootprintId, &m_schematic->Project(), pads );
+        }
+    }
+
+    return pads;
+}
+
+
+void NETLIST_EXPORTER_BASE::appendResolvedPins( std::vector<PIN_INFO>& aPins, const SCH_PIN* aPin,
+                                                const SCH_SHEET_PATH& aSheetPath, const wxString& aNetName )
+{
+    const wxString& baseName = aPin->GetShownName();
+
+    for( const wxString& padNum : resolvePadNumbers( aPin, aSheetPath ) )
+    {
+        wxString pinName = baseName.IsEmpty() ? padNum : baseName + wxT( "_" ) + padNum;
+        aPins.emplace_back( padNum, aNetName, pinName, aPin->GetNumber() );
+    }
+}
+
+
+void NETLIST_EXPORTER_BASE::eraseDuplicatePins( std::vector<PIN_INFO>& aPins )
+{
+    for( unsigned ii = 0; ii < aPins.size(); ii++ )
+    {
+        if( aPins[ii].num.empty() )
+            continue;
+
+        // Search for duplicated pins and keep only one. Duplicate pin numbers can occur
+        // for multi-unit symbols with shared pins, or for symbols with the "duplicate pin
+        // numbers are jumpers" flag. In either case, all pins with the same number should
+        // connect to the same net. When they don't (user error), we prefer user-assigned
+        // nets over auto-generated ones to preserve user intent in the netlist.
+        // Because the pin list is sorted by pin number, duplicates are consecutive.
+        unsigned idxBest = ii;
+
+        for( unsigned jj = ii + 1; jj < aPins.size(); jj++ )
+        {
+            if( aPins[jj].num.empty() )
+                continue;
+
+            if( aPins[idxBest].num != aPins[jj].num )
+                break;
+
+            // A genuine many-to-one mapping collision - two *different* symbol pins resolved to
+            // the same pad on *different* nets - must survive so it stays visible and is flagged
+            // by ERC (issue #2282).  Shared multi-unit pins and jumpers carry the same source pin
+            // number, so they still collapse below as before.
+            if( aPins[idxBest].netName != aPins[jj].netName
+                    && !aPins[idxBest].srcPin.IsEmpty()
+                    && !aPins[jj].srcPin.IsEmpty()
+                    && aPins[idxBest].srcPin != aPins[jj].srcPin )
+            {
+                continue;
+            }
+
+            // Check if jj has a better (user-assigned) net than the current best.
+            // Prefer user-assigned nets over auto-generated "unconnected-(" or "Net-(" nets.
+            bool bestIsAuto = IsAutoGeneratedNetName( aPins[idxBest].netName );
+            bool jjIsAuto = IsAutoGeneratedNetName( aPins[jj].netName );
+
+            if( bestIsAuto && !jjIsAuto )
+            {
+                // jj has a user-assigned net while best has auto-generated; switch to jj
+                aPins[idxBest].num.clear();
+                idxBest = jj;
+            }
+            else
+            {
+                aPins[jj].num.clear();
+            }
+        }
+    }
+}
+
+
+void NETLIST_EXPORTER_BASE::findAllUnitsOfSymbol( SCH_SYMBOL* aSchSymbol, const SCH_SHEET_PATH& aSheetPath,
+                                                  std::vector<PIN_INFO>& aPins )
+{
+    const wxString ref = aSchSymbol->GetRef( &aSheetPath );
+
+    for( const SCH_SHEET_PATH& sheet : m_exportSheets )
+    {
+        for( SCH_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+
+            if( symbol->GetRef( &sheet ).CmpNoCase( ref ) != 0 )
+                continue;
+
+            for( const SCH_PIN* pin : symbol->GetPins( &sheet ) )
+            {
+                if( const std::optional<wxString> netName = itemNetName( *pin, sheet ) )
+                    appendResolvedPins( aPins, pin, sheet, *netName );
+            }
+        }
+    }
+}

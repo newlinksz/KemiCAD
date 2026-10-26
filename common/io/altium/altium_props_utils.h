@@ -1,0 +1,71 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2019-2020 Thomas Pointhuber <thomas.pointhuber@gmx.at>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef _ALTIUM_PROPS_UTILS_H
+#define _ALTIUM_PROPS_UTILS_H
+
+#include <stdint.h>
+#include <map>
+
+#include <wx/string.h>
+
+
+class ALTIUM_PROPS_UTILS
+{
+public:
+    /**
+     * Convert a value in Altium's internal unit (0.1 uinch) to KiCad IU, clamped to the
+     * representable range.
+     *
+     * @param aValue
+     * @param aOutOfRange when given, is set true if @p aValue did not fit and the result is a
+     *                    clamp rather than a conversion.  A clamped coordinate names the edge
+     *                    of the int range, not a place on the board, so callers that position
+     *                    geometry must reject it instead of using it.
+     */
+    static int32_t ConvertToKicadUnit( const double aValue, bool* aOutOfRange = nullptr );
+
+    static int ReadInt( const std::map<wxString, wxString>& aProps, const wxString& aKey,
+                        int aDefault );
+
+    static double ReadDouble( const std::map<wxString, wxString>& aProps, const wxString& aKey,
+                              double aDefault );
+
+    static bool ReadBool( const std::map<wxString, wxString>& aProps, const wxString& aKey,
+                          bool aDefault );
+
+    /**
+     * @param aProps
+     * @param aKey
+     * @param aDefault
+     * @param aOutOfRange is forwarded to ConvertToKicadUnit(); it stays false for a missing or
+     *                    unparseable property, which yields zero rather than a clamp.
+     */
+    static int32_t ReadKicadUnit( const std::map<wxString, wxString>& aProps, const wxString& aKey,
+                                  const wxString& aDefault, bool* aOutOfRange = nullptr );
+
+    static wxString ReadString( const std::map<wxString, wxString>& aProps, const wxString& aKey,
+                                const wxString& aDefault );
+
+    static wxString ReadUnicodeString( const std::map<wxString, wxString>& aProps,
+                                       const wxString& aKey, const wxString& aDefault );
+};
+
+#endif //_ALTIUM_PROPS_UTILS_H

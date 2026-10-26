@@ -1,0 +1,273 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <bitmaps.h>
+#include <cstddef>
+#include <magic_enum.hpp>
+#include <sch_pin.h>
+#include "pgm_base.h"
+
+
+// Library loading initializes and reads these caches on worker threads. Keep them local to
+// each thread so initialization and language changes cannot invalidate another thread's data.
+
+static thread_local std::vector<BITMAPS> g_typeIcons;
+static thread_local wxArrayString        g_typeNames;
+
+static thread_local std::vector<BITMAPS> g_shapeIcons;
+static thread_local wxArrayString        g_shapeNames;
+
+static thread_local std::vector<BITMAPS> g_orientationIcons;
+static thread_local wxArrayString        g_orientationNames;
+
+
+struct pinTypeStruct
+{
+    wxString name;
+    BITMAPS  bitmap;
+};
+
+struct pinShapeStruct
+{
+    wxString name;
+    BITMAPS  bitmap;
+};
+
+static thread_local std::map<ELECTRICAL_PINTYPE, struct pinTypeStruct> g_pinElectricalTypes;
+static thread_local std::map<GRAPHIC_PINSHAPE, struct pinShapeStruct>  g_pinShapes;
+static thread_local std::map<PIN_ORIENTATION, struct pinShapeStruct>   g_pinOrientations;
+
+
+static thread_local int g_language = wxLANGUAGE_UNKNOWN;
+
+
+PIN_ORIENTATION PinOrientationCode( size_t index )
+{
+    wxASSERT( index < magic_enum::enum_count<PIN_ORIENTATION>() );
+    return magic_enum::enum_value<PIN_ORIENTATION>( index );
+}
+
+
+int PinOrientationIndex( PIN_ORIENTATION code )
+{
+    auto index = magic_enum::enum_index<PIN_ORIENTATION>( code );
+
+    if( index.has_value() )
+        return index.value();
+
+    return wxNOT_FOUND;
+}
+
+
+void InitTables()
+{
+    // clang-format off
+    g_pinElectricalTypes = {
+        { ELECTRICAL_PINTYPE::PT_INPUT,         { _( "Input" ),          BITMAPS::pintype_input } },
+        { ELECTRICAL_PINTYPE::PT_OUTPUT,        { _( "Output" ),         BITMAPS::pintype_output } },
+        { ELECTRICAL_PINTYPE::PT_BIDI,          { _( "Bidirectional" ),  BITMAPS::pintype_bidi } },
+        { ELECTRICAL_PINTYPE::PT_TRISTATE,      { _( "Tri-state" ),      BITMAPS::pintype_3states } },
+        { ELECTRICAL_PINTYPE::PT_PASSIVE,       { _( "Passive" ),        BITMAPS::pintype_passive } },
+        { ELECTRICAL_PINTYPE::PT_NIC,           { _( "Free" ),           BITMAPS::pintype_nic } },
+        { ELECTRICAL_PINTYPE::PT_UNSPECIFIED,   { _( "Unspecified" ),    BITMAPS::pintype_notspecif } },
+        { ELECTRICAL_PINTYPE::PT_POWER_IN,      { _( "Power input" ),    BITMAPS::pintype_powerinput } },
+        { ELECTRICAL_PINTYPE::PT_POWER_OUT,     { _( "Power output" ),   BITMAPS::pintype_poweroutput } },
+        { ELECTRICAL_PINTYPE::PT_OPENCOLLECTOR, { _( "Open collector" ), BITMAPS::pintype_opencoll } },
+        { ELECTRICAL_PINTYPE::PT_OPENEMITTER,   { _( "Open emitter" ),   BITMAPS::pintype_openemit } },
+        { ELECTRICAL_PINTYPE::PT_NC,            { _( "Unconnected" ),    BITMAPS::pintype_noconnect } },
+        { ELECTRICAL_PINTYPE::PT_INHERIT,       { _( "Unspecified" ),    BITMAPS::pintype_notspecif } },
+    };
+
+    g_pinShapes = {
+        { GRAPHIC_PINSHAPE::LINE,               { _( "Line" ),               BITMAPS::pinshape_normal } },
+        { GRAPHIC_PINSHAPE::INVERTED,           { _( "Inverted" ),           BITMAPS::pinshape_invert } },
+        { GRAPHIC_PINSHAPE::CLOCK,              { _( "Clock" ),              BITMAPS::pinshape_clock_normal } },
+        { GRAPHIC_PINSHAPE::INVERTED_CLOCK,     { _( "Inverted clock" ),     BITMAPS::pinshape_clock_invert } },
+        { GRAPHIC_PINSHAPE::INPUT_LOW,          { _( "Input low" ),          BITMAPS::pinshape_active_low_input } },
+        { GRAPHIC_PINSHAPE::CLOCK_LOW,          { _( "Clock low" ),          BITMAPS::pinshape_clock_active_low } },
+        { GRAPHIC_PINSHAPE::OUTPUT_LOW,         { _( "Output low" ),         BITMAPS::pinshape_active_low_output } },
+        { GRAPHIC_PINSHAPE::FALLING_EDGE_CLOCK, { _( "Falling edge clock" ), BITMAPS::pinshape_clock_fall } },
+        { GRAPHIC_PINSHAPE::NONLOGIC,           { _( "NonLogic" ),           BITMAPS::pinshape_nonlogic } },
+        { GRAPHIC_PINSHAPE::INHERIT,            { _( "Unspecified" ),        BITMAPS::pintype_notspecif } },
+    };
+
+    g_pinOrientations = {
+        { PIN_ORIENTATION::PIN_RIGHT, { _( "Right" ),       BITMAPS::pinorient_right } },
+        { PIN_ORIENTATION::PIN_LEFT,  { _( "Left" ),        BITMAPS::pinorient_left } },
+        { PIN_ORIENTATION::PIN_UP,    { _( "Up" ),          BITMAPS::pinorient_up } },
+        { PIN_ORIENTATION::PIN_DOWN,  { _( "Down" ),        BITMAPS::pinorient_down } },
+        { PIN_ORIENTATION::INHERIT,   { _( "Unspecified" ), BITMAPS::pintype_notspecif } },
+    };
+    // clang-format on
+
+    g_language = Pgm().GetSelectedLanguageIdentifier();
+
+    g_typeIcons.clear();
+    g_typeNames.clear();
+
+    for( const auto& [pinType, pinData] : g_pinElectricalTypes )
+    {
+        g_typeIcons.push_back( pinData.bitmap );
+        g_typeNames.push_back( pinData.name );
+    }
+
+    g_shapeIcons.clear();
+    g_shapeNames.clear();
+
+    for( const auto& [shapeType, shapeData] : g_pinShapes )
+    {
+        g_shapeIcons.push_back( shapeData.bitmap );
+        g_shapeNames.push_back( shapeData.name );
+    }
+
+    g_orientationIcons.clear();
+    g_orientationNames.clear();
+
+    for( const auto& [orientationType, orientationData] : g_pinOrientations )
+    {
+        g_orientationIcons.push_back( orientationData.bitmap );
+        g_orientationNames.push_back( orientationData.name );
+    }
+}
+
+
+const wxArrayString& PinTypeNames()
+{
+    if( g_typeNames.empty() || g_language != Pgm().GetSelectedLanguageIdentifier() )
+        InitTables();
+
+    return g_typeNames;
+}
+
+
+const std::vector<BITMAPS>& PinTypeIcons()
+{
+    if( g_typeIcons.empty() )
+        InitTables();
+
+    return g_typeIcons;
+}
+
+
+const wxArrayString& PinShapeNames()
+{
+    if( g_shapeNames.empty() || g_language != Pgm().GetSelectedLanguageIdentifier() )
+        InitTables();
+
+    return g_shapeNames;
+}
+
+
+const std::vector<BITMAPS>& PinShapeIcons()
+{
+    if( g_shapeIcons.empty() )
+        InitTables();
+
+    return g_shapeIcons;
+}
+
+
+const wxArrayString& PinOrientationNames()
+{
+    if( g_orientationNames.empty() || g_language != Pgm().GetSelectedLanguageIdentifier() )
+        InitTables();
+
+    return g_orientationNames;
+}
+
+
+const std::vector<BITMAPS>& PinOrientationIcons()
+{
+    if( g_orientationIcons.empty() )
+        InitTables();
+
+    return g_orientationIcons;
+}
+
+
+wxString ElectricalPinTypeGetText( ELECTRICAL_PINTYPE aType )
+{
+    if( g_pinElectricalTypes.empty() || g_language != Pgm().GetSelectedLanguageIdentifier() )
+        InitTables();
+
+    auto it = g_pinElectricalTypes.find( aType );
+
+    wxCHECK_MSG( it != g_pinElectricalTypes.end(), wxT( "???" ),
+                 wxString::Format( "Pin type not found for type %d!", (int) aType ) );
+
+    return it->second.name;
+}
+
+
+BITMAPS ElectricalPinTypeGetBitmap( ELECTRICAL_PINTYPE aType )
+{
+    if( g_pinElectricalTypes.empty() )
+        InitTables();
+
+    auto it = g_pinElectricalTypes.find( aType );
+
+    wxCHECK_MSG( it != g_pinElectricalTypes.end(), BITMAPS::INVALID_BITMAP,
+                 wxString::Format( "Pin type not found for type %d!", (int) aType ) );
+
+    return it->second.bitmap;
+}
+
+
+wxString PinShapeGetText( GRAPHIC_PINSHAPE aShape )
+{
+    if( g_pinShapes.empty() || g_language != Pgm().GetSelectedLanguageIdentifier() )
+        InitTables();
+
+    auto it = g_pinShapes.find( aShape );
+
+    wxCHECK_MSG( it != g_pinShapes.end(), wxT( "?" ),
+                 wxString::Format( "Pin shape not found for type %d!", (int) aShape ) );
+
+    return it->second.name;
+}
+
+
+BITMAPS PinShapeGetBitmap( GRAPHIC_PINSHAPE aShape )
+{
+    if( g_pinShapes.empty() )
+        InitTables();
+
+    auto it = g_pinShapes.find( aShape );
+
+    wxCHECK_MSG( it != g_pinShapes.end(), BITMAPS::INVALID_BITMAP,
+                 wxString::Format( "Pin shape not found for type %d!", (int) aShape ) );
+
+    return it->second.bitmap;
+}
+
+
+wxString PinOrientationName( PIN_ORIENTATION aOrientation )
+{
+    if( g_pinOrientations.empty() || g_language != Pgm().GetSelectedLanguageIdentifier() )
+        InitTables();
+
+    auto it = g_pinOrientations.find( aOrientation );
+
+    wxCHECK_MSG( it != g_pinOrientations.end(), wxT( "?" ),
+                 wxString::Format( "Pin orientation not found for type %d!", (int) aOrientation ) );
+
+    return it->second.name;
+}
+
+

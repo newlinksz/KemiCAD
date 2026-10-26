@@ -1,0 +1,11 @@
+#define BRAND_RESOURCE
+
+#include "resource.h"
+
+IDI_APP_PLEDITOR_ICON ICON "../resources/bitmaps_png/icons/icon_pagelayout_editor.ico"
+IDI_FILE_WORKSHEET_ICON ICON "../resources/bitmaps_png/icons/fileicon_worksheet.ico"
+
+#define RC_VER_FILE_DESCRIPTION "KemiCAD Drawing Sheet Editor " BRAND_RC_VER_STR
+#define RC_VER_INTERNALNAME "pl_editor"
+#define RC_VER_ORIGINALFILENAME "pl_editor.exe"
+#include "kiwin32.rc"

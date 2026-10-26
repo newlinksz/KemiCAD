@@ -1,0 +1,282 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2009 Wayne Stambaugh <stambaughw@verizon.net>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "panel_template_fieldnames.h"
+
+#include <wx/msgdlg.h>
+
+#include <pgm_base.h>
+#include <settings/common_settings.h>
+#include <widgets/std_bitmap_button.h>
+#include <template_fieldnames.h>
+#include <grid_tricks.h>
+#include <bitmaps.h>
+#include <confirm.h>
+
+#include <algorithm>
+#include <set>
+
+PANEL_TEMPLATE_FIELDNAMES::PANEL_TEMPLATE_FIELDNAMES( wxWindow* aWindow,
+                                                      TEMPLATES* aProjectTemplateMgr ) :
+        PANEL_TEMPLATE_FIELDNAMES_BASE( aWindow )
+{
+    if( aProjectTemplateMgr )
+    {
+        m_title->SetLabel( _( "Project Field Name Templates" ) );
+        m_scope = TEMPLATES::SCOPE::PROJECT;
+        m_templateMgr = aProjectTemplateMgr;
+    }
+    else
+    {
+        m_title->SetLabel( _( "Global Field Name Templates" ) );
+        m_scope = TEMPLATES::SCOPE::GLOBAL;
+        m_templateMgr = &Pgm().GetCommonSettings()->m_FieldNameTemplates;
+    }
+
+    m_addFieldButton->SetBitmap( KiBitmapBundle( BITMAPS::small_plus ) );
+    m_deleteFieldButton->SetBitmap( KiBitmapBundle( BITMAPS::small_trash ) );
+    m_bpMoveUp->SetBitmap( KiBitmapBundle( BITMAPS::small_up ) );
+    m_bpMoveDown->SetBitmap( KiBitmapBundle( BITMAPS::small_down ) );
+
+    m_grid->SetUseNativeColLabels();
+
+    m_grid->PushEventHandler( new GRID_TRICKS( m_grid, [this]( wxCommandEvent& aEvent )
+                                                       {
+                                                           OnAddButtonClick( aEvent );
+                                                       } ) );
+    m_grid->SetupColumnAutosizer( 0 );
+    m_grid->SetSelectionMode( wxGrid::wxGridSelectRows );
+}
+
+
+PANEL_TEMPLATE_FIELDNAMES::~PANEL_TEMPLATE_FIELDNAMES()
+{
+    // Delete the GRID_TRICKS.
+    m_grid->PopEventHandler( true );
+}
+
+
+bool PANEL_TEMPLATE_FIELDNAMES::TransferDataToWindow()
+{
+    m_fields = m_templateMgr->GetTemplateFieldNames( m_scope );
+
+    return TransferDataToGrid();
+}
+
+
+void PANEL_TEMPLATE_FIELDNAMES::OnAddButtonClick( wxCommandEvent& event )
+{
+    m_grid->OnAddRow(
+            [&]() -> std::pair<int, int>
+            {
+                int row = m_grid->GetNumberRows();
+                TransferDataFromGrid();
+
+                const wxString untitledName = _( "Untitled Field" );
+                wxString       name = untitledName;
+                int            suffix = 2;
+
+                while( std::any_of( m_fields.begin(), m_fields.end(),
+                                    [&]( const TEMPLATE_FIELDNAME& aField )
+                                    {
+                                        return aField.m_Name == name;
+                                    } ) )
+                {
+                    name = wxString::Format( wxS( "%s %d" ), untitledName, suffix++ );
+                }
+
+                TEMPLATE_FIELDNAME newFieldname( name );
+                newFieldname.m_Visible = false;
+                m_fields.insert( m_fields.end(), newFieldname );
+
+                TransferDataToGrid();
+                return { row, 0 };
+            } );
+}
+
+
+void PANEL_TEMPLATE_FIELDNAMES::OnDeleteButtonClick( wxCommandEvent& event )
+{
+    m_grid->OnDeleteRows(
+            [&]( int row )
+            {
+                m_fields.erase( m_fields.begin() + row );
+                m_grid->DeleteRows( row );
+            } );
+}
+
+
+void PANEL_TEMPLATE_FIELDNAMES::OnMoveUp( wxCommandEvent& event )
+{
+    m_grid->OnMoveRowUp(
+            [&]( int row )
+            {
+                m_grid->SwapRows( row, row - 1 );
+            } );
+}
+
+
+void PANEL_TEMPLATE_FIELDNAMES::OnMoveDown( wxCommandEvent& event )
+{
+    m_grid->OnMoveRowDown(
+            [&]( int row )
+            {
+                m_grid->SwapRows( row, row + 1 );
+            } );
+}
+
+
+bool PANEL_TEMPLATE_FIELDNAMES::TransferDataToGrid()
+{
+    m_grid->Freeze();
+
+    m_grid->ClearRows();
+    m_grid->AppendRows( m_fields.size() );
+
+    for( int row = 0; row < m_grid->GetNumberRows(); ++row )
+    {
+        m_grid->SetCellValue( row, 0, m_fields[row].m_Name );
+
+        // columns 1 and 2 show a boolean value (in a check box):
+        m_grid->SetCellValue( row, 1, m_fields[row].m_Visible ? wxS( "1" ) : wxS( "0" ) );
+        m_grid->SetCellValue( row, 2, m_fields[row].m_URL     ? wxS( "1" ) : wxS( "0" ) );
+
+        // Set cell properties
+        m_grid->SetCellAlignment( row, 0, wxALIGN_LEFT, wxALIGN_CENTRE );
+
+        // Render the Visible and URL columns as check boxes
+        m_grid->SetCellRenderer( row, 1, new wxGridCellBoolRenderer() );
+        m_grid->SetReadOnly( row, 1 );  // Not really; we delegate interactivity to GRID_TRICKS
+        m_grid->SetCellAlignment( row, 1, wxALIGN_CENTRE, wxALIGN_CENTRE );
+
+        m_grid->SetCellRenderer( row, 2, new wxGridCellBoolRenderer() );
+        m_grid->SetReadOnly( row, 2 );  // Not really; we delegate interactivity to GRID_TRICKS
+        m_grid->SetCellAlignment( row, 2, wxALIGN_CENTRE, wxALIGN_CENTRE );
+    }
+
+    m_grid->Thaw();
+
+    return true;
+}
+
+
+bool PANEL_TEMPLATE_FIELDNAMES::TransferDataFromGrid()
+{
+    if( !m_grid->CommitPendingChanges() )
+        return false;
+
+    for( int row = 0; row < m_grid->GetNumberRows(); ++row )
+    {
+        m_fields[row].m_Name    = m_grid->GetCellValue( row, 0 );
+        m_fields[row].m_Visible = m_grid->GetCellValue( row, 1 ) == wxS( "1" );
+        m_fields[row].m_URL     = m_grid->GetCellValue( row, 2 ) == wxS( "1" );
+    }
+
+    return true;
+}
+
+
+bool PANEL_TEMPLATE_FIELDNAMES::TransferDataFromWindow()
+{
+    if( !TransferDataFromGrid() )
+        return false;
+
+    std::set<wxString> names;
+
+    for( int row = 0; row < m_grid->GetNumberRows(); ++row )
+    {
+        TEMPLATE_FIELDNAME& field = m_fields[row];
+
+        if( !field.m_Name.IsEmpty() )
+        {
+            wxString trimmedName = field.m_Name;
+
+            trimmedName.Trim();
+            trimmedName.Trim( false );
+
+            // Check if the field name contains leading and/or trailing white space.
+            if( field.m_Name != trimmedName )
+            {
+                wxString msg;
+
+                msg.Printf( _( "The field name '%s' contains trailing and/or leading white space." ),
+                            field.m_Name );
+
+                KICAD_MESSAGE_DIALOG dlg( this, msg, _( "Warning" ), wxOK | wxCANCEL | wxCENTER | wxICON_WARNING );
+
+                dlg.SetExtendedMessage( _( "This may result in what appears to be duplicate field "
+                                           "names but are actually unique names differing only by "
+                                           "white space characters.  Removing the white space "
+                                           "characters will have no effect on existing symbol "
+                                           "field names." ) );
+
+                dlg.SetOKCancelLabels( KICAD_MESSAGE_DIALOG::ButtonLabel( _( "Remove White Space" ) ),
+                                       KICAD_MESSAGE_DIALOG::ButtonLabel( _( "Keep White Space" ) ) );
+
+                if( dlg.ShowModal() == wxID_OK )
+                {
+                    field.m_Name = trimmedName;
+                    m_grid->SetCellValue( row, 0, trimmedName );
+                }
+            }
+
+            for( FIELD_T fieldId : MANDATORY_FIELDS )
+            {
+                if( field.m_Name.CmpNoCase( GetDefaultFieldName( fieldId, UNTRANSLATED ) ) == 0 )
+                {
+                    DisplayErrorMessage( this, wxString::Format(
+                            _( "Field name template '%s' already exists as a mandatory field." ),
+                            field.m_Name ) );
+                    m_grid->MakeCellVisible( row, 0 );
+                    m_grid->SetGridCursor( row, 0 );
+                    m_grid->SetFocus();
+                    return false;
+                }
+            }
+
+            if( !names.insert( field.m_Name ).second )
+            {
+                DisplayErrorMessage( this, wxString::Format(
+                        _( "Field name template '%s' already exists." ), field.m_Name ) );
+                m_grid->MakeCellVisible( row, 0 );
+                m_grid->SetGridCursor( row, 0 );
+                m_grid->SetFocus();
+                return false;
+            }
+        }
+    }
+
+    m_templateMgr->DeleteFieldNameTemplates( m_scope );
+
+    for( const TEMPLATE_FIELDNAME& field : m_fields )
+    {
+        if( !field.m_Name.IsEmpty() )
+            m_templateMgr->AddTemplateFieldName( field, m_scope );
+    }
+
+    return true;
+}
+
+
+void PANEL_TEMPLATE_FIELDNAMES::ImportSettingsFrom( TEMPLATES* templateMgr )
+{
+    m_fields = templateMgr->GetTemplateFieldNames( m_scope );
+    TransferDataToGrid();
+}

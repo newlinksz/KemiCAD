@@ -1,0 +1,191 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2024 KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "drc_re_abs_length_two_overlay_panel.h"
+#include "drc_re_abs_length_two_constraint_data.h"
+#include "drc_rule_editor_utils.h"
+#include "drc_re_validator_numeric_ctrl.h"
+
+#include <base_units.h>
+#include <eda_base_frame.h>
+#include <widgets/unit_binder.h>
+
+#include <wx/checkbox.h>
+#include <wx/textctrl.h>
+#include <wx/stattext.h>
+#include <dialogs/rule_editor_dialog_base.h>
+
+DRC_RE_ABS_LENGTH_TWO_OVERLAY_PANEL::DRC_RE_ABS_LENGTH_TWO_OVERLAY_PANEL(
+        wxWindow* aParent, DRC_RE_ABSOLUTE_LENGTH_TWO_CONSTRAINT_DATA* aData, EDA_UNITS aUnits ) :
+        DRC_RE_BITMAP_OVERLAY_PANEL( aParent ),
+        m_data( aData ),
+        m_unitsProvider( pcbIUScale, aUnits )
+{
+    SetBackgroundBitmap( aData->GetOverlayBitmap() );
+
+    std::vector<DRC_RE_FIELD_POSITION> positions = m_data->GetFieldPositions();
+
+    wxWindow* eventSource = nullptr;
+
+    for( wxWindow* win = aParent; win; win = win->GetParent() )
+    {
+        if( dynamic_cast<EDA_BASE_FRAME*>( win ) )
+        {
+            eventSource = win;
+            break;
+        }
+    }
+
+    // Create opt length field
+    auto* optLengthField = AddField<wxTextCtrl>( wxS( "opt_length" ), positions[0], wxTE_CENTRE | wxTE_PROCESS_ENTER );
+    m_optLengthBinder =
+            std::make_unique<UNIT_BINDER>( &m_unitsProvider, eventSource, nullptr, optLengthField->GetControl(),
+                                           optLengthField->GetLabel(), false, false );
+    optLengthField->SetUnitBinder( m_optLengthBinder.get() );
+    optLengthField->GetControl()->SetValidator( VALIDATOR_NUMERIC_CTRL( false, false ) );
+
+    // Create tolerance field
+    auto* toleranceField = AddField<wxTextCtrl>( wxS( "tolerance" ), positions[1], wxTE_CENTRE | wxTE_PROCESS_ENTER );
+    m_toleranceBinder =
+            std::make_unique<UNIT_BINDER>( &m_unitsProvider, eventSource, nullptr, toleranceField->GetControl(),
+                                           toleranceField->GetLabel(), false, false );
+    toleranceField->SetUnitBinder( m_toleranceBinder.get() );
+    toleranceField->GetControl()->SetValidator( VALIDATOR_NUMERIC_CTRL( false, false ) );
+
+    auto notifyModified = [this]( wxCommandEvent& )
+    {
+        RULE_EDITOR_DIALOG_BASE* dlg = RULE_EDITOR_DIALOG_BASE::GetDialog( this );
+        if( dlg )
+            dlg->SetModified();
+    };
+
+    optLengthField->GetControl()->Bind( wxEVT_TEXT, notifyModified );
+    toleranceField->GetControl()->Bind( wxEVT_TEXT, notifyModified );
+
+    auto notifySave = [this]( wxCommandEvent& aEvent )
+    {
+        RULE_EDITOR_DIALOG_BASE* dlg = RULE_EDITOR_DIALOG_BASE::GetDialog( this );
+        if( dlg )
+            dlg->OnSave( aEvent );
+    };
+
+    optLengthField->GetControl()->Bind( wxEVT_TEXT_ENTER, notifySave );
+    toleranceField->GetControl()->Bind( wxEVT_TEXT_ENTER, notifySave );
+
+    DRC_RE_FIELD_POSITION checkboxPos( 80, 300, 170, _( "Time domain (ps)" ), LABEL_POSITION::NONE,
+                                       _( "The values are picoseconds instead of a length" ) );
+
+    m_timeDomainCheckbox = static_cast<wxCheckBox*>( AddCheckbox( wxS( "time_domain" ), checkboxPos )->GetControl() );
+    m_timeDomainCheckbox->SetValue( m_data->IsTimeDomain() );
+
+    m_timeDomainCheckbox->Bind( wxEVT_CHECKBOX,
+                                [this, notifyModified]( wxCommandEvent& aEvent )
+                                {
+                                    TransferDataFromWindow();
+                                    m_data->SetTimeDomain( m_timeDomainCheckbox->GetValue() );
+                                    updateDomainUnits();
+                                    TransferDataToWindow();
+                                    notifyModified( aEvent );
+                                } );
+
+    SetMinSize( wxSize( GetMinSize().x, FromDIP( 190 ) ) );
+
+    // Position all fields and update the panel layout
+    updateDomainUnits();
+    PositionFields();
+    TransferDataToWindow();
+}
+
+
+void DRC_RE_ABS_LENGTH_TWO_OVERLAY_PANEL::updateDomainUnits()
+{
+    bool timeDomain = m_data->IsTimeDomain();
+
+    for( UNIT_BINDER* binder : { m_optLengthBinder.get(), m_toleranceBinder.get() } )
+    {
+        binder->SetUnits( timeDomain ? EDA_UNITS::PS : m_unitsProvider.GetUserUnits() );
+        binder->SetDataType( timeDomain ? EDA_DATA_TYPE::TIME : EDA_DATA_TYPE::DISTANCE );
+    }
+}
+
+
+double DRC_RE_ABS_LENGTH_TWO_OVERLAY_PANEL::displayToIU( double aValue ) const
+{
+    return m_data->IsTimeDomain() ? aValue * pcbIUScale.IU_PER_PS : pcbIUScale.mmToIU( aValue );
+}
+
+
+double DRC_RE_ABS_LENGTH_TWO_OVERLAY_PANEL::iuToDisplay( double aValue ) const
+{
+    return m_data->IsTimeDomain() ? aValue / pcbIUScale.IU_PER_PS : pcbIUScale.IUTomm( aValue );
+}
+
+
+bool DRC_RE_ABS_LENGTH_TWO_OVERLAY_PANEL::TransferDataToWindow()
+{
+    if( !m_data )
+        return false;
+
+    m_optLengthBinder->ChangeDoubleValue( displayToIU( m_data->GetOptimumLength() ) );
+    m_toleranceBinder->ChangeDoubleValue( displayToIU( m_data->GetTolerance() ) );
+
+    return true;
+}
+
+
+bool DRC_RE_ABS_LENGTH_TWO_OVERLAY_PANEL::TransferDataFromWindow()
+{
+    if( !m_data )
+        return false;
+
+    m_data->SetOptimumLength( iuToDisplay( m_optLengthBinder->GetDoubleValue() ) );
+    m_data->SetTolerance( iuToDisplay( m_toleranceBinder->GetDoubleValue() ) );
+
+    return true;
+}
+
+
+bool DRC_RE_ABS_LENGTH_TWO_OVERLAY_PANEL::ValidateInputs( int* aErrorCount,
+                                                          wxString* aValidationMessage )
+{
+    TransferDataFromWindow();
+
+    VALIDATION_RESULT result = m_data->Validate();
+
+    if( !result.isValid )
+    {
+        *aErrorCount = result.errors.size();
+
+        for( size_t i = 0; i < result.errors.size(); i++ )
+            *aValidationMessage += DRC_RULE_EDITOR_UTILS::FormatErrorMessage( i + 1, result.errors[i] );
+
+        return false;
+    }
+
+    return true;
+}
+
+
+wxString DRC_RE_ABS_LENGTH_TWO_OVERLAY_PANEL::GenerateRule( const RULE_GENERATION_CONTEXT& aContext )
+{
+    if( !m_data )
+        return wxEmptyString;
+
+    return m_data->GenerateRule( aContext );
+}

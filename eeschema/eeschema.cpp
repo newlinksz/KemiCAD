@@ -1,0 +1,1592 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2004 Jean-Pierre Charras, jaen-pierre.charras@gipsa-lab.inpg.com
+ * Copyright (C) 2008 Wayne Stambaugh <stambaughw@gmail.com>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <algorithm>
+
+#include <api/api_handler_sch.h>
+#include <api/api_handler_sch_libraries.h>
+#include <api/api_handler_symbol.h>
+#include <api/api_server.h>
+#include <api/api_utils.h>
+#include <api/cross_probe_client.h>
+#include <api/headless_sch_context.h>
+#include <api/headless_symbol_editor_context.h>
+#include <core/json_serializers.h>
+#include <pgm_base.h>
+#include <kiface_base.h>
+#include <background_jobs_monitor.h>
+#include <cli_progress_reporter.h>
+#include <confirm.h>
+#include <gestfich.h>
+#include "eeschema_jobs_handler.h"
+#include "eeschema_helpers.h"
+#include <diff_merge/diff_doc_kind.h>
+#include <reporter.h>
+#include "git/kigit_sch_merge.h"
+#include "git/kigit_sym_lib_merge.h"
+#include <git/kigit_driver_registry.h>
+#include <eeschema_settings.h>
+#include <footprint_filter.h>
+#include <sch_edit_frame.h>
+#include <libraries/symbol_library_adapter.h>
+#include <symbol_edit_frame.h>
+#include <symbol_viewer_frame.h>
+#include <symbol_chooser_frame.h>
+#include <dialogs/panel_grid_settings.h>
+#include <dialogs/panel_snapping.h>
+#include <dialogs/panel_simulator_preferences.h>
+#include <dialogs/panel_design_block_lib_table.h>
+#include <dialogs/panel_sym_lib_table.h>
+#include <kiway.h>
+#include <project_sch.h>
+#include <richio.h>
+#include <settings/settings_manager.h>
+#include <symbol_editor_settings.h>
+#include <sexpr/sexpr.h>
+#include <sexpr/sexpr_parser.h>
+#include <string_utils.h>
+#include <trace_helpers.h>
+#include <thread_pool.h>
+#include <kiface_ids.h>
+#include <symbol_library_query.h>
+#include <widgets/kistatusbar.h>
+#include <netlist_exporters/netlist_exporter_kicad.h>
+#include <wx/ffile.h>
+#include <wx/tokenzr.h>
+#include <wildcards_and_files_ext.h>
+
+#include <schematic.h>
+#include <connection_graph.h>
+#include <panel_template_fieldnames.h>
+#include <panel_eeschema_color_settings.h>
+#include <panel_sch_data_sources.h>
+#include <panel_sym_color_settings.h>
+#include <panel_eeschema_editing_options.h>
+#include <panel_eeschema_annotation_options.h>
+#include <panel_sym_editing_options.h>
+#include <dialogs/panel_base_display_options.h>
+#include <panel_eeschema_display_options.h>
+#include <panel_sym_display_options.h>
+#include <sim/simulator_frame.h>
+
+#include <dialogs/panel_toolbar_customization.h>
+#include <toolbars_sch_editor.h>
+#include <toolbars_symbol_editor.h>
+
+#include <sch_io/sch_io.h>
+#include <sch_io/sch_io_mgr.h>
+
+#include <wx/crt.h>
+
+// The main sheet of the project
+SCH_SHEET*  g_RootSheet = nullptr;
+
+
+namespace SCH {
+
+// Non-job kiface exports for diff/merge (returned by IfaceOrAddress). Defined
+// after the kiface instance so they can route into its jobs handler.
+static int eeschemaMergeExport( int aKind, const wxString& aAncestor, const wxString& aOurs,
+                                const wxString& aTheirs, const wxString& aOutput, bool aInteractive,
+                                bool aSingleFile, REPORTER* aReporter );
+static int eeschemaOpenDiffDialogExport( int aKind, const wxString& aFileA, const wxString& aFileB,
+                                         const wxString& aLabelA, const wxString& aLabelB,
+                                         wxWindow* aParent, REPORTER* aReporter );
+static KICAD_DIFF::DIFF_CANVAS_CONTEXT*
+eeschemaAttachDiffCanvasesExport( int aKind, const wxString& aFileA, const wxString& aFileB,
+                                  WIDGET_DIFF_CANVAS* aBefore, WIDGET_DIFF_CANVAS* aAfter,
+                                  KICAD_DIFF::DOCUMENT_DIFF* aDiff, REPORTER* aReporter );
+
+
+// TODO: This should move out of this file
+static std::unique_ptr<SCHEMATIC> readSchematicFromFile( const std::string& aFilename )
+{
+    IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+    std::unique_ptr<SCHEMATIC> schematic = std::make_unique<SCHEMATIC>( nullptr );
+
+    SETTINGS_MANAGER& manager = Pgm().GetSettingsManager();
+
+    wxFileName pro( aFilename );
+    pro.SetExt( FILEEXT::ProjectFileExtension );
+    pro.MakeAbsolute();
+    wxString projectPath = pro.GetFullPath();
+
+    PROJECT* project = manager.GetProject( projectPath );
+
+    if( !project )
+    {
+        manager.LoadProject( projectPath, true );
+        project = manager.GetProject( projectPath );
+    }
+
+    schematic->Reset();
+    schematic->SetProject( project );
+    SCH_SHEET* rootSheet = pi->LoadSchematicFile( aFilename, schematic.get() );
+
+    if( !rootSheet )
+        return nullptr;
+
+    std::vector<SCH_SHEET*> topLevelSheets = schematic->GetTopLevelSheets();
+    bool rootIsTopLevel = std::find( topLevelSheets.begin(), topLevelSheets.end(), rootSheet )
+                          != topLevelSheets.end();
+    bool rootIsVirtualRoot = rootSheet == &schematic->Root() || rootSheet->IsVirtualRootSheet();
+
+    if( !rootIsTopLevel && !rootIsVirtualRoot )
+        schematic->SetTopLevelSheets( { rootSheet } );
+
+    SCH_SCREENS screens( schematic->Root() );
+
+    for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+        screen->UpdateLocalLibSymbolLinks();
+
+    SCH_SHEET_LIST sheets = schematic->Hierarchy();
+
+    // Restore all of the loaded symbol instances from the root sheet screen.
+    sheets.UpdateSymbolInstanceData( schematic->RootScreen()->GetSymbolInstances() );
+
+    if( schematic->RootScreen()->GetFileFormatVersionAtLoad() < 20230221 )
+    {
+        for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+            screen->FixLegacyPowerSymbolMismatches();
+    }
+
+    for( SCH_SCREEN* screen = screens.GetFirst(); screen; screen = screens.GetNext() )
+        screen->MigrateSimModels();
+
+    // NOTE: This is required for multi-unit symbols to be correct
+    for( SCH_SHEET_PATH& sheet : sheets )
+        sheet.UpdateAllScreenReferences();
+
+    // TODO: this must handle SchematicCleanup somehow.  The original version didn't because
+    // it knew that QA test cases were saved in a clean state.
+
+    // TODO: does this need to handle PruneOrphanedSymbolInstances() and
+    // PruneOrphanedSheetInstances()?
+
+    schematic->ConnectionGraph()->Recalculate( sheets, true );
+
+    return schematic;
+}
+
+
+// TODO: This should move out of this file
+bool generateSchematicNetlist( const wxString& aFilename, std::string& aNetlist, KIWAY* aKiway )
+{
+    std::unique_ptr<SCHEMATIC> schematic = readSchematicFromFile( aFilename.ToStdString() );
+
+    if( !schematic )
+        return false;
+
+    NETLIST_EXPORTER_KICAD exporter( schematic.get(), aKiway );
+    STRING_FORMATTER       formatter;
+
+    exporter.Format( &formatter, GNL_ALL | GNL_OPT_KICAD );
+    aNetlist = formatter.GetString();
+
+    return true;
+}
+
+
+/**
+ * Return the project whose symbol libraries the kiface-level symbol services work with.
+ */
+static PROJECT* symbolLibraryProject()
+{
+    PROJECT* project = nullptr;
+
+    if( wxTheApp )
+    {
+        wxWindow* focus = wxWindow::FindFocus();
+        wxWindow* top = focus ? wxGetTopLevelParent( focus ) : wxTheApp->GetTopWindow();
+
+        if( top )
+        {
+            if( KIWAY_HOLDER* holder = dynamic_cast<KIWAY_HOLDER*>( top ) )
+                project = &holder->Prj();
+        }
+    }
+
+    if( !project )
+        project = &Pgm().GetSettingsManager().Prj();
+
+    return project;
+}
+
+
+/**
+ * Whether a footprint reference names @a aFootprint.
+ *
+ * The library item names must agree:
+ *
+ * If both sides have a nickname it must match.
+ * If the reference has no nickname it matches any footprint nickname.
+ *
+ * Matching is case-insensitive, like the rest of the library item name comparisons.
+ */
+static bool footprintReferenceMatches( const LIB_ID& aReference, const LIB_ID& aFootprint )
+{
+    if( !aReference.GetUniStringLibItemName().IsSameAs( aFootprint.GetUniStringLibItemName(), false ) )
+        return false;
+
+    if( !aReference.GetLibNickname().empty() && !aFootprint.GetLibNickname().empty()
+        && !aReference.GetUniStringLibNickname().IsSameAs( aFootprint.GetUniStringLibNickname(), false ) )
+    {
+        return false;
+    }
+
+    return true;
+}
+
+
+/**
+ * Whether any footprint filter of a symbol selects a given footprint.
+ *
+ * If it does, the matching filter is stored in @a aMatch.
+ */
+static bool symbolFilterMatchesFootprint( const LIB_SYMBOL& aSymbol, const LIB_ID& aFootprint,
+                                          FOOTPRINT_USER_MATCH& aMatch )
+{
+    for( const wxString& filter : aSymbol.GetFPFilters() )
+    {
+        if( filter.IsEmpty() )
+            continue;
+
+        EDA_PATTERN_MATCH_WILDCARD_ANCHORED matcher;
+        matcher.SetPattern( filter.Lower() );
+
+        if( FootprintFilterMatchesName( matcher, aFootprint.GetUniStringLibNickname(),
+                                        aFootprint.GetUniStringLibItemName() ) )
+        {
+            aMatch.m_MatchedFilter = filter;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+/**
+ * Return the footprint field text in effect for a symbol.
+ *
+ * As in LIB_SYMBOL::Flatten(), the nearest non-empty footprint field in the inheritance
+ * chain wins.
+ */
+static wxString effectiveFootprintText( const LIB_SYMBOL& aSymbol )
+{
+    if( const SCH_FIELD* field = aSymbol.GetField( FIELD_T::FOOTPRINT ) )
+    {
+        if( !field->GetText().IsEmpty() )
+            return field->GetText();
+    }
+
+    if( std::shared_ptr<LIB_SYMBOL> parent = aSymbol.GetParent().lock() )
+        return effectiveFootprintText( *parent );
+
+    return wxEmptyString;
+}
+
+
+/**
+ * Whether one of the pin maps of @a aSymbol is bound to @a aFootprint; collects the names of
+ * the bound maps in @a aMatch.
+ *
+ * The pin maps and the associated footprints are a coupled bundle: each association pairs a
+ * footprint with the named map that resolves the symbol's pins onto its pads.  A symbol that
+ * binds a map to the footprint uses that footprint even when its footprint field names
+ * something else, or nothing at all.
+ */
+static bool symbolPinMapsBindFootprint( const LIB_SYMBOL& aSymbol, const LIB_ID& aFootprint,
+                                        FOOTPRINT_USER_MATCH& aMatch )
+{
+    for( const ASSOCIATED_FOOTPRINT& associated : aSymbol.GetEffectiveAssociatedFootprints() )
+    {
+        // A symbol can bind several maps, to the same footprint or to different ones.
+        if( footprintReferenceMatches( associated.m_FootprintLibId, aFootprint ) )
+            aMatch.m_MatchedPinMaps.push_back( associated.m_MapName );
+    }
+
+    return !aMatch.m_MatchedPinMaps.empty();
+}
+
+
+/**
+ * Whether the footprint field of @a aSymbol names @a aFootprint; sets the footprint field flag
+ * in @a aMatch.
+ */
+static bool symbolFootprintFieldNamesFootprint( const LIB_SYMBOL& aSymbol, const LIB_ID& aFootprint,
+                                                FOOTPRINT_USER_MATCH& aMatch )
+{
+    LIB_ID fieldId;
+
+    if( fieldId.Parse( effectiveFootprintText( aSymbol ) ) == -1
+        && footprintReferenceMatches( fieldId, aFootprint ) )
+    {
+        aMatch.m_MatchesFootprintField = true;
+        return true;
+    }
+
+    return false;
+}
+
+
+/**
+ * Return how @a aSymbol uses @a aFootprint, or nothing when it doesn't.
+ *
+ * A symbol can use a footprint in three independent ways: a footprint filter selects it, its
+ * footprint field names it, or one of its pin maps is bound to it.  The match reports every
+ * way that applies, so that the caller can list a symbol for one of them and still say which
+ * others it has.
+ */
+static std::optional<FOOTPRINT_USER_MATCH> symbolUsesFootprint( const LIB_SYMBOL& aSymbol,
+                                                                const LIB_ID& aFootprint )
+{
+    FOOTPRINT_USER_MATCH match;
+    match.m_Symbol = aSymbol.GetLibId();
+
+    // Every predicate is evaluated: the match feeds the filter and the two flags alike.
+    const bool byFilter = symbolFilterMatchesFootprint( aSymbol, aFootprint, match );
+    const bool byField = symbolFootprintFieldNamesFootprint( aSymbol, aFootprint, match );
+    const bool byPinMap = symbolPinMapsBindFootprint( aSymbol, aFootprint, match );
+
+    if( !byFilter && !byField && !byPinMap )
+        return std::nullopt;
+
+    match.m_PinCount = aSymbol.GetPinCount();
+    match.m_IsDerived = aSymbol.IsDerived();
+
+    return match;
+}
+
+
+/**
+ * Find the symbols that select a given footprint somehow (but FP field,
+ * filters or pin maps)
+ *
+ * Input JSON format: the object written by FOOTPRINT_USERS_QUERY::ToJsonStr()
+ *
+ * Output JSON format: the object written by FOOTPRINT_USERS_RESULT::ToJsonStr()
+ *
+ * Refer to #FOOTPRINT_USERS_QUERY and #FOOTPRINT_USERS_RESULT for semantics of
+ * the query and result fields.
+ *
+ * @param aQueryJson JSON string with the query parameters
+ * @return JSON string describing the matching symbol LIB_IDs
+ */
+static wxString filterFootprintUsers( const wxString& aQueryJson )
+{
+    FOOTPRINT_USERS_RESULT result;
+    result.m_Success = false;
+
+    try
+    {
+        const FOOTPRINT_USERS_QUERY query = FOOTPRINT_USERS_QUERY::FromJsonStr( aQueryJson );
+
+        // A footprint with no item name cannot be referred to by a filter, field or
+        // association, so the query is a successful, empty one.
+        if( query.m_Footprint.GetLibItemName().empty() )
+        {
+            result.m_Success = true;
+            return result.ToJsonStr();
+        }
+
+        // No enabled way of using the footprint can match anything, so the query is a
+        // successful, empty one.
+        if( !query.m_MatchFilters && !query.m_MatchFootprintField && !query.m_MatchPinMaps )
+        {
+            result.m_Success = true;
+            return result.ToJsonStr();
+        }
+
+        SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( symbolLibraryProject() );
+
+        if( !adapter )
+            return result.ToJsonStr();
+
+        adapter->AsyncLoad();
+        adapter->BlockUntilLoaded();
+
+        for( const wxString& nickname : adapter->GetLibraryNames() )
+        {
+            for( LIB_SYMBOL* symbol : adapter->GetSymbols( nickname ) )
+            {
+                if( !symbol )
+                    continue;
+
+                std::optional<FOOTPRINT_USER_MATCH> match = symbolUsesFootprint( *symbol, query.m_Footprint );
+
+                if( !match )
+                    continue;
+
+                const bool byFilter = query.m_MatchFilters && !match->m_MatchedFilter.IsEmpty();
+                const bool byField = query.m_MatchFootprintField && match->m_MatchesFootprintField;
+                const bool byPinMap = query.m_MatchPinMaps && !match->m_MatchedPinMaps.empty();
+
+                if( !byFilter && !byField && !byPinMap )
+                    continue;
+
+                if( query.m_MaxResults > 0 && static_cast<int>( result.m_Matches.size() ) >= query.m_MaxResults )
+                {
+                    result.m_IsLimited = true;
+                    break;
+                }
+
+                result.m_Matches.push_back( std::move( *match ) );
+            }
+
+            if( result.m_IsLimited )
+                break;
+        }
+
+        result.m_Success = true;
+
+        return result.ToJsonStr();
+    }
+    catch( const std::exception& )
+    {
+        // A failure carries no matches, even if the scan had already collected some.
+        result.m_Matches.clear();
+        result.m_Success = false;
+        return result.ToJsonStr();
+    }
+}
+
+
+/**
+ * Start loading the symbol libraries in the background. Never blocks.
+ */
+static bool startSymbolLibraryLoad()
+{
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( symbolLibraryProject() );
+
+    if( adapter )
+    {
+        adapter->AsyncLoad();
+        return true;
+    }
+
+    return false;
+}
+
+
+/**
+ * Return how far a background load has got.
+ *
+ * Never blocks: callers can poll this while showing a loading indication, and only run
+ * #filterFootprintUsers() (which does wait for the load) after it returns 1.0.
+ */
+static float symbolLibraryLoadProgress()
+{
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( symbolLibraryProject() );
+
+    if( !adapter )
+        return 1.0f;
+
+    // Nothing to report means there is nothing to wait for.
+    if( std::optional<float> progress = adapter->AsyncLoadProgress() )
+        return *progress;
+
+    return 1.0f;
+}
+
+
+static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
+{
+    // Of course all are virtual overloads, implementations of the KIFACE.
+
+    IFACE( const char* aName, KIWAY::FACE_T aType ) :
+            KIFACE_BASE( aName, aType ),
+            UNITS_PROVIDER( schIUScale, EDA_UNITS::MM ),
+            m_libraryPreloadInProgress( false )
+    {}
+
+    bool OnKifaceStart( PGM_BASE* aProgram, int aCtlBits, KIWAY* aKiway ) override;
+
+    void Reset() override;
+
+    void OnKifaceEnd() override;
+
+    wxWindow* CreateKiWindow( wxWindow* aParent, int aClassId, KIWAY* aKiway, int aCtlBits = 0 ) override
+    {
+        switch( aClassId )
+        {
+        case FRAME_SCH:
+        {
+            SCH_EDIT_FRAME* frame = new SCH_EDIT_FRAME( aKiway, aParent );
+
+            EESCHEMA_HELPERS::SetSchEditFrame( frame );
+
+            if( Kiface().IsSingle() )
+            {
+                // only run this under single_top, not under a project manager.
+                if( !CROSS_PROBE_CLIENT::IsOnStandardSocketPath() )
+                    CROSS_PROBE_CLIENT::AnnounceToPrimary( FRAME_SCH );
+            }
+
+            return frame;
+        }
+
+        case FRAME_SCH_SYMBOL_EDITOR:
+            return new SYMBOL_EDIT_FRAME( aKiway, aParent );
+
+        case FRAME_SIMULATOR:
+        {
+            try
+            {
+                SIMULATOR_FRAME* frame = new SIMULATOR_FRAME( aKiway, aParent );
+                return frame;
+            }
+            catch( const SIMULATOR_INIT_ERR& )
+            {
+                // catch the init err exception as we don't want it to bubble up
+                // its going to be some ngspice install issue but we don't want to log that
+                return nullptr;
+            }
+        }
+
+        case FRAME_SCH_VIEWER:
+            return new SYMBOL_VIEWER_FRAME( aKiway, aParent );
+
+        case FRAME_SYMBOL_CHOOSER:
+        {
+            bool cancelled = false;
+            SYMBOL_CHOOSER_FRAME* chooser = new SYMBOL_CHOOSER_FRAME( aKiway, aParent, cancelled );
+
+            if( cancelled )
+            {
+                chooser->Destroy();
+                return nullptr;
+            }
+
+            return chooser;
+        }
+
+        case DIALOG_SCH_LIBRARY_TABLE:
+            InvokeSchEditSymbolLibTable( aKiway, aParent );
+            // Dialog has completed; nothing to return.
+            return nullptr;
+
+        case DIALOG_DESIGN_BLOCK_LIBRARY_TABLE:
+            InvokeEditDesignBlockLibTable( aKiway, aParent );
+            // Dialog has completed; nothing to return.
+            return nullptr;
+
+        case PANEL_SYM_DISP_OPTIONS:
+            return new PANEL_SYM_DISPLAY_OPTIONS( aParent, GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" ) );
+
+        case PANEL_SYM_EDIT_GRIDS:
+        {
+            APP_SETTINGS_BASE* cfg = GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" );
+            EDA_BASE_FRAME*    frame = aKiway->Player( FRAME_SCH_SYMBOL_EDITOR, false );
+
+            if( !frame )
+                frame = aKiway->Player( FRAME_SCH_VIEWER, false );
+
+            if( !frame )
+                frame = aKiway->Player( FRAME_SCH, false );
+
+            if( frame )
+                SetUserUnits( frame->GetUserUnits() );
+
+            return new PANEL_GRID_SETTINGS( aParent, this, frame, cfg, FRAME_SCH_SYMBOL_EDITOR );
+        }
+
+        case PANEL_SYM_SNAPPING:
+            return CreateSnappingPanel( aParent, GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" ),
+                                        FRAME_SCH_SYMBOL_EDITOR, &SYMBOL_EDITOR_SETTINGS::m_SnapInference );
+
+        case PANEL_SYM_EDIT_OPTIONS:
+        {
+            EDA_BASE_FRAME* frame = aKiway->Player( FRAME_SCH_SYMBOL_EDITOR, false );
+
+            if( !frame )
+                frame = aKiway->Player( FRAME_SCH_VIEWER, false );
+
+            if( !frame )
+                frame = aKiway->Player( FRAME_SCH, false );
+
+            if( frame )
+                SetUserUnits( frame->GetUserUnits() );
+
+            return new PANEL_SYM_EDITING_OPTIONS( aParent, this, frame );
+        }
+
+        case PANEL_SYM_TOOLBARS:
+        {
+            APP_SETTINGS_BASE* cfg = GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" );
+            TOOLBAR_SETTINGS*  tb  = GetToolbarSettings<SYMBOL_EDIT_TOOLBAR_SETTINGS>( "symbol_editor-toolbars" );
+
+            std::vector<TOOL_ACTION*>            actions;
+            std::vector<ACTION_TOOLBAR_CONTROL*> controls;
+
+            for( TOOL_ACTION* action : ACTION_MANAGER::GetActionList() )
+                actions.push_back( action );
+
+            for( ACTION_TOOLBAR_CONTROL* control : ACTION_TOOLBAR::GetCustomControlList( FRAME_SCH_SYMBOL_EDITOR ) )
+                controls.push_back( control );
+
+            return new PANEL_TOOLBAR_CUSTOMIZATION( aParent, cfg, tb, FRAME_SCH_SYMBOL_EDITOR, actions, controls );
+        }
+
+        case PANEL_SYM_COLORS:
+            return new PANEL_SYM_COLOR_SETTINGS( aParent );
+
+        case PANEL_SCH_DISP_OPTIONS:
+            return new PANEL_EESCHEMA_DISPLAY_OPTIONS( aParent, GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" ) );
+
+        case PANEL_SCH_GRIDS:
+        {
+            EESCHEMA_SETTINGS* cfg = GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" );
+            EDA_BASE_FRAME*    frame = aKiway->Player( FRAME_SCH, false );
+
+            if( !frame )
+                frame = aKiway->Player( FRAME_SCH_SYMBOL_EDITOR, false );
+
+            if( !frame )
+                frame = aKiway->Player( FRAME_SCH_VIEWER, false );
+
+            if( frame )
+                SetUserUnits( frame->GetUserUnits() );
+
+            return new PANEL_GRID_SETTINGS( aParent, this, frame, cfg, FRAME_SCH );
+        }
+
+        case PANEL_SCH_SNAPPING:
+            return CreateSnappingPanel( aParent, GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" ), FRAME_SCH,
+                                        &EESCHEMA_SETTINGS::m_SnapInference );
+
+        case PANEL_SCH_EDIT_OPTIONS:
+        {
+            EDA_BASE_FRAME* frame = aKiway->Player( FRAME_SCH, false );
+
+            if( !frame )
+                frame = aKiway->Player( FRAME_SCH_SYMBOL_EDITOR, false );
+
+            if( !frame )
+                frame = aKiway->Player( FRAME_SCH_VIEWER, false );
+
+            if( frame )
+                SetUserUnits( frame->GetUserUnits() );
+
+            return new PANEL_EESCHEMA_EDITING_OPTIONS( aParent, this, frame );
+        }
+
+        case PANEL_SCH_TOOLBARS:
+        {
+            APP_SETTINGS_BASE* cfg = GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" );
+            TOOLBAR_SETTINGS*  tb  = GetToolbarSettings<SCH_EDIT_TOOLBAR_SETTINGS>( "eeschema-toolbars" );
+
+            std::vector<TOOL_ACTION*>            actions;
+            std::vector<ACTION_TOOLBAR_CONTROL*> controls;
+
+            for( TOOL_ACTION* action : ACTION_MANAGER::GetActionList() )
+                actions.push_back( action );
+
+            for( ACTION_TOOLBAR_CONTROL* control : ACTION_TOOLBAR::GetCustomControlList( FRAME_SCH ) )
+                controls.push_back( control );
+
+            return new PANEL_TOOLBAR_CUSTOMIZATION( aParent, cfg, tb, FRAME_SCH, actions, controls );
+        }
+
+        case PANEL_SCH_COLORS:
+            return new PANEL_EESCHEMA_COLOR_SETTINGS( aParent );
+
+        case PANEL_SCH_FIELD_NAME_TEMPLATES:
+            return new PANEL_TEMPLATE_FIELDNAMES( aParent, nullptr );
+
+        case PANEL_SCH_DATA_SOURCES:
+        {
+            EDA_BASE_FRAME* frame = aKiway->Player( FRAME_SCH, false );
+
+            if( !frame )
+                frame = aKiway->Player( FRAME_SCH_SYMBOL_EDITOR, false );
+
+            if( !frame )
+                frame = aKiway->Player( FRAME_SCH_VIEWER, false );
+
+            return new class PANEL_SCH_DATA_SOURCES( aParent, frame );
+        }
+
+        case PANEL_SCH_SIMULATOR:
+            return new PANEL_SIMULATOR_PREFERENCES( aParent );
+
+        default:
+            return nullptr;
+        }
+    }
+
+    /**
+     * Return a pointer to the requested object.
+     *
+     * The safest way to use this is to retrieve a pointer to a static instance of an interface,
+     * similar to how the KIFACE interface is exported.  But if you know what you are doing use
+     * it to retrieve anything you want.
+     *
+     * @param aDataId identifies which object you want the address of.
+     * @return the object requested and must be cast into the know type.
+     */
+    void* IfaceOrAddress( int aDataId ) override
+    {
+        switch( aDataId )
+        {
+            case KIFACE_NETLIST_SCHEMATIC:
+                return (void*) generateSchematicNetlist;
+
+            case KIFACE_FILTER_FOOTPRINT_USERS:
+                return reinterpret_cast<void*>( &filterFootprintUsers );
+
+            case KIFACE_TRIGGER_SYMBOLS_LOAD:
+                return reinterpret_cast<void*>( &startSymbolLibraryLoad );
+
+            case KIFACE_SYMBOLS_LOAD_PROGRESS:
+                return reinterpret_cast<void*>( &symbolLibraryLoadProgress );
+
+            case KIFACE_MERGE_DOCUMENT:
+                return reinterpret_cast<void*>( &eeschemaMergeExport );
+
+            case KIFACE_OPEN_DIFF_DIALOG:
+                return reinterpret_cast<void*>( &eeschemaOpenDiffDialogExport );
+
+            case KIFACE_ATTACH_DIFF_CANVASES: return reinterpret_cast<void*>( &eeschemaAttachDiffCanvasesExport );
+            }
+
+        return nullptr;
+    }
+
+    /// Accessor for the non-job diff/merge exports (eeschemaMergeExport etc.).
+    EESCHEMA_JOBS_HANDLER* JobHandler() const { return m_jobHandler.get(); }
+
+    /**
+     * Saving a file under a different name is delegated to the various KIFACEs because
+     * the project doesn't know the internal format of the various files (which may have
+     * paths in them that need updating).
+     */
+    void SaveFileAs( const wxString& aProjectBasePath, const wxString& aProjectName,
+                     const wxString& aNewProjectBasePath, const wxString& aNewProjectName,
+                     const wxString& aSrcFilePath, wxString& aErrors ) override;
+
+
+    int HandleJob( JOB* aJob, REPORTER* aReporter, PROGRESS_REPORTER* aProgressReporter ) override;
+
+    bool HandleJobConfig( JOB* aJob, wxWindow* aParent ) override;
+
+    bool HandleApiOpenDocument( const DOCUMENT_SPEC& aSpec,
+                                KICAD_API_SERVER* aServer,
+                                wxString* aError ) override;
+
+    bool handleCreateSchematic( const wxString& aPath, KICAD_API_SERVER* aServer, wxString* aError );
+    bool handleOpenSymbol( const wxString& aProjectPath, const wxString& aLibIdStr, KICAD_API_SERVER* aServer,
+                           wxString* aError );
+    bool HandleApiCloseDocument( const DOCUMENT_SPEC& aSpec,
+                                 KICAD_API_SERVER* aServer,
+                                 wxString* aError ) override;
+
+    void PreloadLibraries( KIWAY* aKiway ) override;
+    void CancelPreload( bool aBlock = true ) override;
+    void ProjectChanged() override;
+    void RegisterLibraryHandlers( KICAD_API_SERVER* aServer ) override;
+    bool LoadAllLibraries() override;
+
+
+private:
+    std::unique_ptr<EESCHEMA_JOBS_HANDLER> m_jobHandler;
+    std::shared_ptr<BACKGROUND_JOB>        m_libraryPreloadBackgroundJob;
+    std::future<void>                      m_libraryPreloadReturn;
+    std::atomic_bool                       m_libraryPreloadInProgress;
+    std::atomic_bool                       m_libraryPreloadAbort;
+
+    void closeSchematic( KICAD_API_SERVER* aServer );
+    void closeSymbol( KICAD_API_SERVER* aServer );
+
+    KIWAY*                                    m_kiway = nullptr;
+    SCHEMATIC*                                m_openSchematic = nullptr;
+    std::shared_ptr<HEADLESS_SCH_CONTEXT>     m_openContext;
+    std::shared_ptr<HEADLESS_SYMBOL_EDITOR_CONTEXT> m_openSymbolContext;
+    std::unique_ptr<API_HANDLER_SYMBOL>             m_openSymbolHandler;
+    std::unique_ptr<API_HANDLER_SCH>          m_openHandler;
+    std::unique_ptr<API_HANDLER_SCH_LIBRARIES> m_apiHandlerSchLibs;
+
+} kiface( "eeschema", KIWAY::FACE_SCH );
+
+
+int eeschemaMergeExport( int aKind, const wxString& aAncestor, const wxString& aOurs,
+                         const wxString& aTheirs, const wxString& aOutput, bool aInteractive,
+                         bool aSingleFile, REPORTER* aReporter )
+{
+    return kiface.JobHandler()->RunMerge( static_cast<KICAD_DIFF::DOC_KIND>( aKind ), aAncestor,
+                                          aOurs, aTheirs, aOutput, aInteractive, aSingleFile,
+                                          aReporter );
+}
+
+
+int eeschemaOpenDiffDialogExport( int aKind, const wxString& aFileA, const wxString& aFileB,
+                                  const wxString& aLabelA, const wxString& aLabelB,
+                                  wxWindow* aParent, REPORTER* aReporter )
+{
+    return kiface.JobHandler()->OpenDiffDialog( static_cast<KICAD_DIFF::DOC_KIND>( aKind ), aFileA,
+                                                aFileB, aLabelA, aLabelB, aParent, aReporter );
+}
+
+
+KICAD_DIFF::DIFF_CANVAS_CONTEXT* eeschemaAttachDiffCanvasesExport( int aKind, const wxString& aFileA,
+                                                                   const wxString& aFileB, WIDGET_DIFF_CANVAS* aBefore,
+                                                                   WIDGET_DIFF_CANVAS*        aAfter,
+                                                                   KICAD_DIFF::DOCUMENT_DIFF* aDiff,
+                                                                   REPORTER*                  aReporter )
+{
+    return kiface.JobHandler()->AttachDiffCanvases( static_cast<KICAD_DIFF::DOC_KIND>( aKind ), aFileA, aFileB, aBefore,
+                                                    aAfter, *aDiff, aReporter );
+}
+
+} // namespace
+
+using namespace SCH;
+
+
+KIFACE_BASE& Kiface() { return kiface; }
+
+
+// KIFACE_GETTER's actual spelling is a substitution macro found in kiway.h.
+// KIFACE_GETTER will not have name mangling due to declaration in kiway.h.
+KIFACE_API KIFACE* KIFACE_GETTER(  int* aKIFACEversion, int aKiwayVersion, PGM_BASE* aProgram )
+{
+    return &kiface;
+}
+
+
+bool IFACE::OnKifaceStart( PGM_BASE* aProgram, int aCtlBits, KIWAY* aKiway )
+{
+    // This is process-level-initialization, not project-level-initialization of the DSO.
+    // Do nothing in here pertinent to a project!
+    InitSettings( new EESCHEMA_SETTINGS );
+
+    // Register the symbol editor settings as well because they share a KiFACE and need to be
+    // loaded prior to use to avoid threading deadlocks
+    SYMBOL_EDITOR_SETTINGS* symSettings = new SYMBOL_EDITOR_SETTINGS();
+    aProgram->GetSettingsManager().RegisterSettings( symSettings ); // manager takes ownership
+
+    // We intentionally register KifaceSettings after SYMBOL_EDITOR_SETTINGS
+    // In legacy configs, many settings were in a single editor config nd the migration routine
+    // for the main editor file will try and call into the now separate settings stores
+    // to move the settings into them
+    aProgram->GetSettingsManager().RegisterSettings( KifaceSettings() );
+
+    start_common( aCtlBits );
+
+    m_kiway = aKiway;
+
+    m_jobHandler = std::make_unique<EESCHEMA_JOBS_HANDLER>( aKiway );
+
+    if( m_start_flags & KFCTL_CLI )
+    {
+        m_jobHandler->SetReporter( &CLI_REPORTER::GetInstance() );
+        m_jobHandler->SetProgressReporter( &CLI_PROGRESS_REPORTER::GetInstance() );
+    }
+
+    if( Pgm().ApiServerOrNull() )
+    {
+        m_apiHandlerSchLibs = std::make_unique<API_HANDLER_SCH_LIBRARIES>();
+        Pgm().GetApiServer().RegisterHandler( m_apiHandlerSchLibs.get() );
+    }
+
+    // Register the schematic and symbol-library merge drivers with libgit2 so
+    // `.gitattributes` entries `merge=kicad-sch` and `merge=kicad-sym-lib`
+    // route through KiCad-aware merge logic.
+    KIGIT::RegisterMergeDriver( "kicad-sch",     &KIGIT_SCH_MERGE::Apply );
+    KIGIT::RegisterMergeDriver( "kicad-sym-lib", &KIGIT_SYM_LIB_MERGE::Apply );
+
+    return true;
+}
+
+
+void IFACE::Reset()
+{
+    if( m_jobHandler )
+        m_jobHandler->ClearCachedSchematic();
+
+    closeSchematic( nullptr );
+    closeSymbol( nullptr );
+}
+
+
+void IFACE::PreloadLibraries( KIWAY* aKiway )
+{
+    constexpr static int interval = 150;
+    constexpr static int timeLimit = 120000;
+
+    wxCHECK( aKiway, /* void */ );
+
+    // Use compare_exchange to atomically check and set the flag to prevent race conditions
+    // when PreloadLibraries is called multiple times concurrently (e.g., from project manager
+    // and schematic editor both scheduling via CallAfter)
+    bool expected = false;
+
+    if( !m_libraryPreloadInProgress.compare_exchange_strong( expected, true ) )
+        return;
+
+    Pgm().ClearLibraryLoadMessages();
+
+    m_libraryPreloadBackgroundJob =
+            Pgm().GetBackgroundJobMonitor().Create( _( "Loading Symbol Libraries" ) );
+
+    auto preload =
+        [this, aKiway]() -> void
+        {
+            std::shared_ptr<BACKGROUND_JOB_REPORTER> reporter =
+                    m_libraryPreloadBackgroundJob->m_reporter;
+
+            SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &aKiway->Prj() );
+
+            int  elapsed = 0;
+            bool aborted = false;
+
+            reporter->Report( _( "Loading Symbol Libraries" ) );
+            adapter->AsyncLoad();
+
+            while( true )
+            {
+                if( m_libraryPreloadAbort.load() )
+                {
+                    m_libraryPreloadAbort.store( false );
+                    aborted = true;
+                    break;
+                }
+
+                std::this_thread::sleep_for( std::chrono::milliseconds( interval ) );
+
+                if( std::optional<float> loadStatus = adapter->AsyncLoadProgress() )
+                {
+                    float progress = *loadStatus;
+                    reporter->SetCurrentProgress( progress );
+
+                    if( progress >= 1 )
+                        break;
+                }
+                else
+                {
+                    reporter->SetCurrentProgress( 1 );
+                    break;
+                }
+
+                elapsed += interval;
+
+                if( elapsed > timeLimit )
+                    break;
+            }
+
+            // AbortAsyncLoad() sets the adapter's worker abort flag and then blocks,
+            // so workers exit at their next checkpoint. BlockUntilLoaded() alone just
+            // waits for each future to complete naturally, which can hang indefinitely
+            // if a worker is stuck on a stalled network or filesystem operation.
+            if( aborted )
+                adapter->AbortAsyncLoad();
+            else
+                adapter->BlockUntilLoaded();
+
+            // If aborted, skip operations that use the adapter since the project may have changed
+            // and the adapter's project reference could be stale. This prevents use-after-free
+            // crashes when switching projects during library preload.
+            if( !aborted )
+            {
+                // Collect library load errors for async reporting
+                Pgm().AddLibraryLoadMessages( adapter->GetLibraryLoadErrors() );
+            }
+            else
+            {
+                wxLogTrace( traceLibraries, "eeschema PreloadLibraries: aborted, skipping symbol processing" );
+            }
+
+            Pgm().GetBackgroundJobMonitor().Remove( m_libraryPreloadBackgroundJob );
+            m_libraryPreloadBackgroundJob.reset();
+
+            // Only send reload notifications if we weren't aborted
+            if( !aborted )
+            {
+                std::string payload = "";
+                aKiway->ExpressMail( FRAME_SCH, MAIL_RELOAD_LIB, payload, nullptr, true );
+                aKiway->ExpressMail( FRAME_SCH_SYMBOL_EDITOR, MAIL_RELOAD_LIB, payload, nullptr, true );
+                aKiway->ExpressMail( FRAME_SCH_VIEWER, MAIL_RELOAD_LIB, payload, nullptr, true );
+            }
+
+            m_libraryPreloadInProgress.store( false );
+        };
+
+    std::future<void> preloadFuture = std::async( std::launch::async, preload );
+    m_libraryPreloadReturn = std::move( preloadFuture );
+}
+
+
+void IFACE::CancelPreload( bool aBlock )
+{
+    if( m_libraryPreloadInProgress.load() )
+    {
+        m_libraryPreloadAbort.store( true );
+
+        if( aBlock )
+            m_libraryPreloadReturn.wait();
+    }
+}
+
+
+void IFACE::ProjectChanged()
+{
+    if( m_libraryPreloadInProgress.load() )
+        m_libraryPreloadAbort.store( true );
+}
+
+
+void IFACE::OnKifaceEnd()
+{
+    CancelPreload( true );
+
+    if( m_apiHandlerSchLibs )
+    {
+        if( Pgm().ApiServerOrNull() )
+            Pgm().GetApiServer().DeregisterHandler( m_apiHandlerSchLibs.get() );
+
+        m_apiHandlerSchLibs.reset();
+    }
+
+    // Release the CLI-cached schematic while the static ERC_ITEM tables it serializes against are
+    // still alive; deferring to static teardown crashes reading dangling severity keys
+    if( m_jobHandler )
+        m_jobHandler->ClearCachedSchematic();
+
+    end_common();
+}
+
+
+void IFACE::SaveFileAs( const wxString& aProjectBasePath, const wxString& aProjectName,
+                        const wxString& aNewProjectBasePath, const wxString& aNewProjectName,
+                        const wxString& aSrcFilePath, wxString& aErrors )
+{
+    wxFileName destFile( aSrcFilePath );
+    wxString   destPath = destFile.GetPathWithSep();
+    wxUniChar  pathSep = wxFileName::GetPathSeparator();
+    wxString   ext = destFile.GetExt();
+
+    if( destPath.StartsWith( aProjectBasePath + pathSep ) )
+        destPath.Replace( aProjectBasePath, aNewProjectBasePath, false );
+
+    destFile.SetPath( destPath );
+
+    if( ext == FILEEXT::LegacySchematicFileExtension
+        || ext == FILEEXT::LegacySchematicFileExtension + FILEEXT::BackupFileSuffix
+        || ext == FILEEXT::KiCadSchematicFileExtension
+        || ext == FILEEXT::KiCadSchematicFileExtension + FILEEXT::BackupFileSuffix )
+    {
+        if( destFile.GetName() == aProjectName )
+        {
+            destFile.SetName( aNewProjectName  );
+        }
+        else if( destFile.GetName() == aNewProjectName )
+        {
+            wxString msg;
+
+            if( !aErrors.empty() )
+                aErrors += wxS( "\n" );
+
+            msg.Printf( _( "Cannot copy file '%s' as it will be overwritten by the new root "
+                           "sheet file." ), destFile.GetFullPath() );
+            aErrors += msg;
+            return;
+        }
+
+        CopySexprFile( aSrcFilePath, destFile.GetFullPath(),
+                [&]( const std::string& token, wxString& value ) -> bool
+                {
+                    if( token == "project" && value == aProjectName )
+                    {
+                        value = aNewProjectName;
+                        return true;
+                    }
+
+                    return false;
+                },
+                aErrors );
+    }
+    else if( ext == FILEEXT::SchematicSymbolFileExtension )
+    {
+        // Symbols are not project-specific.  Keep their source names.
+        KiCopyFile( aSrcFilePath, destFile.GetFullPath(), aErrors );
+    }
+    else if( ext == FILEEXT::LegacySymbolLibFileExtension
+             || ext == FILEEXT::LegacySymbolDocumentFileExtension
+             || ext == FILEEXT::KiCadSymbolLibFileExtension )
+    {
+        if( destFile.GetName() == aProjectName + wxS( "-cache" ) )
+            destFile.SetName( aNewProjectName + wxS( "-cache" ) );
+
+        if( destFile.GetName() == aProjectName + wxS( "-rescue" ) )
+            destFile.SetName( aNewProjectName + wxS( "-rescue" ) );
+
+        KiCopyFile( aSrcFilePath, destFile.GetFullPath(), aErrors );
+    }
+    else if( ext == FILEEXT::NetlistFileExtension )
+    {
+        if( destFile.GetName() == aProjectName )
+            destFile.SetName( aNewProjectName );
+
+        CopySexprFile( aSrcFilePath, destFile.GetFullPath(),
+                [&]( const std::string& token, wxString& value ) -> bool
+                {
+                    if( token == "source" )
+                    {
+                        for( const wxString& extension : { wxString( wxT( ".sch" ) ), wxString( wxT( ".kicad_sch" ) ) } )
+                        {
+                            if( value == aProjectName + extension )
+                            {
+                                value = aNewProjectName + extension;
+                                return true;
+                            }
+                            else if( value == aProjectBasePath + "/" + aProjectName + extension )
+                            {
+                                value = aNewProjectBasePath + "/" + aNewProjectName + extension;
+                                return true;
+                            }
+                            else if( value.StartsWith( aProjectBasePath ) )
+                            {
+                                value.Replace( aProjectBasePath, aNewProjectBasePath, false );
+                                return true;
+                            }
+                        }
+                    }
+
+                    return false;
+                },
+                aErrors );
+    }
+    else if( destFile.GetName() == FILEEXT::SymbolLibraryTableFileName )
+    {
+        wxFileName    libTableFn( aSrcFilePath );
+        LIBRARY_TABLE libTable( libTableFn, LIBRARY_TABLE_SCOPE::PROJECT );
+        libTable.SetPath( destFile.GetFullPath() );
+        libTable.SetType( LIBRARY_TABLE_TYPE::SYMBOL );
+
+        for( LIBRARY_TABLE_ROW& row : libTable.Rows() )
+        {
+            wxString uri = row.URI();
+
+            uri.Replace( wxS( "/" ) + aProjectName + wxS( "-cache.lib" ),
+                         wxS( "/" ) + aNewProjectName + wxS( "-cache.lib" ) );
+            uri.Replace( wxS( "/" ) + aProjectName + wxS( "-rescue.lib" ),
+                         wxS( "/" ) + aNewProjectName +  wxS( "-rescue.lib" ) );
+            uri.Replace( wxS( "/" ) + aProjectName + wxS( ".lib" ),
+                         wxS( "/" ) + aNewProjectName + wxS( ".lib" ) );
+
+            row.SetURI( uri );
+        }
+
+        libTable.Save().map_error(
+                [&]( const LIBRARY_ERROR& aError )
+                {
+                        wxString msg;
+
+                        if( !aErrors.empty() )
+                            aErrors += wxT( "\n" );
+
+                        msg.Printf( _( "Cannot copy file '%s'." ), destFile.GetFullPath() );
+                        aErrors += msg;
+                } );
+    }
+    else
+    {
+        wxFAIL_MSG( wxS( "Unexpected filetype for Eeschema::SaveFileAs()" ) );
+    }
+}
+
+
+int IFACE::HandleJob( JOB* aJob, REPORTER* aReporter, PROGRESS_REPORTER* aProgressReporter )
+{
+    return m_jobHandler->RunJob( aJob, aReporter, aProgressReporter );
+}
+
+
+bool IFACE::HandleJobConfig( JOB* aJob, wxWindow* aParent )
+{
+    return m_jobHandler->HandleJobConfig( aJob, aParent );
+}
+
+
+// TODO(JE) some of the below methods can probably be factored out and shared between sch/pcb
+void IFACE::closeSchematic( KICAD_API_SERVER* aServer )
+{
+    if( m_openHandler )
+    {
+        if( aServer )
+            aServer->DeregisterHandler( m_openHandler.get() );
+
+        m_openHandler.reset();
+    }
+
+    m_openContext.reset();
+
+    delete m_openSchematic;
+    m_openSchematic = nullptr;
+
+    // The jobs handler caches the last-loaded schematic. Clear it so the next job
+    // uses the schematic from the newly opened document rather than a stale copy.
+    if( m_jobHandler )
+        m_jobHandler->ClearCachedSchematic();
+}
+
+
+void IFACE::closeSymbol( KICAD_API_SERVER* aServer )
+{
+    if( m_openSymbolHandler )
+    {
+        if( aServer )
+            aServer->DeregisterHandler( m_openSymbolHandler.get() );
+
+        m_openSymbolHandler.reset();
+    }
+
+    m_openSymbolContext.reset();
+}
+
+
+bool IFACE::HandleApiOpenDocument( const DOCUMENT_SPEC& aSpec,
+                                   KICAD_API_SERVER* aServer, wxString* aError )
+{
+    wxCHECK( aServer, false );
+
+    if( aSpec.kind == DOCUMENT_SPEC::KIND::CREATE_KIND )
+        return handleCreateSchematic( aSpec.path, aServer, aError );
+
+    if( aSpec.kind == DOCUMENT_SPEC::KIND::LIBID_KIND )
+        return handleOpenSymbol( aSpec.path, aSpec.libId.GetUniStringLibId(), aServer, aError );
+
+    if( aSpec.path.IsEmpty() )
+    {
+        if( aError )
+            *aError = wxS( "No path specified to open" );
+
+        return false;
+    }
+
+    wxFileName projectPath( aSpec.path );
+
+    if( projectPath.GetExt() == FILEEXT::KiCadSchematicFileExtension )
+        projectPath.SetExt( FILEEXT::ProjectFileExtension );
+    else if( projectPath.GetExt() != FILEEXT::ProjectFileExtension )
+        projectPath.SetExt( FILEEXT::ProjectFileExtension );
+
+    projectPath.MakeAbsolute();
+
+    // We currently only support one document per type (and each needs to come from
+    // the same project).  This will need evolution once we support MDI and multi-project.
+    closeSchematic( aServer );
+
+    SETTINGS_MANAGER& settingsManager = Pgm().GetSettingsManager();
+
+    // Reuse an already-loaded project if one exists for this path.
+    PROJECT* project = settingsManager.GetProject( projectPath.GetFullPath() );
+
+    if( !project )
+    {
+        if( !settingsManager.LoadProject( projectPath.GetFullPath(), true ) )
+            wxLogTrace( traceApi, "Warning: no project file found for %s", aSpec.path );
+
+        project = settingsManager.GetProject( projectPath.GetFullPath() );
+    }
+
+    if( !project )
+    {
+        if( aError )
+            *aError = wxString::Format( wxS( "Error loading project for %s" ), aSpec.path );
+
+        return false;
+    }
+
+    wxFileName schPath( projectPath );
+    schPath.SetExt( FILEEXT::KiCadSchematicFileExtension );
+
+    if( !schPath.FileExists() )
+    {
+        if( aError )
+            *aError = wxString::Format( wxS( "File not found: %s" ), schPath.GetFullPath() );
+
+        return false;
+    }
+
+    SCHEMATIC* schematic = nullptr;
+
+    try
+    {
+        schematic = EESCHEMA_HELPERS::LoadSchematic( schPath.GetFullPath(), false, false, project );
+
+        if( !schematic )
+        {
+            if( aError )
+                *aError = wxS( "Failed to load schematic" );
+
+            return false;
+        }
+    }
+    catch( ... )
+    {
+        if( aError )
+            *aError = wxS( "Failed to load schematic" );
+
+        return false;
+    }
+
+    m_openSchematic = schematic;
+
+    m_openContext = std::make_shared<HEADLESS_SCH_CONTEXT>( &m_openSchematic, project, m_kiway );
+
+    if( !m_apiHandlerSchLibs )
+    {
+        m_apiHandlerSchLibs = std::make_unique<API_HANDLER_SCH_LIBRARIES>();
+        aServer->RegisterHandler( m_apiHandlerSchLibs.get() );
+    }
+
+    m_openHandler = std::make_unique<API_HANDLER_SCH>( m_openContext );
+    aServer->RegisterHandler( m_openHandler.get() );
+
+    return true;
+}
+
+
+bool IFACE::handleCreateSchematic( const wxString& aPath, KICAD_API_SERVER* aServer, wxString* aError )
+{
+    wxFileName schPath( aPath );
+    schPath.MakeAbsolute();
+
+    wxFileName projectPath( schPath );
+    projectPath.SetExt( FILEEXT::ProjectFileExtension );
+
+    if( m_openSchematic && m_openSchematic->HasHierarchy() )
+    {
+        if( m_openSchematic->Hierarchy().IsModified() )
+        {
+            if( aError )
+                *aError = wxS( "The current schematic has unsaved changes; save or revert it first" );
+
+            return false;
+        }
+    }
+
+    closeSchematic( aServer );
+
+    SETTINGS_MANAGER& settingsManager = Pgm().GetSettingsManager();
+
+    PROJECT* project = settingsManager.GetProject( projectPath.GetFullPath() );
+
+    if( !project )
+    {
+        // Create the project settings in memory (LoadProject falls back to defaults when the
+        // file does not exist on disk) without writing any files.
+        settingsManager.LoadProject( projectPath.GetFullPath(), true );
+        project = settingsManager.GetProject( projectPath.GetFullPath() );
+    }
+
+    if( !project )
+    {
+        if( aError )
+            *aError = wxString::Format( wxS( "Error creating project for %s" ), aPath );
+
+        return false;
+    }
+
+    std::unique_ptr<SCHEMATIC> schematic = std::make_unique<SCHEMATIC>( project );
+    schematic->CreateDefaultScreens();
+
+    SCH_SCREENS screens( schematic->Root() );
+    schematic->RootScreen()->SetFileName( schPath.GetFullPath() );
+
+    m_openSchematic = schematic.release();
+
+    m_openContext = std::make_shared<HEADLESS_SCH_CONTEXT>( &m_openSchematic, project, m_kiway );
+
+    if( !m_apiHandlerSchLibs )
+    {
+        m_apiHandlerSchLibs = std::make_unique<API_HANDLER_SCH_LIBRARIES>();
+        aServer->RegisterHandler( m_apiHandlerSchLibs.get() );
+    }
+
+    m_openHandler = std::make_unique<API_HANDLER_SCH>( m_openContext );
+    aServer->RegisterHandler( m_openHandler.get() );
+
+    return true;
+}
+
+
+bool IFACE::handleOpenSymbol( const wxString& aProjectPath, const wxString& aLibIdStr, KICAD_API_SERVER* aServer,
+                              wxString* aError )
+{
+    LIB_ID libId;
+
+    if( libId.Parse( aLibIdStr ) >= 0 )
+    {
+        if( aError )
+            *aError = wxString::Format( wxS( "Invalid symbol LIB_ID: %s" ), aLibIdStr );
+
+        return false;
+    }
+
+    wxFileName projectPath( aProjectPath );
+    projectPath.MakeAbsolute();
+
+    SETTINGS_MANAGER& settingsManager = Pgm().GetSettingsManager();
+
+    if( !settingsManager.LoadProject( projectPath.GetFullPath(), true ) )
+    {
+        wxLogTrace( traceApi, "Warning: no project file found for %s", aProjectPath );
+    }
+
+    PROJECT* project = settingsManager.GetProject( projectPath.GetFullPath() );
+
+    if( !project )
+    {
+        if( aError )
+            *aError = wxString::Format( wxS( "Error loading project for %s" ), aProjectPath );
+
+        return false;
+    }
+
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( project );
+    adapter->AsyncLoad();
+    adapter->BlockUntilLoaded();
+
+    std::unique_ptr<LIB_SYMBOL> symbol;
+
+    try
+    {
+        LIB_SYMBOL* loaded = adapter->LoadSymbol( libId );
+
+        if( !loaded )
+        {
+            if( aError )
+                *aError = wxString::Format( wxS( "Symbol not found: %s" ), aLibIdStr );
+
+            return false;
+        }
+
+        symbol = std::make_unique<LIB_SYMBOL>( *loaded );
+    }
+    catch( const IO_ERROR& err )
+    {
+        if( aError )
+            *aError = wxString::Format( wxS( "Failed to load symbol: %s" ), err.What() );
+
+        return false;
+    }
+    catch( ... )
+    {
+        if( aError )
+            *aError = wxS( "Failed to load symbol" );
+
+        return false;
+    }
+
+    closeSymbol( aServer );
+
+    if( !m_apiHandlerSchLibs )
+    {
+        m_apiHandlerSchLibs = std::make_unique<API_HANDLER_SCH_LIBRARIES>();
+        aServer->RegisterHandler( m_apiHandlerSchLibs.get() );
+    }
+
+    m_openSymbolContext = std::make_shared<HEADLESS_SYMBOL_EDITOR_CONTEXT>(
+            std::move( symbol ), libId, project, GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" ), m_kiway );
+
+    m_openSymbolHandler = std::make_unique<API_HANDLER_SYMBOL>( m_openSymbolContext, nullptr );
+    aServer->RegisterHandler( m_openSymbolHandler.get() );
+
+    return true;
+}
+
+
+bool IFACE::HandleApiCloseDocument( const DOCUMENT_SPEC& aSpec, KICAD_API_SERVER* aServer, wxString* aError )
+{
+    wxCHECK( aServer, false );
+
+    if( aSpec.kind == DOCUMENT_SPEC::KIND::LIBID_KIND )
+    {
+        if( !m_openSymbolContext )
+        {
+            if( aError )
+                *aError = wxS( "No symbol is currently open" );
+
+            return false;
+        }
+
+        if( aSpec.libId.IsValid() && m_openSymbolContext->GetLoadedLibId() != aSpec.libId )
+        {
+            if( aError )
+                *aError = wxS( "Requested document does not match the open document" );
+
+            return false;
+        }
+
+        closeSymbol( aServer );
+        return true;
+    }
+
+    if( !m_openContext )
+    {
+        if( aError )
+            *aError = wxS( "No schematic is currently open" );
+
+        return false;
+    }
+
+    if( !aSpec.path.IsEmpty() )
+    {
+        wxFileName currentSch( m_openContext->GetCurrentFileName() );
+
+        if( currentSch.GetFullName() != wxFileName( aSpec.path ).GetFullName() )
+        {
+            if( aError )
+                *aError = wxS( "Requested document does not match the open document" );
+
+            return false;
+        }
+    }
+
+    closeSchematic( aServer );
+    return true;
+}
+
+
+void IFACE::RegisterLibraryHandlers( KICAD_API_SERVER* aServer )
+{
+    wxCHECK_RET( aServer, "no API server provided" );
+
+    if( !m_apiHandlerSchLibs )
+    {
+        m_apiHandlerSchLibs = std::make_unique<API_HANDLER_SCH_LIBRARIES>();
+        aServer->RegisterHandler( m_apiHandlerSchLibs.get() );
+    }
+}
+
+
+bool IFACE::LoadAllLibraries()
+{
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_kiway->Prj() );
+
+    if( !adapter )
+        return false;
+
+    adapter->AsyncLoad();
+    return true;
+}

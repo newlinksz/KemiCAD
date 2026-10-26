@@ -1,0 +1,446 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2014-2017 CERN
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * @author Maciej Suminski <maciej.suminski@cern.ch>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef __DRAWING_TOOL_H
+#define __DRAWING_TOOL_H
+
+#include <functional>
+#include <stack>
+#include <optional>
+#include <eda_shape.h>
+#include <tool/arc_tangent_seed.h>
+#include <tool/shape_draw_behavior.h>
+#include <tool/tool_menu.h>
+#include <tools/pcb_selection.h>
+#include <tools/pcb_tool_base.h>
+#include <tools/pcb_actions.h>
+
+namespace KIGFX
+{
+    class VIEW;
+    class VIEW_CONTROLS;
+}
+
+class BOARD;
+class BOARD_ITEM;
+class PAD;
+class PCB_TRACK;
+class DRC_ENGINE;
+class PCB_BASE_EDIT_FRAME;
+class PCB_SHAPE;
+class BOARD_CONNECTED_ITEM;
+class PCB_VIA;
+class POLYGON_GEOM_MANAGER;
+class PCB_TUNING_PATTERN;
+class STATUS_MIN_MAX_POPUP;
+
+
+/**
+ * Shared placement DRC checks, used by the plain via tool and the microvia stack tool so both
+ * block placement over foreign copper consistently.
+ */
+int  ComputeWorstViaClearance( PCB_BASE_EDIT_FRAME* aFrame, DRC_ENGINE* aEngine );
+bool CheckItemDRCViolation( BOARD_CONNECTED_ITEM* aItem, PCB_BASE_EDIT_FRAME* aFrame, DRC_ENGINE* aEngine,
+                            int aWorstClearance, int aEpsilon );
+
+
+/**
+ * Shared placement snapping, used by the plain via tool and the microvia stack tool. @a aVia
+ * gives the reach and the bounding box to search, @a aLayers which layers may be snapped to,
+ * so a stack can offer every layer it spans rather than just the via's own.
+ */
+int        ViaSnapRange( PCB_BASE_EDIT_FRAME* aFrame );
+PCB_TRACK* FindSnapTrack( PCB_BASE_EDIT_FRAME* aFrame, const PCB_VIA* aVia, const VECTOR2I& aPosition,
+                          const LSET& aLayers, int aSnapRange = 0 );
+PAD* FindSnapPad( PCB_BASE_EDIT_FRAME* aFrame, const PCB_VIA* aVia, const VECTOR2I& aPosition, const LSET& aLayers,
+                  int aSnapRange = 0 );
+
+
+/**
+ * Tool responsible for drawing graphical elements like lines, arcs, circles, etc.
+ */
+
+class DRAWING_TOOL : public PCB_TOOL_BASE
+{
+public:
+    DRAWING_TOOL();
+    ~DRAWING_TOOL();
+
+    /// @copydoc TOOL_INTERACTIVE::Init()
+    bool Init() override;
+
+    /// @copydoc TOOL_INTERACTIVE::Reset()
+    void Reset( RESET_REASON aReason ) override;
+
+    /// The possible drawing modes of DRAWING_TOOL
+    enum class MODE
+    {
+        NONE,
+        LINE,
+        RECTANGLE,
+        CIRCLE,
+        ELLIPSE,
+        ELLIPSE_ARC,
+        ARC,
+        BEZIER,
+        IMAGE,
+        TEXT,
+        ANCHOR,
+        MD_POINT, // Do not use POINT: it collide with a Windows header define
+        DXF,
+        DIMENSION,
+        KEEPOUT,
+        ZONE,
+        GRAPHIC_POLYGON,
+        VIA,
+        TUNING,
+        TABLE,
+        BARCODE,
+        STITCH
+    };
+
+    /**
+     * Return the current drawing mode of the DRAWING_TOOL or #NONE if not currently in
+     * any drawing mode.
+     */
+    MODE GetDrawingMode() const;
+
+    /**
+     */
+    std::vector<BOARD_ITEM*> DrawSpecificationStackup( const VECTOR2I& origin, PCB_LAYER_ID aLayer,
+                                                       bool aDrawNow, VECTOR2I* tablesize );
+
+    /**
+     */
+    int PlaceStackup( const TOOL_EVENT& aEvent );
+
+    /**
+     */
+    int PlaceTuningPattern( const TOOL_EVENT& aEvent );
+
+    /**
+     */
+    int PlaceViaStitch( const TOOL_EVENT& aEvent );
+
+    /**
+     * Place a stacked or staggered microvia stack.
+     */
+    int PlaceMicroviaStack( const TOOL_EVENT& aEvent );
+
+    /**
+     * Pre-anchor the next microvia stack placement to a fixed first hop and span, used when the
+     * router hands off a staggered stack so the user places the remaining hops interactively.
+     */
+    void SeedViaStackStart( const VECTOR2I& aPos, PCB_LAYER_ID aStart, PCB_LAYER_ID aEnd )
+    {
+        m_viaStackSeeded = true;
+        m_viaStackSeedPos = aPos;
+        m_viaStackSeedStart = aStart;
+        m_viaStackSeedEnd = aEnd;
+    }
+
+    /**
+     * Start interactively drawing a line.
+     *
+     * After invoking the function it expects the user to click at least two times to determine
+     * the origin and the end for a line. If there are more clicks, the line is drawn as a
+     * continuous polyline.
+     */
+    int DrawLine( const TOOL_EVENT& aEvent );
+
+    /**
+     * Start interactively drawing a rectangle.
+     *
+     * After invoking the function it expects the user to first click on a point that is going
+     * to be used as the top-left of the rectangle. The second click determines the bottom-right.
+     */
+    int DrawRectangle( const TOOL_EVENT& aEvent );
+
+    /**
+     * Start interactively drawing a circle.
+     *
+     * After invoking the function it expects the user to first click on a point that is going
+     * to be used as the center of the circle. The second click determines the circle radius.
+     */
+    int DrawCircle( const TOOL_EVENT& aEvent );
+
+    int DrawEllipse( const TOOL_EVENT& aEvent );
+
+    int DrawEllipseArc( const TOOL_EVENT& aEvent );
+
+    /**
+     * Start interactively drawing an arc.
+     *
+     * After invoking the function it expects the user to first click on a point that is going
+     * to be used as the center of the arc. The second click determines the origin and radius,
+     * the third one - the angle.
+     */
+    int DrawArc( const TOOL_EVENT& aEvent );
+
+    /**
+     * Start interactively drawing a bezier curve.
+     *
+     * An interactive geometry manager will handle adding/editing the control points.
+     */
+    int DrawBezier( const TOOL_EVENT& aEvent );
+
+    /**
+     * Display a dialog that allows one to select a reference image and then decide where to
+     * place the image in the editor.
+     */
+    int PlaceReferenceImage( const TOOL_EVENT& aEvent );
+
+    /**
+     * Trace a placed reference image into filled graphics and replace it with them.
+     */
+    int ConvertImageToOutlines( const TOOL_EVENT& aEvent );
+
+    /**
+     * Place a reference 0D point
+     */
+    int PlacePoint( const TOOL_EVENT& aEvent );
+
+    /**
+     * Display a dialog that allows one to input text and its settings and then lets the user
+     * decide where to place the text in editor.
+     */
+    int PlaceText( const TOOL_EVENT& aEvent );
+
+    /*
+     * Start interactively drawing a table (rows & columns of TEXTBOXes).
+     */
+    int DrawTable( const TOOL_EVENT& aEvent );
+
+    /**
+     * Starts interactively drawing a barcode. After invoking the function it expects the user
+     * to first click on a point that is going to be used as the origin of the barcode.
+     * The second click determines the the size
+     */
+    int DrawBarcode( const TOOL_EVENT& aEvent );
+
+    /**
+     * Start interactively drawing a dimension.
+     *
+     * After invoking the function it expects the user to first click on a point that is going
+     * to be used as the origin of the dimension.  The second click determines the end and the
+     * third click modifies its height.
+     */
+    int DrawDimension( const TOOL_EVENT& aEvent );
+
+    /**
+     * Start interactively drawing a zone.
+     *
+     * After invoking the function a zone settings dialog is displayed. After confirmation it
+     * allows the user to set points that are going to be used as a boundary polygon of the
+     * zone.  Double click or clicking on the origin of the boundary polyline finishes the
+     * drawing.
+     *
+     * The event parameter indicates which type of zone to draw:
+     *  - ADD      add a new zone/keepout with fresh settings.
+     *  - CUTOUT   add a cutout to an existing zone.
+     *  - SIMILAR  add a new zone with the same settings as an existing one.
+     */
+    int DrawZone(  const TOOL_EVENT& aEvent );
+
+    int DrawVia( const TOOL_EVENT& aEvent );
+
+    /**
+     * Place a drawing imported from a DXF or SVG file.
+     */
+    int PlaceImportedGraphics( const TOOL_EVENT& aEvent );
+
+    /**
+     * Place the footprint anchor (only in footprint editor).
+     */
+    int SetAnchor( const TOOL_EVENT& aEvent );
+
+    /**
+     * Place a grid item on the board.
+     */
+    int PlaceSubGrid( const TOOL_EVENT& aEvent );
+
+    /// Set up handlers for various events.
+    void setTransitions() override;
+
+    void SetStroke( const STROKE_PARAMS& aStroke, PCB_LAYER_ID aLayer )
+    {
+        m_layer = aLayer;
+        m_stroke = aStroke;
+    }
+
+    void UpdateStatusBar() const;
+
+private:
+    /**
+     * Start drawing a selected shape (i.e. PCB_SHAPE).
+     *
+     * @param aTool  the tool event to draw the shape.
+     * @param aGraphic is an object that is going to be used by the tool for drawing. Must be
+     *                 already created. The tool deletes the object if it is not added to a BOARD.
+     * @param aStartingPoint is a starting point for this new PCB_SHAPE. If it exists the new
+     *                       item has its start point set to aStartingPoint, and its settings
+     *                       (width, layer) set to the current default values.
+     * @param aCommittedGraphics
+     * @return False if the tool was canceled before the origin was set or origin and end are
+     *         the same point.
+     */
+    bool drawShape( const TOOL_EVENT& aTool, PCB_SHAPE** aGraphic, std::optional<VECTOR2D> aStartingPoint,
+                    std::stack<PCB_SHAPE*>* aCommittedGraphics );
+
+    int runSimpleShapeDraw( const TOOL_EVENT& aEvent, SHAPE_T aShapeType, MODE aMode, const wxString& aCommitLabel,
+                            std::function<bool( const TOOL_EVENT&, PCB_SHAPE**, std::optional<VECTOR2D> )> aDrawer );
+
+    /**
+     * Snap a tool event's position the way a click is snapped.
+     *
+     * A hotkey start carries the raw mouse position, which becomes the first point of a managed shape.
+     */
+    VECTOR2I snapEventPosition( const TOOL_EVENT& aEvent );
+
+    /**
+     * Run the interactive drawing event loop for a shape, driven by a SHAPE_DRAW_BEHAVIOR.
+     *
+     * @param aTool  the tool event to draw the managed shape.
+     * @param aGraphic  the shape being drawn; must already be created.  On cancel the unique_ptr is reset;
+     *                  on completion the caller can take ownership (e.g. to release into a COMMIT).
+     * @param aBehavior  defines the drawing behavior of the managed shape.
+     * @param aInitialPts  points to pre-load into the behaviour before the first user click, e.g. start
+     *                     point and mirrored control point for tangent-continuous bezier chaining.
+     * @param aTangentSeed  start point and direction that begin a tangent arc, applied to the behavior before
+     *                      any initial point.  A seeded draw counts as started.
+     * @param aLastClick  if not null, receives the position of the last click taken by the loop.
+     * @return the outcome of the drawing loop: see @ref SHAPE_DRAW_RESULT.
+     */
+    SHAPE_DRAW_RESULT drawManagedShape( const TOOL_EVENT& aTool, std::unique_ptr<PCB_SHAPE>& aGraphic,
+                                        SHAPE_DRAW_BEHAVIOR& aBehavior, const std::vector<VECTOR2D>& aInitialPts,
+                                        const std::optional<ARC_TANGENT_SEED>& aTangentSeed = std::nullopt,
+                                        VECTOR2I* aLastClick = nullptr );
+
+    /**
+     * Get a source zone item for an action that takes an existing zone into account (for
+     * example a cutout of an existing zone).
+     *
+     * The source zone is taken from the current selection.
+     *
+     * @param aMode mode of the zone tool
+     * @param aZone updated pointer to a suitable source zone, or nullptr if none found, or
+     *              the action doesn't need a source
+     * @return true if a suitable zone was found, or the action doesn't need a zone. False if
+     *         the action needs a zone but none was found.
+     */
+    bool getSourceZoneForAction( ZONE_MODE aMode, ZONE** aZone );
+
+    /**
+     * Force the dimension lime to be drawn on multiple of 45 degrees.
+     *
+     * @param aDim is the dimension element currently being drawn.
+     */
+    void constrainDimension( PCB_DIMENSION_BASE* aDim );
+
+    /**
+     * Clamps the end vector to respect numeric limits of difference representation
+     *
+     * @param aOrigin - the origin vector.
+     * @param aEnd - the end vector.
+     * @return clamped end vector.
+     */
+    VECTOR2I getClampedDifferenceEnd( const VECTOR2I& aOrigin, const VECTOR2I& aEnd )
+    {
+        typedef std::numeric_limits<int> coord_limits;
+        const int                        guardValue = 1;
+
+        VECTOR2I::extended_type maxDiff = coord_limits::max() - guardValue;
+
+        VECTOR2I::extended_type xDiff = VECTOR2I::extended_type( aEnd.x ) - aOrigin.x;
+        VECTOR2I::extended_type yDiff = VECTOR2I::extended_type( aEnd.y ) - aOrigin.y;
+
+        if( xDiff > maxDiff )
+            xDiff = maxDiff;
+        if( yDiff > maxDiff )
+            yDiff = maxDiff;
+
+        if( xDiff < -maxDiff )
+            xDiff = -maxDiff;
+        if( yDiff < -maxDiff )
+            yDiff = -maxDiff;
+
+        return aOrigin + VECTOR2I( int( xDiff ), int( yDiff ) );
+    }
+
+    /**
+     * Clamp the end vector to respect numeric limits of radius representation.
+     *
+     * @param aOrigin - the origin vector.
+     * @param aEnd - the end vector.
+     * @return clamped end vector.
+     */
+    VECTOR2I getClampedRadiusEnd( const VECTOR2I& aOrigin, const VECTOR2I& aEnd )
+    {
+        typedef std::numeric_limits<int> coord_limits;
+        const int                        guardValue = 10;
+
+        VECTOR2I::extended_type xDiff = VECTOR2I::extended_type( aEnd.x ) - aOrigin.x;
+        VECTOR2I::extended_type yDiff = VECTOR2I::extended_type( aEnd.y ) - aOrigin.y;
+
+        double maxRadius = coord_limits::max() / 2 - guardValue;
+        double radius = std::hypot( xDiff, yDiff );
+
+        if( radius > maxRadius )
+        {
+            double scaleFactor = maxRadius / radius;
+
+            xDiff = KiROUND<double, int>( xDiff * scaleFactor );
+            yDiff = KiROUND<double, int>( yDiff * scaleFactor );
+        }
+
+        return aOrigin + VECTOR2I( int( xDiff ), int( yDiff ) );
+    }
+
+    KIGFX::VIEW*              m_view;
+    KIGFX::VIEW_CONTROLS*     m_controls;
+    BOARD*                    m_board;
+    PCB_BASE_EDIT_FRAME*      m_frame;
+    MODE                      m_mode;
+    bool                      m_inDrawingTool;     // Re-entrancy guard
+
+    PCB_LAYER_ID              m_layer;             // The layer we last drew on
+    STROKE_PARAMS             m_stroke;            // Current stroke for multi-segment drawing
+    TEXT_ATTRIBUTES           m_textAttrs;
+
+    PCB_SELECTION             m_preview;
+    BOARD_CONNECTED_ITEM*     m_pickerItem;
+    PCB_TUNING_PATTERN*       m_tuningPattern;
+
+    // Router handoff: pre-anchored first hop and span for the next stack placement.
+    bool         m_viaStackSeeded = false;
+    VECTOR2I     m_viaStackSeedPos;
+    PCB_LAYER_ID m_viaStackSeedStart = UNDEFINED_LAYER;
+    PCB_LAYER_ID m_viaStackSeedEnd = UNDEFINED_LAYER;
+
+    static const unsigned int WIDTH_STEP;          // Amount of width change for one -/+ key press
+    static const unsigned int COORDS_PADDING;      // Padding from coordinates limits for this tool
+
+
+    friend class              ZONE_CREATE_HELPER;  // give internal access to helper classes
+};
+
+#endif /* __DRAWING_TOOL_H */

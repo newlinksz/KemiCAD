@@ -1,0 +1,139 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "qa_utils/wx_utils/unit_test_utils.h"
+
+#include <fstream>
+
+#include <wx/filename.h>
+#include <wx/utils.h>
+
+#if defined( __WXGTK__ )
+#include <gdk/gdk.h> // For gdk_display_get_default()
+#endif
+
+std::ostream& boost_test_print_type( std::ostream& os, wxPoint const& aPt )
+{
+    os << "WXPOINT[ x=\"" << aPt.x << "\" y=\"" << aPt.y << "\" ]";
+    return os;
+}
+
+
+std::string KI_TEST::GetEeschemaTestDataDir()
+{
+    const char* env = std::getenv( "KICAD_TEST_EESCHEMA_DATA_DIR" );
+    std::string fn;
+
+    if( !env )
+    {
+        // Use the compiled-in location of the data dir
+        // (i.e. where the files were at build time)
+        fn = GetTestDataRootDir();
+        fn += "eeschema";
+    }
+    else
+    {
+        // Use whatever was given in the env var
+        fn = env;
+    }
+
+    // Ensure the string ends in / to force a directory interpretation
+    fn += "/";
+
+    return fn;
+}
+
+
+#ifndef QA_DATA_ROOT
+#define QA_DATA_ROOT "???"
+#endif
+
+std::string KI_TEST::GetTestDataRootDir()
+{
+    const char* env = std::getenv( "QA_DATA_ROOT" );
+    std::string fn;
+
+    if( !env )
+    {
+        // Use the compiled-in location of the data dir
+        // (i.e. where the files were at build time)
+        fn = QA_DATA_ROOT;
+    }
+    else
+    {
+        // Use whatever was given in the env var
+        fn = env;
+    }
+
+    // Ensure the string ends in / to force a directory interpretation
+    fn += "/";
+
+    return fn;
+}
+
+
+std::vector<uint8_t> KI_TEST::LoadBinaryData( const std::string& aFilePath, std::optional<size_t> aLoadBytes )
+{
+    std::ifstream fileStream( aFilePath, std::ios::binary );
+
+    if( !fileStream )
+        throw std::runtime_error( "Failed to open file: " + aFilePath );
+
+    fileStream.seekg( 0, std::ios::end );
+    const size_t fileSize = static_cast<size_t>( fileStream.tellg() );
+    fileStream.seekg( 0, std::ios::beg );
+
+    const size_t bytesToRead = aLoadBytes.value_or( fileSize );
+
+    if( bytesToRead > fileSize )
+        throw std::runtime_error( "Requested " + std::to_string( bytesToRead ) + " bytes but file is "
+                                  + std::to_string( fileSize ) + " bytes: " + aFilePath );
+
+    std::vector<uint8_t> data( bytesToRead );
+    fileStream.read( reinterpret_cast<char*>( data.data() ), bytesToRead );
+
+    if( static_cast<size_t>( fileStream.gcount() ) != bytesToRead )
+        throw std::runtime_error( "Short read from file: " + aFilePath );
+
+    return data;
+}
+
+
+std::string KI_TEST::LoadStringData( const wxString& aPath )
+{
+    const std::vector<uint8_t> data = KI_TEST::LoadBinaryData( aPath.ToStdString() );
+
+    return std::string( data.begin(), data.end() );
+}
+
+
+bool KI_TEST::CanDoDisplayTests()
+{
+    // On Linux/GTK, clipboard operations require a display connection.
+    // This function checks if a display is available without spamming GDK-Critical errors
+    // like wxDisplay::GetCount() does
+    // (see https://github.com/wxWidgets/wxWidgets/issues/26967)
+#ifdef __WXGTK__
+    GdkDisplay* display = gdk_display_get_default();
+    return display != nullptr;
+#endif
+
+    // Other platforms don't have this restriction, so always return true
+    return true;
+}

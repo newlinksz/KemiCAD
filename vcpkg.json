@@ -1,0 +1,88 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "kicad",
+  "version": "8.99",
+  "license": "GPL-2.0+",
+  "dependencies": [
+    "boost-algorithm",
+    "boost-bimap",
+    "boost-filesystem",
+    "boost-functional",
+    "boost-graph",
+    "boost-iterator",
+    "boost-locale",
+    "boost-math",
+    "boost-optional",
+    "boost-property-tree",
+    "boost-ptr-container",
+    "boost-random",
+    "boost-range",
+    "boost-stacktrace",
+    "boost-test",
+    "boost-uuid",
+    "cairo",
+    {
+      "name": "wxwidgets-33",
+      "features": [ "webview" ]
+    },
+    "curl",
+    {
+      "name": "gettext",
+      "features": [ "tools" ],
+      "host": true
+    },
+    "harfbuzz",
+    "libiconv",
+    "libpng",
+    "glm",
+    {
+      "name": "opencascade",
+      "features": [ "rapidjson" ]
+    },
+    "opengl",
+    "python3",
+    "openssl",
+    {
+      "name": "sqlite3",
+      "features": [ "fts5", "fts4", "fts3", "rtree", "session" ]
+    },
+    "icu",
+    "ngspice",
+    {
+      "name": "libgit2",
+      "features": [ "ssh", "winhttp" ]
+    },
+    "nng",
+    "protobuf",
+    "zstd",
+    {
+      "name": "vulkan-headers",
+      "platform": "windows"
+    },
+    {
+      "name": "glslang",
+      "features": [ "tools" ],
+      "host": true
+    },
+    {
+      "name": "spirv-tools",
+      "features": [ "tools" ],
+      "host": true
+    }
+  ],
+  "overrides": [
+    {
+      "name": "glm",
+      "version": "0.9.9.8#2",
+      "$comment": "Pinned due to bad vcpkg port updating to a non-real version"
+    },
+    {
+      "name": "wxwidgets-33",
+      "version": "3.3.4#0"
+    },
+    {
+      "name": "ngspice",
+      "version": "46#0"
+    }
+  ]
+}

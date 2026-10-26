@@ -1,0 +1,118 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef IMPORT_PROJ_H
+#define IMPORT_PROJ_H
+
+#include <wx/filename.h>
+#include <core/typeinfo.h>
+#include <core/utf8.h>
+#include <frame_type.h>
+
+#include <map>
+#include <set>
+
+class KICAD_MANAGER_FRAME;
+
+/**
+ * A helper class to import non Kicad project.
+ * */
+class IMPORT_PROJ_HELPER
+{
+public:
+    IMPORT_PROJ_HELPER( KICAD_MANAGER_FRAME*         aframe,
+                        const std::vector<wxString>& aSchFileExtensions,
+                        const std::vector<wxString>& aPcbFileExtensions );
+
+    /**
+     * @brief Appends a new directory with the name of the project file
+     *        Keep iterating until an empty directory is found
+     */
+    void FindEmptyTargetDir();
+
+    /**
+     * @brief Converts imported files to kicad type files.
+     *        Types of imported files are needed for conversion
+     * @param aImportedSchFileType type of the imported schematic
+     * @param aImportedPcbFileType type of the imported PCB
+     */
+    void ImportFiles( int aImportedSchFileType, int aImportedPcbFileType );
+
+    /**
+     * @brief Converts PADS ASCII schematic and PCB files to KiCad type files.
+     */
+    void ImportPadsFiles();
+
+    /**
+     * @brief Saves every design an editor imported, so the new project exists on disk.
+     */
+    void SaveImportedFiles();
+
+    wxFileName m_InputFile;
+    wxFileName m_TargetProj;
+
+private:
+    KICAD_MANAGER_FRAME* m_frame;
+
+    std::map<std::string, UTF8> m_properties;
+
+    std::set<FRAME_T> m_importedFrames; ///< editors whose import succeeded
+
+    std::vector<wxString> m_copiedSchPaths;
+    std::vector<wxString> m_copiedPcbPaths;
+
+    std::vector<wxString> m_schExtenstions;
+    std::vector<wxString> m_pcbExtenstions;
+
+    void ImportIndividualFile( KICAD_T aKicad_T, int aImportedFileType );
+
+    void doImport( const wxString& aFile, FRAME_T aFrameType, int aImportedFileType );
+
+    void addLocalLibraries( const std::set<wxString>& aLibName, FRAME_T aFrameType );
+
+    /**
+     * @brief Pre-commit one collision-free generated footprint-cache nickname into m_properties so
+     *        the schematic and PCB imports agree on where residual footprints land.
+     */
+    void setImportCacheNickname();
+
+    /// Join the basenames of the given library paths into a source-library property value.
+    wxString joinSourceLibNicknames( const std::set<wxString>& aPaths ) const;
+
+    void EasyEDAProProjectHandler( int aImportedSchFileType, int aImportedPcbFileType );
+
+    void AltiumProjectHandler();
+
+    void GedaProjectHandler();
+
+    /**
+     * @brief Imports the OrCAD schematic, then offers to import an associated Allegro board.
+     */
+    void OrcadProjectHandler();
+
+    /**
+     * @brief Imports an Easy-PC / DesignSpark project, or a schematic and board pair.
+     *
+     * A .prj names its sheets and its single PCB; the schematic importer reads every sheet from the .prj itself
+     * and the board is the PCB item.  A .sch or .pcb pairs with the sibling of the same name.
+     */
+    void EasyPcProjectHandler();
+};
+
+#endif

@@ -1,0 +1,134 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <filesystem>
+#include <fstream>
+#include <memory>
+
+#include <qa_utils/wx_utils/unit_test_utils.h>
+#include <qa_utils/file_utils.h>
+#include <pcbnew_utils/board_file_utils.h>
+#include <boost/test/unit_test.hpp>
+
+#include <base_units.h>
+#include <board.h>
+#include <pcb_dimension.h>
+#include <pcb_shape.h>
+#include <pcbnew/pcb_io/odbpp/pcb_io_odbpp.h>
+#include <settings/settings_manager.h>
+#include <core/utf8.h>
+
+namespace fs = std::filesystem;
+
+/**
+ * Count line ("L ") feature records in a single ODB++ "features" file.
+ *
+ * A dimension's extension lines, crossbar and arrowheads are emitted as line records, so a
+ * non-zero count in the silkscreen layer proves the dimension reached the feature stream
+ * (regression guard for GitLab #20249, where the PCB_DIM_*_T cases were stubbed out of the
+ * ODB++ feature generator).
+ */
+static int countOdbLineRecords( const fs::path& aFeaturesFile )
+{
+    int           lineCount = 0;
+    std::ifstream stream( aFeaturesFile );
+    std::string   line;
+
+    while( std::getline( stream, line ) )
+    {
+        if( line.rfind( "L ", 0 ) == 0 )
+            lineCount++;
+    }
+
+    return lineCount;
+}
+
+
+/**
+ * Sum line ("L ") feature records across every silkscreen "features" file in an ODB++ export tree.
+ *
+ * Both front and back silk layers produce a directory whose name contains "silk", so a search that
+ * stops at the first match would depend on std::filesystem directory-iteration order, which is
+ * unspecified.  The dimension under test sits on the front silk, so picking the empty back-silk file
+ * first would spuriously report zero.  Aggregating across all silk layers keeps the check
+ * order-independent while still matching by substring to stay robust against ODB++ naming changes.
+ *
+ * aFoundFile is set when at least one silk features file exists, so the caller can still assert the
+ * export produced a silkscreen layer at all.
+ */
+static int countSilkLineRecords( const fs::path& aRoot, bool& aFoundFile )
+{
+    int total = 0;
+    aFoundFile = false;
+
+    for( const fs::directory_entry& entry : fs::recursive_directory_iterator( aRoot ) )
+    {
+        if( !entry.is_regular_file() || entry.path().filename() != "features" )
+            continue;
+
+        const std::string layerDir = entry.path().parent_path().filename().string();
+
+        if( layerDir.find( "silk" ) == std::string::npos )
+            continue;
+
+        aFoundFile = true;
+        total += countOdbLineRecords( entry.path() );
+    }
+
+    return total;
+}
+
+
+BOOST_AUTO_TEST_CASE( OdbDimensionExport )
+{
+    SETTINGS_MANAGER       settingsManager;
+    std::unique_ptr<BOARD> board = KI_TEST::RequireBoardFromPcbnewQAData( "issue20249/dimension.kicad_pcb" );
+
+    // A dimension with no geometry would export nothing and the test would pass
+    // for the wrong reason.
+    const PCB_DIMENSION_BASE* dimension = nullptr;
+
+    for( const BOARD_ITEM* item : board->Drawings() )
+    {
+        if( item->Type() == PCB_DIM_ALIGNED_T )
+            dimension = static_cast<const PCB_DIMENSION_BASE*>( item );
+    }
+
+    BOOST_REQUIRE( dimension );
+    BOOST_REQUIRE( !dimension->GetShapes().empty() );
+
+    KI_TEST::SCOPED_TEMP_DIR outDir( wxT( "kicad_qa_odb_dimension_20249" ) );
+
+    PCB_IO_ODBPP                odbExporter;
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["sigfig"] = "6";
+
+    BOOST_REQUIRE_NO_THROW( odbExporter.SaveBoard( outDir.Path().string(), *board, &props ) );
+
+    BOOST_REQUIRE_MESSAGE( fs::exists( outDir.Path() ), "ODB++ export produced no output tree" );
+
+    bool foundSilk = false;
+    int  lineCount = countSilkLineRecords( outDir.Path(), foundSilk );
+
+    BOOST_REQUIRE_MESSAGE( foundSilk, "ODB++ export produced no silkscreen features file" );
+
+    BOOST_CHECK_MESSAGE( lineCount > 0,
+                         "Dimensions were dropped from the ODB++ export (no line features emitted)" );
+}

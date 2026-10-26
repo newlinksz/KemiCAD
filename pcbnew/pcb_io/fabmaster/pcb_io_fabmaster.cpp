@@ -1,0 +1,120 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2020 BeagleBoard Foundation
+ * Copyright The KiCad Developers, see AUTHORS.TXT for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * @brief Pcbnew PLUGIN for FABMASTER ASCII *.txt / *.fab format.
+ */
+
+#include "pcb_io_fabmaster.h"
+#include <board.h>
+#include <progress_reporter.h>
+#include <common.h>
+#include <macros.h>
+
+#include <algorithm>
+#include <fstream>
+#include <string>
+
+
+PCB_IO_FABMASTER::PCB_IO_FABMASTER() : PCB_IO( wxS( "Fabmaster" ) )
+{
+}
+
+
+PCB_IO_FABMASTER::~PCB_IO_FABMASTER()
+{
+}
+
+
+bool PCB_IO_FABMASTER::CanReadBoard( const wxString& aFileName ) const
+{
+    if( !PCB_IO::CanReadBoard( aFileName ) )
+        return false;
+
+    std::ifstream file( aFileName.fn_str() );
+
+    if( !file.is_open() )
+        return false;
+
+    // Fabmaster files are !-delimited ASCII with known column headers.
+    // Scan the first 100 lines for rows containing at least two ! delimiters
+    // and a recognized Fabmaster column name.
+    static const char* keywords[] = {
+        "REFDES", "COMPCLASS", "NETNAME", "SUBCLASS", "GRAPHICDATANAME",
+        "SYMNAME", "PINNAME", "VIAX", "PADSHAPENAME", "PADNAME", "LAYERSORT"
+    };
+
+    std::string line;
+    int linesRead = 0;
+
+    while( std::getline( file, line ) && linesRead < 100 )
+    {
+        linesRead++;
+
+        int delimCount = 0;
+
+        for( char ch : line )
+        {
+            if( ch == '!' )
+                delimCount++;
+        }
+
+        if( delimCount < 2 )
+            continue;
+
+        // Uppercase the line for case-insensitive matching
+        std::string upper = line;
+        std::transform( upper.begin(), upper.end(), upper.begin(), ::toupper );
+
+        for( const char* kw : keywords )
+        {
+            if( upper.find( kw ) != std::string::npos )
+                return true;
+        }
+    }
+
+    return false;
+}
+
+
+void PCB_IO_FABMASTER::loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsNewLoad,
+                                  const std::map<std::string, UTF8>* aProperties, PROJECT* aProject )
+{
+    m_props = aProperties;
+
+    // Must be set before Read()/Process(), which emit most of the parse diagnostics.
+    m_fabmaster.SetReporter( m_reporter );
+
+    m_board = &aBoard;
+
+    if( m_progressReporter )
+    {
+        m_progressReporter->Report( wxString::Format( _( "Loading %s..." ), aFileName ) );
+
+        if( !m_progressReporter->KeepRefreshing() )
+            THROW_IO_CANCELLED();
+    }
+
+    if( !m_fabmaster.Read( aFileName.ToStdString() ) )
+        THROW_IO_ERRORF( _( "Could not read file %s." ), aFileName );
+
+    m_fabmaster.Process();
+    m_fabmaster.LoadBoard( m_board, m_progressReporter );
+}

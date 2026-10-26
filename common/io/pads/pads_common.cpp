@@ -1,0 +1,372 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <io/pads/pads_common.h>
+
+#include <cstdint>
+#include <sstream>
+#include <iomanip>
+#include <fstream>
+#include <exception>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+
+#include <wx/dir.h>
+#include <wx/filename.h>
+#include <wx/log.h>
+
+namespace PADS_COMMON
+{
+
+KIID GenerateDeterministicUuid( const std::string& aIdentifier )
+{
+    // 64-bit FNV-1a parameters.
+    const uint64_t FNV_PRIME = 0x00000100000001B3ULL;
+    const uint64_t FNV_OFFSET = 0xcbf29ce484222325ULL;
+
+    // Hash the identifier twice with different salts to fill 128 bits.
+    uint64_t hash1 = FNV_OFFSET;
+    uint64_t hash2 = FNV_OFFSET;
+
+    std::string salt1 = "PADS1:" + aIdentifier;
+
+    for( char c : salt1 )
+    {
+        hash1 ^= static_cast<uint8_t>( c );
+        hash1 *= FNV_PRIME;
+    }
+
+    std::string salt2 = "PADS2:" + aIdentifier;
+
+    for( char c : salt2 )
+    {
+        hash2 ^= static_cast<uint8_t>( c );
+        hash2 *= FNV_PRIME;
+    }
+
+    // Emit a version-4 UUID (xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx) from the hashes.
+    std::ostringstream ss;
+    ss << std::hex << std::setfill( '0' );
+
+    ss << std::setw( 8 ) << ( hash1 >> 32 );
+    ss << '-';
+
+    ss << std::setw( 4 ) << ( ( hash1 >> 16 ) & 0xFFFF );
+    ss << '-';
+
+    // Force the version-4 nibble.
+    uint16_t version = ( ( hash1 & 0xFFFF ) & 0x0FFF ) | 0x4000;
+    ss << std::setw( 4 ) << version;
+    ss << '-';
+
+    // Force the RFC 4122 10xx variant bits.
+    uint16_t variant = ( ( hash2 >> 48 ) & 0x3FFF ) | 0x8000;
+    ss << std::setw( 4 ) << variant;
+    ss << '-';
+
+    ss << std::setw( 12 ) << ( hash2 & 0xFFFFFFFFFFFFULL );
+
+    return KIID( ss.str() );
+}
+
+
+PADS_FILE_TYPE DetectPadsFileType( const wxString& aFilePath )
+{
+    std::ifstream file( aFilePath.fn_str() );
+
+    if( !file.is_open() )
+        return PADS_FILE_TYPE::UNKNOWN;
+
+    std::string line;
+
+    if( !std::getline( file, line ) )
+        return PADS_FILE_TYPE::UNKNOWN;
+
+    // The header tag may carry a version and code page suffix, so match the
+    // prefix only and anchor at position 0 to require it at the line start.
+    if( line.rfind( "*PADS-POWERPCB", 0 ) == 0
+        || line.rfind( "!PADS-POWERPCB", 0 ) == 0 )
+        return PADS_FILE_TYPE::PCB_ASCII;
+
+    if( line.rfind( "*PADS2000", 0 ) == 0
+        || line.rfind( "!PADS2000", 0 ) == 0 )
+        return PADS_FILE_TYPE::PCB_ASCII;
+
+    if( line.rfind( "*PADS-POWERLOGIC", 0 ) == 0
+        || line.rfind( "!PADS-POWERLOGIC", 0 ) == 0 )
+        return PADS_FILE_TYPE::SCHEMATIC_ASCII;
+
+    if( line.rfind( "*PADS-LOGIC", 0 ) == 0
+        || line.rfind( "!PADS-LOGIC", 0 ) == 0 )
+        return PADS_FILE_TYPE::SCHEMATIC_ASCII;
+
+    return PADS_FILE_TYPE::UNKNOWN;
+}
+
+
+RELATED_FILES FindRelatedPadsFiles( const wxString& aFilePath )
+{
+    RELATED_FILES result;
+
+    wxFileName sourceFn( aFilePath );
+
+    if( !sourceFn.IsOk() || !sourceFn.FileExists() )
+        return result;
+
+    PADS_FILE_TYPE sourceType = DetectPadsFileType( aFilePath );
+
+    if( sourceType == PADS_FILE_TYPE::UNKNOWN )
+        return result;
+
+    if( sourceType == PADS_FILE_TYPE::PCB_ASCII )
+        result.pcbFile = aFilePath;
+    else if( sourceType == PADS_FILE_TYPE::SCHEMATIC_ASCII )
+        result.schematicFile = aFilePath;
+
+    wxString sourceDir = sourceFn.GetPath();
+    wxString sourceBase = sourceFn.GetName();
+
+    wxDir dir( sourceDir );
+
+    if( !dir.IsOpened() )
+        return result;
+
+    static const std::vector<wxString> extensions = { wxS( "asc" ), wxS( "ASC" ), wxS( "txt" ),
+                                                      wxS( "TXT" ) };
+
+    wxString filename;
+    bool cont = dir.GetFirst( &filename );
+
+    while( cont )
+    {
+        wxFileName candidateFn( sourceDir, filename );
+        wxString candidatePath = candidateFn.GetFullPath();
+
+        if( candidatePath == aFilePath )
+        {
+            cont = dir.GetNext( &filename );
+            continue;
+        }
+
+        wxString ext = candidateFn.GetExt().Lower();
+        bool validExt = false;
+
+        for( const wxString& validExtension : extensions )
+        {
+            if( ext == validExtension.Lower() )
+            {
+                validExt = true;
+                break;
+            }
+        }
+
+        if( !validExt )
+        {
+            cont = dir.GetNext( &filename );
+            continue;
+        }
+
+        bool matchingBase = ( candidateFn.GetName() == sourceBase );
+
+        PADS_FILE_TYPE candidateType = DetectPadsFileType( candidatePath );
+
+        if( sourceType == PADS_FILE_TYPE::PCB_ASCII
+            && candidateType == PADS_FILE_TYPE::SCHEMATIC_ASCII )
+        {
+            if( matchingBase || result.schematicFile.IsEmpty() )
+            {
+                result.schematicFile = candidatePath;
+
+                // A matching base name is the best possible match, so stop here.
+                if( matchingBase )
+                {
+                    cont = dir.GetNext( &filename );
+                    continue;
+                }
+            }
+        }
+        else if( sourceType == PADS_FILE_TYPE::SCHEMATIC_ASCII
+                 && candidateType == PADS_FILE_TYPE::PCB_ASCII )
+        {
+            if( matchingBase || result.pcbFile.IsEmpty() )
+            {
+                result.pcbFile = candidatePath;
+
+                // A matching base name is the best possible match, so stop here.
+                if( matchingBase )
+                {
+                    cont = dir.GetNext( &filename );
+                    continue;
+                }
+            }
+        }
+
+        cont = dir.GetNext( &filename );
+    }
+
+    return result;
+}
+
+int ParseInt( const std::string& aStr, int aDefault, const std::string& aContext )
+{
+    try
+    {
+        return std::stoi( aStr );
+    }
+    catch( const std::exception& )
+    {
+        if( !aContext.empty() )
+        {
+            wxLogTrace( wxT( "PADS" ), wxT( "Parse error in %s: '%s' is not a valid integer" ),
+                        wxString::FromUTF8( aContext ), wxString::FromUTF8( aStr ) );
+        }
+
+        return aDefault;
+    }
+}
+
+
+double ParseDouble( const std::string& aStr, double aDefault, const std::string& aContext )
+{
+    try
+    {
+        return std::stod( aStr );
+    }
+    catch( const std::exception& )
+    {
+        if( !aContext.empty() )
+        {
+            wxLogTrace( wxT( "PADS" ), wxT( "Parse error in %s: '%s' is not a valid number" ),
+                        wxString::FromUTF8( aContext ), wxString::FromUTF8( aStr ) );
+        }
+
+        return aDefault;
+    }
+}
+
+
+wxString ConvertInvertedNetName( const std::string& aNetName )
+{
+    if( aNetName.empty() )
+        return wxString();
+
+    if( aNetName[0] == '/' )
+        return wxT( "~{" ) + ConvertText( aNetName.substr( 1 ) ) + wxT( "}" );
+
+    return ConvertText( aNetName );
+}
+
+
+wxString ConvertText( const std::string& aText )
+{
+    if( aText.empty() )
+        return wxString();
+
+    // PADS ASCII uses an 8-bit codepage, and a UTF-8 conversion drops the whole
+    // string on the first high byte. Length-aware to keep embedded NULs.
+    wxString result = wxString::FromUTF8( aText.data(), aText.size() );
+
+    if( result.IsEmpty() )
+    {
+        wxCSConv cp1252( wxFONTENCODING_CP1252 );
+        result = wxString( aText.data(), cp1252, aText.size() );
+
+        // Latin-1 maps every byte one-to-one when CP1252 has no mapping.
+        if( result.IsEmpty() )
+            result = wxString( aText.data(), wxConvISO8859_1, aText.size() );
+    }
+
+    return result;
+}
+
+
+LINE_STYLE PadsLineStyleToKiCad( int aPadsStyle )
+{
+    int8_t s = static_cast<int8_t>( aPadsStyle & 0xFF );
+
+    switch( s )
+    {
+    case 0:   return LINE_STYLE::DASH;
+    case 1:   return LINE_STYLE::SOLID;
+    case -1:  return LINE_STYLE::SOLID;
+    case -2:  return LINE_STYLE::DASH;
+    case -3:  return LINE_STYLE::DOT;
+    case -4:  return LINE_STYLE::DASHDOT;
+    case -5:  return LINE_STYLE::DASHDOTDOT;
+    default:  return LINE_STYLE::SOLID;
+    }
+}
+
+
+void DecodeJustification( int aJustification, GR_TEXT_H_ALIGN_T& aHJustify,
+                          GR_TEXT_V_ALIGN_T& aVJustify )
+{
+    int hCode = 0;
+    int vGroup = 0;
+
+    if( aJustification >= 8 )
+    {
+        vGroup = 2;  // middle
+        hCode = aJustification - 8;
+    }
+    else if( aJustification >= 2 )
+    {
+        vGroup = 1;  // top
+        hCode = aJustification - 2;
+    }
+    else
+    {
+        vGroup = 0;  // bottom
+        hCode = aJustification;
+    }
+
+    switch( hCode )
+    {
+    default:
+    case 0: aHJustify = GR_TEXT_H_ALIGN_LEFT;   break;
+    case 1: aHJustify = GR_TEXT_H_ALIGN_RIGHT;  break;
+    case 4: aHJustify = GR_TEXT_H_ALIGN_CENTER; break;
+    }
+
+    switch( vGroup )
+    {
+    default:
+    case 0: aVJustify = GR_TEXT_V_ALIGN_BOTTOM; break;
+    case 1: aVJustify = GR_TEXT_V_ALIGN_TOP;    break;
+    case 2: aVJustify = GR_TEXT_V_ALIGN_CENTER; break;
+    }
+}
+
+
+int PadsScaleCoord( double aVal, bool aIsX, double aOriginX, double aOriginY, double aScaleFactor )
+{
+    double origin = aIsX ? aOriginX : aOriginY;
+
+    long long origin_nm = static_cast<long long>( std::round( origin * aScaleFactor ) );
+    long long val_nm = static_cast<long long>( std::round( aVal * aScaleFactor ) );
+
+    long long result = aIsX ? ( val_nm - origin_nm ) : ( origin_nm - val_nm );
+
+    return static_cast<int>( std::clamp<long long>( result, std::numeric_limits<int>::min(),
+                                                    std::numeric_limits<int>::max() ) );
+}
+
+} // namespace PADS_COMMON

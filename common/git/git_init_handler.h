@@ -1,0 +1,88 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.TXT for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 3
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef GIT_INIT_HANDLER_H
+#define GIT_INIT_HANDLER_H
+
+#include <git/git_repo_mixin.h>
+#include <import_export.h>
+#include <wx/string.h>
+
+enum class InitResult
+{
+    Success,
+    AlreadyExists,
+    Error
+};
+
+struct RemoteConfig
+{
+    wxString url;
+    wxString username;
+    wxString password;
+    wxString sshKey;
+    KIGIT_COMMON::GIT_CONN_TYPE connType;
+};
+
+class APIEXPORT GIT_INIT_HANDLER : public KIGIT_REPO_MIXIN
+{
+public:
+    GIT_INIT_HANDLER( KIGIT_COMMON* aCommon );
+    virtual ~GIT_INIT_HANDLER();
+
+    /**
+     * Check if a directory is already a git repository
+     * @param aPath Directory path to check
+     * @return True if directory contains a git repository
+     */
+    bool IsRepository( const wxString& aPath );
+
+    /**
+     * Initialize a new git repository in the specified directory
+     * @param aPath Directory path where to initialize the repository
+     * @return InitResult indicating success, already exists, or error
+     */
+    InitResult InitializeRepository( const wxString& aPath );
+
+    /**
+     * Set up a remote for the repository
+     * @param aConfig Remote configuration parameters
+     * @return True on success, false on error
+     */
+    bool SetupRemote( const RemoteConfig& aConfig );
+};
+
+
+/**
+ * Apply KiCad's standard repo conventions to a project directory:
+ *   - seed .gitignore with KiCad-generated paths
+ *   - seed .gitattributes with `merge=kicad-*` lines so the in-process
+ *     libgit2 drivers and external `git merge` both route design files
+ *   - configure repo-local merge.kicad-*.driver / mergetool.kicad.cmd
+ *     pointing at the kicad-cli binary alongside the running process
+ *
+ * Each step is append-only: existing user content is preserved, never
+ * overwritten. Safe to call repeatedly. Used by both GIT_INIT_HANDLER
+ * (after init) and GIT_CLONE_HANDLER (after clone) so freshly-cloned
+ * repos get the same setup as freshly-init'd ones.
+ */
+APIEXPORT void ApplyKicadGitConventions( const wxString& aProjectPath );
+
+
+#endif // GIT_INIT_HANDLER_H

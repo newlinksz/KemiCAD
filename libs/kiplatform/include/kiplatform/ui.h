@@ -1,0 +1,341 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2020 Ian McInerney <Ian.S.McInerney at ieee.org>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef KIPLATFORM_UI_H_
+#define KIPLATFORM_UI_H_
+
+#include <wx/cursor.h>
+
+class wxChoice;
+class wxDataViewCtrl;
+class wxDialog;
+class wxNonOwnedWindow;
+class wxTopLevelWindow;
+class wxWindow;
+
+namespace KIPLATFORM
+{
+    namespace UI
+    {
+        /**
+         * Determine if the desktop interface is currently using a dark theme or a light theme.
+         *
+         * @return true if a dark theme is being used.
+         */
+        bool IsDarkTheme();
+
+        wxColour GetDialogBGColour();
+
+        /**
+         * Pass the current focus to the window. On OSX this will forcefully give the focus to
+         * the desired window, while on MSW and GTK it will simply call the wxWidgets SetFocus()
+         * function.
+         *
+         * @param aWindow is the window to pass focus to
+         */
+        void ForceFocus( wxWindow* aWindow );
+
+        /**
+         * Check to see if the given window is the currently active window (e.g. the window
+         * in the foreground the user is interacting with).
+         *
+         * @param aWindow is the window to check
+         */
+        bool IsWindowActive( wxWindow* aWindow );
+
+        /**
+         * Move a window's parent to be the top-level window and force the window to be on top.
+         *
+         * This only has an affect for OSX, it is a NOP for GTK and MSW.
+         *
+         * Apple in its infinite wisdom will raise a disabled window before even passing
+         * us the event, so we have no way to stop it.  Instead, we must set an order on
+         * the windows so that the quasi-modal will be pushed in front of the disabled
+         * window when it is raised.
+         *
+         * @param aWindow is the window to reparent
+         */
+        void ReparentModal( wxNonOwnedWindow* aWindow );
+
+        void ReparentWindow( wxNonOwnedWindow* aWindow, wxTopLevelWindow* aParent );
+
+        /*
+         * An ugly hack to fix an issue on OSX: cmd+c closes the dialog instead of copying the
+         * text if a button with wxID_CANCEL is used in a wxStdDialogButtonSizer created by
+         * wxFormBuilder: the label is &Cancel, and this accelerator key has priority over the
+         * standard copy accelerator.
+         * Note: problem also exists in other languages; for instance cmd+a closes dialogs in
+         * German because the button is &Abbrechen.
+         */
+        void FixupCancelButtonCmdKeyCollision( wxWindow* aWindow );
+
+        /**
+         * Checks if we designated a stock cursor for this OS as "OK" or else we may need to load a custom one
+         *
+         * @param aCursor is wxStockCursor we want to see if its acceptable
+         */
+        bool IsStockCursorOk( wxStockCursor aCursor );
+
+        /**
+         * Configure a wxChoice control to support a lot of entries by disabling functionality that makes
+         * adding new items become very expensive.
+         *
+         * @param aChoice is the choice box to modify
+         */
+        void LargeChoiceBoxHack( wxChoice* aChoice );
+
+        /**
+         * Configure a wxChoice control to ellipsize the shown text in the button with the ellipses
+         * placed at the end of the string.
+         *
+         * @param aChoice is the choice box to ellipsize
+         */
+        void EllipsizeChoiceBox( wxChoice* aChoice );
+
+        /**
+         * Tries to determine the pixel scaling factor currently in use for the window.  Under wx3.0, GTK
+         * fails to properly detect the scale factor.
+         * @param aWindow pointer to the window to check
+         * @return Pixel scale factor in use, defaulting to the wxWidgets method
+         */
+        double GetPixelScaleFactor( const wxWindow* aWindow );
+
+        /**
+         * Tries to determine the content scaling factor currently in use for the window.
+         * The content scaling factor is typically settable by the user and may differ from the
+         * pixel scaling factor.
+         */
+        double GetContentScaleFactor( const wxWindow* aWindow );
+
+        /**
+         * Return the refresh rate in Hz of the display showing most of the window, or 0 if unknown.
+         */
+        double GetDisplayRefreshRate( const wxWindow* aWindow );
+
+        /**
+         * Return the background and foreground colors for info bars in the current scheme
+         */
+        void GetInfoBarColours( wxColour& aFGColour, wxColour& aBGColour );
+
+        /**
+         * Create a window for widgets that are shown over a canvas without taking space from it.
+         *
+         * This is only needed where a child of the canvas cannot be drawn above its OpenGL
+         * surface.  The window stays at the top left corner of the canvas and above its surface,
+         * and the caller sets its size and shows it.
+         *
+         * @param aCanvas is the window to cover, which owns the new window
+         * @return the window, or nullptr if the widgets can be children of the canvas
+         */
+        wxWindow* CreateCanvasOverlay( wxWindow* aCanvas );
+
+        /**
+         * Tries to determine the size of the viewport of a scrollable widget (wxDataViewCtrl, wxGrid)
+         * that won't be obscured by scrollbars.
+         * @param aWindow pointer to the scrollable widget to check
+         * @return Viewport size that won't be obscured by scrollbars
+         */
+        wxSize GetUnobscuredSize( const wxWindow* aWindow );
+
+        /**
+         * Used to set overlay/non-overlay scrolling mode in a window.
+         * Implemented only on GTK.
+         */
+        void SetOverlayScrolling( const wxWindow* aWindow, bool overlay );
+
+        /**
+         * If the user has disabled icons system-wide, we check that here
+         */
+        bool AllowIconsInMenus();
+
+        /**
+         * Return whether wxGetKeyState() can query ordinary keys, beyond modifiers and lock keys.
+         * On GTK, this requires an active X11 display.
+         */
+        bool SupportsKeyState();
+
+        /**
+         * Returns the mouse position in screen coordinates.
+         * If we've just warped the cursor, returns the new coordinates.
+         */
+        wxPoint GetMousePosition();
+
+        /**
+         * Move the mouse cursor to a specific position relative to the window
+         * @param aWindow Window in which to position to mouse cursor
+         * @param aX destination x position
+         * @param aY destination y position
+         * @return true if the warp was successful
+         */
+        bool WarpPointer( wxWindow* aWindow, int aX, int aY );
+
+        /**
+         * Configures the IME mode of a given control handle
+         */
+        void ImmControl( wxWindow* aWindow, bool aEnable );
+
+        /**
+         * Asks the IME to cancel
+         */
+        void ImeNotifyCancelComposition( wxWindow* aWindow );
+
+        /**
+         * On Wayland, restricts the pointer movement to a rectangle slightly bigger than the given `wxWindow`.
+         * This way, the cursor doesn't exit the (bigger) application window and we retain control on it.
+         * Required to make the infinite mouse-drag work with fast movement.
+         * See https://gitlab.com/kicad/code/kicad/-/issues/7207#note_1562089503
+         * @param aWindow Window in which to position to mouse cursor
+         * @return true if infinite panning is supported
+         */
+        bool InfiniteDragPrepareWindow( wxWindow* aWindow );
+
+        /**
+         * On Wayland, allows the cursor to freely move again after a drag (see `InfiniteDragPrepareWindow`).
+         */
+        void InfiniteDragReleaseWindow();
+
+        /**
+         * Ensure that a window is visible on the screen.  On MacOS, this will make it visible
+         * in all Spaces.  Other platforms are nops.
+         *
+         * @param aWindow window to make visible
+         */
+        void EnsureVisible( wxWindow* aWindow );
+
+        /**
+         * Prepare a top-level window for reliable position round-tripping.
+         *
+         * On GTK/X11, default window gravity lets window-manager decorations affect the
+         * coordinates returned by wxWindow::GetPosition().  Some window managers, notably
+         * i3, can then shift a restored top-level window each time it is shown.  Other
+         * platforms are nops.
+         *
+         * @param aWindow window to prepare
+         */
+        void StabilizeWindowPosition( wxWindow* aWindow );
+
+        /**
+         * Intended to set the floating window level in macOS on a window
+         */
+        void SetFloatLevel( wxWindow* aWindow );
+
+        /**
+         * Release a modal window's parent-child relationship with its parent window.
+         * This only has an effect on macOS, it is a NOP for GTK and MSW.
+         *
+         * On macOS, modal dialogs are attached as child windows using addChildWindow,
+         * which causes them to disappear when dragged to a different monitor. This
+         * function removes that child relationship and sets the window to a floating
+         * level, allowing it to be freely moved across monitors while still staying
+         * above other windows.
+         */
+        void ReleaseChildWindow( wxNonOwnedWindow* aWindow );
+
+        /**
+         * Configure a file dialog to show network and virtual file systems.
+         *
+         * On GTK, file dialogs default to showing only local files, which excludes
+         * GVFS-mounted filesystems like Google Drive, SMB shares, SFTP connections,
+         * and removable media mounted through GVFS. This function configures the
+         * dialog to also show these non-local filesystems.
+         *
+         * This function must be called after creating the dialog but before calling
+         * ShowModal().
+         *
+         * This is a NOP on Windows and macOS where network filesystems are shown by default.
+         *
+         * @param aDialog is the file dialog to configure
+         */
+        void AllowNetworkFileSystems( wxDialog* aDialog );
+
+        /**
+         * Display server types reported by GetNativeWindowHandles().
+         */
+        enum NATIVE_DISPLAY_TYPE
+        {
+            DISPLAY_UNKNOWN  = 0,
+            DISPLAY_X11      = 1,
+            DISPLAY_WAYLAND  = 2,
+            DISPLAY_WIN32    = 3,
+            DISPLAY_COCOA    = 4,
+        };
+
+        /**
+         * Cancel any pending scroll-to-item request on @p aCtrl.
+         *
+         * GtkTreeView keeps a "scroll_to_path" reference that survives across model
+         * resets.  If the path becomes invalid (because the underlying rows were
+         * rebuilt or removed) the next frame-clock tick crashes in
+         * gtk_tree_view_get_row_height(NULL) from validate_visible_area.  Calling
+         * this helper before a model reset replaces the queued row reference with
+         * a column-only scroll request, which GtkTreeView frees on the way through
+         * its deferred-scroll branch.  No-op on MSW and macOS where the native
+         * controls do not exhibit this race.
+         */
+        void CancelPendingScroll( wxDataViewCtrl* aCtrl );
+
+        /**
+         * Tag a top-level window with the freedesktop application id of its installed
+         * launcher, setting the X11 WM_CLASS and, on Wayland, the surface application id.
+         *
+         * wxGTK derives the X11 res_class from the human-facing application display name and
+         * only feeds the Wayland application id (from the class name) on wx >= 3.3.1.  Neither
+         * matches the installed .desktop launcher, so a taskbar that groups by WM_CLASS
+         * mis-associates the windows with an unrelated application (wrong icon, name, and
+         * group).  Setting the id explicitly restores the association.  No-op on MSW and macOS,
+         * where the application identity comes from the AppUserModelID / bundle identifier.
+         *
+         * May be called before the window is realized; the GTK backend defers applying the hint
+         * to the realize/map signals, and also applies it immediately if already realized.
+         *
+         * @param aWindow is the top-level window to tag
+         * @param aClass is the desktop application id, e.g. org.kicad.kicad
+         */
+        void SetWMClass( wxWindow* aWindow, const wxString& aClass );
+
+        /**
+         * Get the native handles needed to create a GPU surface for \a aWindow.
+         *
+         * @param aHandle [out] receives the X11 Window, wl_surface*, HWND or NSView*, or nullptr on failure.
+         * @param aDisplay [out] receives the X11 Display* or wl_display*, otherwise nullptr.
+         * @param aDisplayType [out] receives a NATIVE_DISPLAY_TYPE when not nullptr.
+         */
+        void GetNativeWindowHandles( wxWindow* aWindow, void** aHandle, void** aDisplay,
+                                     int* aDisplayType = nullptr );
+
+        /**
+         * Prepare a realized widget for Vulkan or Metal rendering, before its first present.
+         *
+         * On GTK3/X11 this stops GTK's double-buffer blit from overwriting the GPU output. Other
+         * platforms need nothing.
+         */
+        void PrepareForExternalRendering( wxWindow* aWindow );
+
+        /**
+         * Keep a child visible on top of a parent prepared with PrepareForExternalRendering().
+         *
+         * On GTK3/X11 a child is painted into its parent's window, where the next present overwrites it.
+         * This makes the realized child's window native so the present is clipped around it.
+         */
+        void KeepAboveExternalRendering( wxWindow* aChild );
+    }
+}
+
+#endif // KIPLATFORM_UI_H_

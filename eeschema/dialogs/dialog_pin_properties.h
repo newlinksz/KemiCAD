@@ -1,0 +1,101 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2010 Jean-Pierre Charras, jp.charras at wanadoo.fr
+ * Copyright The KiCad Developers, see AUTHOR.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <wx/bmpcbox.h>
+#include <wx/dcclient.h>
+
+#include <pinshape_combobox.h>
+#include <pintype_combobox.h>
+
+#include <dialog_pin_properties_base.h>
+#include <widgets/unit_binder.h>
+#include <widgets/wx_collapsible_pane.h>
+#include <widgets/std_bitmap_button.h>
+#include <widgets/wx_grid.h>
+#include <sch_pin.h>
+#include <symbol_edit_frame.h>
+
+
+enum COL_ORDER
+{
+    COL_NAME,
+    COL_TYPE,
+    COL_SHAPE,
+
+    COL_COUNT       // keep as last
+};
+
+
+class ALT_PIN_DATA_MODEL;
+class SYMBOL_PREVIEW_WIDGET;
+
+
+class DIALOG_PIN_PROPERTIES : public DIALOG_PIN_PROPERTIES_BASE
+{
+public:
+    DIALOG_PIN_PROPERTIES( SYMBOL_EDIT_FRAME* parent, SCH_PIN* aPin, bool aFocusPinNumber );
+    ~DIALOG_PIN_PROPERTIES() override;
+
+    bool TransferDataToWindow() override;
+    bool TransferDataFromWindow() override;
+
+protected:
+    void adjustGridColumns();
+    wxString getSyncPinsMessage();
+
+    void OnPropertiesChange( wxCommandEvent& event ) override;
+    void onAddAlternate( wxCommandEvent& event );
+    void onDeleteAlternate( wxCommandEvent& event );
+    void OnSize( wxSizeEvent& event ) override;
+    void OnUpdateUI( wxUpdateUIEvent& event ) override;
+
+private:
+    SYMBOL_EDIT_FRAME*     m_frame;
+    SCH_PIN*               m_pin;
+
+    LIB_SYMBOL*            m_dummyParent;
+    SCH_PIN*               m_dummyPin;                   // a working copy used to show changes
+    SYMBOL_PREVIEW_WIDGET* m_previewWidget;
+
+    WX_COLLAPSIBLE_PANE*   m_alternatesTurndown;
+    WX_GRID*               m_alternatesGrid;
+    STD_BITMAP_BUTTON*     m_addAlternate;
+    STD_BITMAP_BUTTON*     m_deleteAlternate;
+
+    UNIT_BINDER            m_posX;
+    UNIT_BINDER            m_posY;
+    UNIT_BINDER            m_pinLength;
+    UNIT_BINDER            m_nameSize;
+    UNIT_BINDER            m_numberSize;
+
+    VECTOR2I               m_origPos;
+
+    ALT_PIN_DATA_MODEL*    m_alternatesDataModel;
+
+    int                    m_delayedFocusRow;
+    int                    m_delayedFocusColumn;
+
+    std::map<int, int>     m_originalColWidths;          // map col-number : orig-col-width
+    wxSize                 m_size;
+    bool                   m_initialized;
+    inline static bool     s_alternatesTurndownOpen = false;
+};

@@ -1,0 +1,164 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2024 Jon Evans <jon@craftyjon.com>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <deque>
+#include <memory>
+#include <set>
+
+#include <wx/event.h>
+
+#include <api/api_plugin.h>
+#include <frame_type.h>
+#include <json_schema_validator.h>
+#include <kicommon.h>
+
+class REPORTER;
+class wxTimer;
+
+/// Event used for marking async plugin setup tasks as done
+extern const KICOMMON_API wxEventTypeTag<wxCommandEvent> EDA_EVT_PLUGIN_MANAGER_JOB_FINISHED;
+
+/// Notifies other parts of KiCad when plugin availability changes
+extern const KICOMMON_API wxEventTypeTag<wxCommandEvent> EDA_EVT_PLUGIN_AVAILABILITY_CHANGED;
+
+/**
+ * Responsible for loading plugin definitions for API-based plugins (ones that do not run inside
+ * KiCad itself, but instead are launched as external processes by KiCad)
+ */
+class KICOMMON_API API_PLUGIN_MANAGER : public wxEvtHandler
+{
+public:
+    API_PLUGIN_MANAGER( wxEvtHandler* aParent );
+
+    /**
+     * Clears the loaded plugins and actions and re-scans the filesystem to register new ones.
+     * @param aDirectoryToScan can be provided to scan an arbitrary directory instead of the
+     *                         stock paths; provided for QA testing.
+     * @param aReporter is a #REPORTER object to write status information to.
+     */
+    void ReloadPlugins( std::optional<wxString> aDirectoryToScan = std::nullopt,
+                        std::shared_ptr<REPORTER> aReporter = nullptr );
+
+    /**
+     * Removes the given plugin's virtual environment (if any) and schedules a new one to be
+     * created with the currently-configured interpreter.
+     * @return true if the environment was removed and recreation was scheduled
+     */
+    bool RecreatePluginEnvironment( const wxString& aIdentifier );
+
+    void HandlePythonInterpreterChanged();
+
+    void InvokeAction( const wxString& aIdentifier,
+                       std::shared_ptr<REPORTER> aReporter = nullptr );
+
+    /**
+     * Invokes an action synchronously, capturing its output.  Mainly used for things like
+     * wizards that have actions that return quickly and pass data to KiCad via stdout.
+     * @param aIdentifier is the plugin action to invoke
+     * @param aExtraArgs are extra arguments to pass to the action beyond the ones specified in the
+     *                   plugin configuration file
+     * @param aStdout is a pointer to a string to fill with the stdout output of the action
+     * @param aStderr is a pointer to a string to fill with the stderr output of the action
+     * @param aReporter is a #REPORTER object to write status information to.
+     * @return the exit code from the action process
+     */
+    int InvokeActionSync( const wxString& aIdentifier, std::vector<wxString> aExtraArgs,
+                          wxString* aStdout = nullptr, wxString* aStderr = nullptr,
+                          std::shared_ptr<REPORTER> aReporter = nullptr );
+
+    bool Busy() const;
+
+    std::optional<const PLUGIN_ACTION*> GetAction( const wxString& aIdentifier );
+
+    std::vector<const PLUGIN_ACTION*> GetActionsForScope( PLUGIN_ACTION_SCOPE aScope );
+
+    std::map<int, wxString>& ButtonBindings( FRAME_T aFrame );
+
+    std::map<int, wxString>& MenuBindings( FRAME_T aFrame );
+
+    std::shared_ptr<REPORTER> GetReporter() { return m_reloadReporter; }
+
+private:
+    wxString pluginName( const wxString& aIdentifier ) const;
+
+    void processPluginDependencies();
+
+    void processNextJob( wxCommandEvent& aEvent );
+
+    bool cancelPluginJobs( const wxString& aIdentifier );
+
+    void recreateCancelledPlugin( const wxString& aIdentifier );
+
+    int doInvokeAction( const wxString& aIdentifier, std::vector<wxString> aExtraArgs,
+                        bool aSync = false, wxString* aStdout = nullptr,
+                        wxString* aStderr = nullptr,
+                        std::shared_ptr<REPORTER> aReporter = nullptr );
+
+    wxEvtHandler* m_parent;
+
+    std::set<std::unique_ptr<API_PLUGIN>, CompareApiPluginIdentifiers> m_plugins;
+
+    std::map<wxString, const API_PLUGIN*> m_pluginsCache;
+
+    std::map<wxString, const PLUGIN_ACTION*> m_actionsCache;
+
+    /// Map of plugin identifier to a path for the plugin's virtual environment, if it has one
+    std::map<wxString, wxString> m_environmentCache;
+
+    /// Map of button wx item id to action identifier, per frame
+    std::map<FRAME_T, std::map<int, wxString>> m_buttonBindings;
+
+    /// Map of menu wx item id to action identifier, per frame
+    std::map<FRAME_T, std::map<int, wxString>> m_menuBindings;
+
+    std::set<wxString> m_readyPlugins;
+
+    std::set<wxString> m_busyPlugins;
+
+    enum class JOB_TYPE
+    {
+        CREATE_ENV,
+        SETUP_ENV,
+        INSTALL_REQUIREMENTS
+    };
+
+    /// Map of plugin identifier to the pid of its currently-running setup process, if any
+    std::map<wxString, long> m_runningPids;
+
+    /// Plugins whose setup jobs were cancelled and need their environment recreated
+    std::set<wxString> m_cancelledPlugins;
+
+    struct JOB
+    {
+        JOB_TYPE type;
+        wxString identifier;
+        wxString plugin_path;
+        wxString env_path;
+    };
+
+    std::deque<JOB> m_jobs;
+
+    std::unique_ptr<JSON_SCHEMA_VALIDATOR> m_schema_validator;
+
+    std::shared_ptr<REPORTER> m_reloadReporter;
+
+    [[maybe_unused]] long     m_lastPid;
+    [[maybe_unused]] wxTimer* m_raiseTimer;
+};

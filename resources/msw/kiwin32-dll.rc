@@ -1,0 +1,48 @@
+#include <brand.h>
+#include <winver.h> // defines VS_VERSION_INFO
+#define INCLUDE_KICAD_VERSION
+#include <kicad_build_version.h>
+
+// Windows file properties always use the product display version.
+#define RC_VER_FILEVER BRAND_RC_VER
+#define RC_VER_PRODVER BRAND_RC_VER
+#define RC_VER_FILEVER_STR BRAND_RC_VER_STR
+#define RC_VER_PRODVER_STR BRAND_RC_VER_STR
+
+#ifndef DEBUG
+#define VER_DEBUG 0
+#else
+#define VER_DEBUG VS_FF_DEBUG
+#endif
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION RC_VER_FILEVER
+PRODUCTVERSION RC_VER_PRODVER
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS (VER_DEBUG)
+FILEOS VOS__WINDOWS32
+FILETYPE VFT_DLL
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            // this gets displayed in the windows 10 task manager
+            VALUE "FileDescription", RC_VER_FILE_DESCRIPTION
+            VALUE "FileVersion", RC_VER_FILEVER_STR
+            //original filename without extension
+            VALUE "InternalName", RC_VER_INTERNALNAME
+            VALUE "LegalCopyright", "Copyright The KiCad Developers"
+            // the exe name
+            VALUE "OriginalFilename", RC_VER_ORIGINALFILENAME
+            // name of distributed package
+            VALUE "ProductName", BRAND_NAME
+            VALUE "ProductVersion", RC_VER_PRODVER_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1252
+    END
+END

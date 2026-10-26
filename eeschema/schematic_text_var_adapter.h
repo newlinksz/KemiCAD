@@ -1,0 +1,97 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef SCHEMATIC_TEXT_VAR_ADAPTER_H_
+#define SCHEMATIC_TEXT_VAR_ADAPTER_H_
+
+#include <schematic.h>
+#include <text_var_dependency.h>
+
+#include <set>
+#include <unordered_set>
+
+class SCH_ITEM;
+class SCH_SYMBOL;
+
+
+/**
+ * Bridges SCHEMATIC's listener stream into the generic TEXT_VAR_TRACKER.
+ *
+ * Mirrors BOARD_TEXT_VAR_ADAPTER but for schematic items. A SCH_SYMBOL can
+ * carry multiple instance-specific references (different refdes on different
+ * SCH_SHEET_PATH instances), so cross-ref sources are emitted for every
+ * instance the symbol lives on.
+ */
+class SCHEMATIC_TEXT_VAR_ADAPTER : public SCHEMATIC_LISTENER
+{
+public:
+    explicit SCHEMATIC_TEXT_VAR_ADAPTER( SCHEMATIC& aSchematic );
+    ~SCHEMATIC_TEXT_VAR_ADAPTER() override = default;
+
+    TEXT_VAR_TRACKER&       Tracker()       { return m_tracker; }
+    const TEXT_VAR_TRACKER& Tracker() const { return m_tracker; }
+
+    void OnSchItemsAdded( SCHEMATIC& aSch, std::vector<SCH_ITEM*>& aItems ) override;
+    void OnSchItemsRemoved( SCHEMATIC& aSch, std::vector<SCH_ITEM*>& aItems ) override;
+    void OnSchItemsChanged( SCHEMATIC& aSch, std::vector<SCH_ITEM*>& aItems ) override;
+
+    /**
+     * Walk every sheet in the hierarchy and register text-bearing items.
+     * Loaders and importers populate screens without per-item notifications,
+     * so this runs whenever the whole hierarchy or its connectivity is rebuilt.
+     */
+    void RebuildIndex();
+
+    /**
+     * Rebuild only if a sheet was added or removed, or the set of screens in
+     * the hierarchy differs from the indexed one. Cheap enough to run on every
+     * hierarchy refresh.
+     */
+    void SyncToHierarchy();
+
+    /// Force the next SyncToHierarchy() to rebuild.
+    void MarkHierarchyChanged() { m_hierarchyChanged = true; }
+
+    /**
+     * Return the keys @p aItem could source as a cross-reference target. For
+     * a SCH_SYMBOL, these are one `${REFDES:*}` key and one `${KIID_PATH:*}`
+     * key per sheet instance. Stored text holds the KIID path form (see
+     * SCHEMATIC::ConvertRefsToKIIDs); the refdes form is what users type.
+     */
+    std::vector<TEXT_VAR_REF_KEY> ExtractSourceKeys( EDA_ITEM* aItem ) const;
+
+private:
+    static SCH_ITEM*                     trackedItem( SCH_ITEM* aItem );
+    static std::vector<TEXT_VAR_REF_KEY> collectKeys( SCH_ITEM* aItem );
+
+    std::set<SCH_SCREEN*>         hierarchyScreens() const;
+    void                          noteSheets( const std::vector<SCH_ITEM*>& aItems );
+    std::vector<TEXT_VAR_REF_KEY> trackKeys( SCH_ITEM* aItem );
+    void                          registerItem( SCH_ITEM* aItem );
+    void                          handleItemChanged( SCH_ITEM* aItem );
+
+    SCHEMATIC&                    m_schematic;
+    TEXT_VAR_TRACKER              m_tracker;
+    std::unordered_set<SCH_ITEM*> m_registered;
+    std::set<SCH_SCREEN*>         m_indexedScreens;
+    bool                          m_hierarchyChanged = false;
+};
+
+
+#endif // SCHEMATIC_TEXT_VAR_ADAPTER_H_

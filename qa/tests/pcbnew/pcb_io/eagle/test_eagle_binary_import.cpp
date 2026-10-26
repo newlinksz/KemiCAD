@@ -1,0 +1,525 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.TXT for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * @file test_eagle_binary_import.cpp
+ * Test suite for import of pre-v6 binary Eagle *.brd board files.
+ */
+
+#include <pcbnew_utils/board_test_utils.h>
+#include <pcbnew_utils/board_file_utils.h>
+#include <qa_utils/wx_utils/unit_test_utils.h>
+
+#include <pcbnew/pcb_io/eagle/pcb_io_eagle.h>
+
+#include <board.h>
+#include <footprint.h>
+#include <netinfo.h>
+#include <pad.h>
+#include <pcb_shape.h>
+#include <pcb_text.h>
+#include <pcb_track.h>
+#include <zone.h>
+
+#include <algorithm>
+#include <map>
+#include <set>
+#include <vector>
+
+#include <wx/filename.h>
+
+
+struct EAGLE_BINARY_IMPORT_FIXTURE
+{
+    EAGLE_BINARY_IMPORT_FIXTURE() {}
+
+    BOARD* loadBoard( const std::string& aRelPath )
+    {
+        std::string dataPath = KI_TEST::GetPcbnewTestDataDir() + aRelPath;
+
+        // Every sample these tests name is committed, so a missing one is a broken fixture
+        // rather than an optional extra; skipping it silently would assert nothing at all
+        BOOST_REQUIRE_MESSAGE( wxFileName::FileExists( dataPath ),
+                               "missing binary Eagle sample " + dataPath );
+
+        PCB_IO_EAGLE eaglePlugin;
+
+        // The binary format is identified by content, never by extension.
+        BOOST_CHECK( eaglePlugin.CanReadBoard( dataPath ) );
+
+        std::unique_ptr<BOARD> board;
+
+        try
+        {
+            board = eaglePlugin.LoadBoard( dataPath );
+        }
+        catch( const IO_ERROR& e )
+        {
+            BOOST_FAIL( "IO_ERROR loading binary Eagle board: " + e.What().ToStdString() );
+        }
+        catch( const std::exception& e )
+        {
+            BOOST_FAIL( std::string( "Exception loading binary Eagle board: " ) + e.what() );
+        }
+        return board.release();
+    }
+
+    static std::vector<ZONE*> copperPours( BOARD* aBoard )
+    {
+        std::vector<ZONE*> pours;
+
+        for( ZONE* zone : aBoard->Zones() )
+        {
+            if( !zone->GetIsRuleArea() && IsCopperLayer( zone->GetFirstLayer() ) )
+                pours.push_back( zone );
+        }
+
+        return pours;
+    }
+};
+
+
+BOOST_FIXTURE_TEST_SUITE( EagleBinaryImport, EAGLE_BINARY_IMPORT_FIXTURE )
+
+
+/**
+ * Load a v4/v5 binary board (magic 0x10 0x00) which also carries the trailing
+ * free-text and DRC sections. This load is the smoke test: the binary stream is
+ * decoded into a synthesized XML DOM and then walked by the shared XML loader.
+ */
+BOOST_AUTO_TEST_CASE( LoadBinaryV4V5 )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/blink1_b1a.brd" ) );
+    BOOST_REQUIRE( board );
+
+    BOOST_CHECK_GT( board->Footprints().size(), 0u );
+    BOOST_CHECK_GT( board->Tracks().size(), 0u );
+    BOOST_CHECK_GT( board->GetNetInfo().GetNetCount(), 1u );
+}
+
+
+/**
+ * Load a v3 binary board (magic 0x10 0x80). v3 files have no DRC or free-text
+ * sections, so this exercises the graceful-fallback path where the trailing
+ * sections are absent.
+ */
+BOOST_AUTO_TEST_CASE( LoadBinaryV3 )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/blink1_v1a.brd" ) );
+    BOOST_REQUIRE( board );
+
+    BOOST_CHECK_GT( board->Footprints().size(), 0u );
+    BOOST_CHECK_GT( board->Tracks().size(), 0u );
+}
+
+
+/**
+ * Regression test for custom element attributes. The binary attribute record has
+ * no name field, so the decoder once emitted nameless \<attribute\> nodes that the
+ * shared XML reader rejected ("required attribute name is missing"). The decoder
+ * now drops those unrecoverable nodes, so the board loads.
+ */
+BOOST_AUTO_TEST_CASE( LoadV3CustomAttributes )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/rocketgps.brd" ) );
+    BOOST_REQUIRE( board );
+
+    BOOST_CHECK_GT( board->Footprints().size(), 0u );
+    BOOST_CHECK_GT( board->Tracks().size(), 0u );
+    BOOST_CHECK_GT( board->GetNetInfo().GetNetCount(), 1u );
+}
+
+
+/**
+ * Regression test for unnamed (auto-generated) signals. Their empty net name
+ * collided with the reserved unconnected net, so the net code requested for every
+ * item routed on them was never registered, tripping the m_netinfo assertion in
+ * BOARD_CONNECTED_ITEM::SetNetCode(). Unnamed nets now get a unique fallback name
+ * and items take the net code the board actually assigned.
+ */
+BOOST_AUTO_TEST_CASE( LoadV3UnnamedSignals )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/boomchak.brd" ) );
+    BOOST_REQUIRE( board );
+
+    BOOST_CHECK_GT( board->Footprints().size(), 0u );
+    BOOST_CHECK_GT( board->Tracks().size(), 0u );
+    BOOST_CHECK_GT( board->GetNetInfo().GetNetCount(), 1u );
+
+    // Every routed item must resolve to a real net; an orphaned net code would
+    // have aborted the load before this point.
+    for( PCB_TRACK* track : board->Tracks() )
+        BOOST_CHECK( track->GetNet() != nullptr );
+}
+
+
+/**
+ * Regression test for degenerate (vertex-less) polygons. A package polygon with
+ * no vertices dereferenced an empty vertex list in packagePolygon(); the loader
+ * now skips polygons with fewer than three vertices, matching loadPolygon().
+ */
+BOOST_AUTO_TEST_CASE( LoadV4V5DegeneratePolygons )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/turnemoff.brd" ) );
+    BOOST_REQUIRE( board );
+
+    BOOST_CHECK_GT( board->Footprints().size(), 0u );
+    BOOST_CHECK_GT( board->Tracks().size(), 0u );
+}
+
+
+/**
+ * A text string too long for the 6-byte inline field is stored as a 0x7F marker plus a
+ * pointer into the trailing free-text section, which readNotes() and resolveLongPointers()
+ * reassemble. Both asserted strings exceed the inline field, so neither can survive the
+ * import unless that indirection resolves.
+ */
+BOOST_AUTO_TEST_CASE( LoadBinaryLongText )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/blink1_b1a.brd" ) );
+    BOOST_REQUIRE( board );
+
+    std::set<wxString> texts;
+
+    for( BOARD_ITEM* item : board->Drawings() )
+    {
+        if( PCB_TEXT* text = dynamic_cast<PCB_TEXT*>( item ) )
+            texts.insert( text->GetText() );
+    }
+
+    BOOST_CHECK( texts.count( wxS( "blinkm.thingm.com" ) ) );
+    BOOST_CHECK( texts.count( wxS( "BlinkM USB" ) ) );
+}
+
+
+/**
+ * Regression test for the binary rotation decode. boomchak places LED1..LED16 in a
+ * ring spaced 22.5 degrees apart. The original decoder routed every angle below 90
+ * degrees through a v3 fallback that masked the wrong nibble, collapsing LED2, LED3
+ * and LED4 onto a single 180 degree orientation; the angle is now read as the
+ * full-circle / 4096 fixed-point value the format stores for all versions.
+ */
+BOOST_AUTO_TEST_CASE( LoadV3FootprintRotationRing )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/boomchak.brd" ) );
+    BOOST_REQUIRE( board );
+
+    std::map<int, double> ledRot;
+
+    for( FOOTPRINT* fp : board->Footprints() )
+    {
+        long n = 0;
+
+        if( fp->GetReference().StartsWith( wxS( "LED" ) ) && fp->GetReference().Mid( 3 ).ToLong( &n ) )
+            ledRot[(int) n] = fp->GetOrientation().AsDegrees();
+    }
+
+    for( int n = 1; n < 16; n++ )
+    {
+        BOOST_REQUIRE_MESSAGE( ledRot.count( n ) && ledRot.count( n + 1 ),
+                               "expected ring footprints LED" << n << " and LED" << ( n + 1 ) );
+
+        double step = ledRot[n + 1] - ledRot[n];
+
+        while( step > 180.0 )
+            step -= 360.0;
+
+        while( step <= -180.0 )
+            step += 360.0;
+
+        BOOST_CHECK_CLOSE( step, 22.5, 0.5 );
+    }
+}
+
+
+/**
+ * Regression test for unmapped Eagle layers. Layers with no automatic KiCad target
+ * (Eagle tRestrict/bRestrict/vRestrict/Measures and similar) resolve to UNSELECTED_LAYER
+ * during a headless import, where no dialog can remap them. The item loaders only
+ * skipped UNDEFINED_LAYER, so graphics on those layers were stranded on the out-of-range
+ * UNSELECTED_LAYER (-2). Restrict layers carry keepout shapes, which must survive as rule
+ * areas even though they have no graphic layer; only the genuinely unmappable graphics
+ * are dropped. boomchak and turnemoff exercise both halves.
+ */
+BOOST_AUTO_TEST_CASE( LoadDropsUnmappedLayers )
+{
+    auto invalidLayerItems =
+            []( BOARD* board )
+            {
+                auto bad = []( PCB_LAYER_ID l ) { return (int) l < 0 || (int) l >= PCB_LAYER_ID_COUNT; };
+
+                int count = 0;
+
+                for( BOARD_ITEM* item : board->Drawings() )
+                    count += bad( item->GetLayer() );
+
+                for( PCB_TRACK* track : board->Tracks() )
+                    count += bad( track->GetLayer() );
+
+                for( FOOTPRINT* fp : board->Footprints() )
+                {
+                    for( BOARD_ITEM* item : fp->GraphicalItems() )
+                        count += bad( item->GetLayer() );
+                }
+
+                return count;
+            };
+
+    auto ruleAreas =
+            []( BOARD* board )
+            {
+                int count = 0;
+
+                for( ZONE* zone : board->Zones() )
+                    count += zone->GetIsRuleArea();
+
+                return count;
+            };
+
+    for( const char* relPath : { "plugins/eagle_binary/boomchak.brd",
+                                 "plugins/eagle_binary/turnemoff.brd" } )
+    {
+        std::unique_ptr<BOARD> board( loadBoard( relPath ) );
+        BOOST_REQUIRE( board );
+
+        BOOST_CHECK_EQUAL( invalidLayerItems( board.get() ), 0 );
+    }
+
+    // turnemoff carries hundreds of via-keepout rectangles on the vRestrict layer; the
+    // unmapped-layer handling must keep them as rule areas, not drop them along with the
+    // unmappable graphics.
+    std::unique_ptr<BOARD> turnemoff( loadBoard( "plugins/eagle_binary/turnemoff.brd" ) );
+
+    if( turnemoff )
+        BOOST_CHECK_GT( ruleAreas( turnemoff.get() ), 500 );
+}
+
+
+/**
+ * Regression test for the six-byte inline text field. Eagle stores a text-family
+ * record's string in the final six bytes of its 24-byte block; the decoder read
+ * only five, so the six-character ">VALUE" arrived as ">VALU". That truncated
+ * string missed the ">VALUE" special case and fell through to the generic variable
+ * substitution, producing the unresolvable "${VALU}" placeholder the DRC flagged.
+ * blink1_b1a places ">VALUE" on several footprints, so a correct decode routes each
+ * into the footprint value field and never emits the truncated placeholder.
+ */
+BOOST_AUTO_TEST_CASE( LoadRoutesSmashedValueText )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/blink1_b1a.brd" ) );
+    BOOST_REQUIRE( board );
+
+    auto footprintTexts =
+            [&]()
+            {
+                std::set<wxString> texts;
+
+                for( FOOTPRINT* fp : board->Footprints() )
+                {
+                    texts.insert( fp->Value().GetText() );
+
+                    for( BOARD_ITEM* item : fp->GraphicalItems() )
+                    {
+                        if( PCB_TEXT* text = dynamic_cast<PCB_TEXT*>( item ) )
+                            texts.insert( text->GetText() );
+                    }
+                }
+
+                return texts;
+            };
+
+    std::set<wxString> fpTexts = footprintTexts();
+
+    BOOST_CHECK( !fpTexts.contains( wxS( "${VALU}" ) ) );
+    BOOST_CHECK( !fpTexts.contains( wxS( ">VALU" ) ) );
+}
+
+
+/**
+ * Regression test for copper pour polygons. Eagle stores a polygon outline as a chain
+ * of connected wire segments, but the XML reader expects \<vertex\> nodes; the binary
+ * decoder emitted the raw wires, so loadPolygon() saw zero vertices and dropped every
+ * pour ("less than 3 vertices"). The decoder now rebuilds the vertices from the segment
+ * start points. boomchak carries two signal pours on copper (Eagle layers 1 and 16).
+ */
+BOOST_AUTO_TEST_CASE( LoadV3CopperPourPolygons )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/boomchak.brd" ) );
+    BOOST_REQUIRE( board );
+
+    std::vector<ZONE*> pours = copperPours( board.get() );
+
+    BOOST_REQUIRE_GE( pours.size(), 2u );
+
+    // A pour rebuilt from segment start points must yield a single closed outline with at
+    // least three corners; a botched conversion would collapse it or leave it empty.
+    for( ZONE* zone : pours )
+    {
+        BOOST_CHECK_EQUAL( zone->Outline()->OutlineCount(), 1 );
+        BOOST_CHECK_GE( zone->GetNumCorners(), 3 );
+    }
+
+    // A pour also keeps the signal it was poured on, so it can still be filled after import
+    BOOST_CHECK( std::any_of( pours.begin(), pours.end(),
+                              []( ZONE* aZone )
+                              {
+                                  return aZone->GetNetname() == wxS( "GND" );
+                              } ) );
+}
+
+
+/**
+ * Regression test for issue 24827. Eagle 4.x pad and SMD records carry the same
+ * rotation word and offset-19 name as the 5.x layout, but their signature clears
+ * the bits that distinguished the two layouts, so every pad bound the Eagle 3.x
+ * short row and read an empty name. Contactrefs resolve to a pad by name, so all
+ * of an element's pads collapsed onto whichever signal was written last, wiring
+ * every multi-pin part to a single net. brenner57e is a 4.x board; a correct
+ * decode names each pad and keeps its signals distinct.
+ */
+BOOST_AUTO_TEST_CASE( LoadIssue24827PadNamesAndSignals )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/issue24827_brenner57e.brd" ) );
+    BOOST_REQUIRE( board );
+
+    BOOST_REQUIRE_GT( board->Footprints().size(), 0u );
+
+    int padsWithNumber = 0;
+    int padsWithoutNumber = 0;
+    int multiPinPartsWithDistinctNets = 0;
+
+    for( FOOTPRINT* fp : board->Footprints() )
+    {
+        std::set<int> nets;
+
+        for( PAD* pad : fp->Pads() )
+        {
+            if( pad->GetNumber().IsEmpty() )
+                padsWithoutNumber++;
+            else
+                padsWithNumber++;
+
+            nets.insert( pad->GetNetCode() );
+        }
+
+        if( fp->Pads().size() > 1 && nets.size() > 1 )
+            multiPinPartsWithDistinctNets++;
+    }
+
+    // The pad-name decode is the whole fix: every through-hole pad in this board
+    // carries a numeric name, so an empty-name pad means the short row still won.
+    BOOST_CHECK_GT( padsWithNumber, 0 );
+    BOOST_CHECK_EQUAL( padsWithoutNumber, 0 );
+
+    // With names restored the contactref keys no longer collide, so multi-pin parts
+    // spread across several signals instead of collapsing onto one.
+    BOOST_CHECK_GT( multiPinPartsWithDistinctNets, 0 );
+}
+
+
+/**
+ * Regression test for the pad shapes in issue 24827. The binary stores a pad's shape
+ * as an ordinal, but the shared XML reader matches it by name and falls back to round
+ * for anything else, so every through-hole pad imported as a circle. The ordinal maps
+ * one-to-one to the reader's shape names: brenner57e's 0207 resistors carry octagon
+ * pads (imported as chamfered rectangles) and its TO-92 transistors oblong pads
+ * (imported as ovals), which also pins down the mapping direction.
+ */
+BOOST_AUTO_TEST_CASE( LoadIssue24827PadShapes )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/issue24827_brenner57e.brd" ) );
+    BOOST_REQUIRE( board );
+
+    auto shapeOf =
+            [&]( const wxString& aRef ) -> PAD_SHAPE
+            {
+                for( FOOTPRINT* fp : board->Footprints() )
+                {
+                    if( fp->GetReference() == aRef && !fp->Pads().empty() )
+                        return fp->Pads().front()->GetShape( PADSTACK::ALL_LAYERS );
+                }
+
+                return PAD_SHAPE::CIRCLE;
+            };
+
+    // R10 is an 0207 resistor (Eagle octagon pads); Q2 is a TO-92 transistor (oblong).
+    // Both decoded to circles while the shape ordinal was ignored, and swapping the
+    // mapping would trade their shapes.
+    BOOST_CHECK_EQUAL( static_cast<int>( shapeOf( wxS( "R10" ) ) ),
+                       static_cast<int>( PAD_SHAPE::CHAMFERED_RECT ) );
+    BOOST_CHECK_EQUAL( static_cast<int>( shapeOf( wxS( "Q2" ) ) ),
+                       static_cast<int>( PAD_SHAPE::OVAL ) );
+}
+
+/**
+ * Regression test for the curved-wire arcs in issue 24827. A curved wire stores its
+ * arc center as three bytes interleaved with the endpoint fields; the decoder combined
+ * them with a byte bias that neither recovered the stored byte nor formed a valid
+ * 24-bit value, so the center landed far from the body. The TO-92 transistor outlines
+ * were the visible casualty: Q2's rounded back flattened and IC3's sides caved inward.
+ * Both packages draw their silk body as concentric arcs of one circle, so a correct
+ * decode leaves every body arc sharing a center and radius.
+ */
+BOOST_AUTO_TEST_CASE( LoadIssue24827CurvedWireArcs )
+{
+    std::unique_ptr<BOARD> board( loadBoard( "plugins/eagle_binary/issue24827_brenner57e.brd" ) );
+    BOOST_REQUIRE( board );
+
+    auto bodyArcs =
+            [&]( const wxString& aRef )
+            {
+                std::vector<PCB_SHAPE*> arcs;
+
+                for( FOOTPRINT* fp : board->Footprints() )
+                {
+                    if( fp->GetReference() != aRef )
+                        continue;
+
+                    for( BOARD_ITEM* item : fp->GraphicalItems() )
+                    {
+                        PCB_SHAPE* shape = dynamic_cast<PCB_SHAPE*>( item );
+
+                        if( shape && shape->GetShape() == SHAPE_T::ARC && shape->GetLayer() == F_SilkS )
+                            arcs.push_back( shape );
+                    }
+                }
+
+                return arcs;
+            };
+
+    // A scattered center is exactly the flattened/indented arc symptom, so require the
+    // body arcs of each transistor to stay concentric to a fraction of the body radius.
+    for( const wxString& ref : { wxString( "Q2" ), wxString( "IC3" ) } )
+    {
+        std::vector<PCB_SHAPE*> arcs = bodyArcs( ref );
+        BOOST_REQUIRE_GT( arcs.size(), 1u );
+
+        VECTOR2I center = arcs.front()->GetCenter();
+
+        for( PCB_SHAPE* arc : arcs )
+        {
+            int dist = ( arc->GetCenter() - center ).EuclideanNorm();
+            BOOST_CHECK_MESSAGE( dist < pcbIUScale.mmToIU( 0.5 ),
+                                 ref << " silk arc center is " << dist / 1e6 << " mm off the body center" );
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_SUITE_END()

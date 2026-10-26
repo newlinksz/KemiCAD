@@ -1,0 +1,354 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2012 Jean-Pierre Charras, jp.charras at wanadoo.fr
+ * Copyright (C) 2012 SoftPLC Corporation, Dick Hollenbeck <dick@softplc.com>
+ * Copyright (C) 2012 Wayne Stambaugh <stambaughw@verizon.net>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+#include "pcb_point.h"
+
+#include <api/api_enums.h>
+#include <api/api_utils.h>
+#include <api/board/board_types.pb.h>
+#include <base_units.h>
+#include <bitmaps.h>
+#include <board.h>
+#include <eda_draw_frame.h>
+#include <footprint.h>
+#include <geometry/geometry_utils.h>
+#include <geometry/shape_circle.h>
+#include <geometry/shape_rect.h>
+#include <pcb_shape.h>
+#include <settings/color_settings.h>
+#include <settings/settings_manager.h>
+#include <trigo.h>
+#include <view/view.h>
+#include <properties/property.h>
+#include <properties/property_mgr.h>
+
+
+static const double DEFAULT_PT_SIZE_MM = 1.0;
+
+
+PCB_POINT::PCB_POINT( BOARD_ITEM* aParent ) :
+        BOARD_ITEM( aParent, PCB_POINT_T ),
+        m_libPos( 0, 0 ),
+        m_pos( 0, 0 ),
+        m_size( pcbIUScale.mmToIU( DEFAULT_PT_SIZE_MM ) )
+{
+    recomputePosition();
+}
+
+
+PCB_POINT::PCB_POINT( BOARD_ITEM* aParent, const VECTOR2I& aPos, int aSize ) :
+        BOARD_ITEM( aParent, PCB_POINT_T ),
+        m_libPos( 0, 0 ),
+        m_pos( 0, 0 ),
+        m_size( aSize )
+{
+    SetPosition( aPos );
+}
+
+
+void PCB_POINT::recomputePosition()
+{
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+        m_pos = fp->GetTransform().Apply( m_libPos );
+    else
+        m_pos = m_libPos;
+}
+
+
+void PCB_POINT::SetPosition( const VECTOR2I& aPos )
+{
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+        m_libPos = fp->GetTransform().InverseApply( aPos );
+    else
+        m_libPos = aPos;
+
+    recomputePosition();
+}
+
+
+void PCB_POINT::SetParent( EDA_ITEM* aParent )
+{
+    BOARD_ITEM::SetParent( aParent );
+    recomputePosition();
+}
+
+
+void PCB_POINT::OnFootprintTransformed()
+{
+    recomputePosition();
+}
+
+
+bool PCB_POINT::cmp_points::operator()( const PCB_POINT* a, const PCB_POINT* b ) const
+{
+    if( a->GetLayer() != b->GetLayer() )
+        return a->GetLayer() < b->GetLayer();
+
+    if( a->GetPosition().x != b->GetPosition().x )
+        return a->GetPosition().x < b->GetPosition().x;
+
+    if( a->GetPosition().y != b->GetPosition().y )
+        return a->GetPosition().y < b->GetPosition().y;
+
+    if( a->GetSize() != b->GetSize() )
+        return a->GetSize() < b->GetSize();
+
+    if( a->m_Uuid != b->m_Uuid )
+        return a->m_Uuid < b->m_Uuid;
+
+    return a < b;
+}
+
+
+bool PCB_POINT::HitTest( const VECTOR2I& aPosition, int aAccuracy ) const
+{
+    // Compute the hit on the bars of the X
+    const int      size = GetSize() / 2;
+    const VECTOR2I pos = GetPosition();
+    const SEG      loc = SEG( aPosition, aPosition );
+
+    const SEG          seg1 = SEG( pos - VECTOR2I{ size, size }, pos + VECTOR2I{ size, size } );
+    const SEG          seg2 = SEG( pos - VECTOR2I{ size, -size }, pos + VECTOR2I{ size, -size } );
+    const SHAPE_CIRCLE circle( pos, size / 2 );
+
+    bool hit = seg1.Collide( loc, aAccuracy ) || seg2.Collide( loc, aAccuracy ) || circle.Collide( loc, aAccuracy );
+
+    return hit;
+}
+
+
+bool PCB_POINT::HitTest( const BOX2I& aRect, bool aContained, int aAccuracy ) const
+{
+    return KIGEOM::BoxHitTest( aRect, GetBoundingBox(), aContained, aAccuracy );
+}
+
+
+std::vector<int> PCB_POINT::ViewGetLayers() const
+{
+    const PCB_LAYER_ID layer = GetLayer();
+
+    std::vector<int> layers = {
+        POINT_LAYER_FOR( layer ),
+    };
+
+    if( IsLocked() )
+        layers.push_back( LAYER_LOCKED_ITEM_SHADOW );
+
+    return layers;
+}
+
+
+double PCB_POINT::ViewGetLOD( int aLayer, const KIGFX::VIEW* aView ) const
+{
+    // All points hidden
+    if( !aView->IsLayerVisible( LAYER_POINTS ) )
+        return LOD_HIDE;
+
+    // Hide if the "main" layer is not shown
+    if( !aView->IsLayerVisible( m_layer ) )
+        return LOD_HIDE;
+
+    return LOD_SHOW;
+}
+
+
+void PCB_POINT::Rotate( const VECTOR2I& aRotCentre, const EDA_ANGLE& aAngle )
+{
+    VECTOR2I newPos = GetPosition();
+    RotatePoint( newPos, aRotCentre, aAngle );
+    SetPosition( newPos );
+}
+
+
+void PCB_POINT::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
+{
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+    {
+        // Mirror the library-frame position (rotation-independent).
+        const VECTOR2I libAxis = fp->GetTransform().InverseApply( aCentre );
+        MIRROR( m_libPos, libAxis, aFlipDirection );
+        recomputePosition();
+    }
+    else
+    {
+        VECTOR2I newPos = GetPosition();
+        MIRROR( newPos, aCentre, aFlipDirection );
+        SetPosition( newPos );
+        SetLayer( GetFlippedLayer( GetLayer() ) );
+    }
+}
+
+
+const BOX2I PCB_POINT::GetBoundingBox() const
+{
+    return BOX2I::ByCenter( GetPosition(), VECTOR2I{ m_size, m_size } );
+}
+
+
+std::shared_ptr<SHAPE> PCB_POINT::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING, DRC_CONSTRAINT_T ) const
+{
+    return std::make_shared<SHAPE_RECT>( GetBoundingBox() );
+}
+
+
+wxString PCB_POINT::GetItemDescription( UNITS_PROVIDER* aUnitsProvider, bool aFull ) const
+{
+    return _( "Point" );
+}
+
+
+BITMAPS PCB_POINT::GetMenuImage() const
+{
+    return BITMAPS::add_point;
+}
+
+
+EDA_ITEM* PCB_POINT::Clone() const
+{
+    return new PCB_POINT( *this );
+}
+
+
+void PCB_POINT::CopyFrom( const BOARD_ITEM* aOther )
+{
+    wxCHECK( aOther && aOther->Type() == PCB_POINT_T, /* void */ );
+    *this = *static_cast<const PCB_POINT*>( aOther );
+}
+
+
+void PCB_POINT::swapData( BOARD_ITEM* aOther )
+{
+    assert( aOther->Type() == PCB_POINT_T );
+
+    std::swap( *((PCB_POINT*) this), *((PCB_POINT*) aOther) );
+}
+
+
+void PCB_POINT::Serialize( google::protobuf::Any& aContainer ) const
+{
+    kiapi::board::types::ReferencePoint point;
+
+    point.mutable_id()->set_value( m_Uuid.AsStdString() );
+    point.set_layer( ToProtoEnum<PCB_LAYER_ID, kiapi::board::types::BoardLayer>( m_layer ) );
+    kiapi::common::PackVector2( *point.mutable_position(), m_pos );
+    point.mutable_size()->set_value_nm( m_size );
+    point.set_locked( IsLocked() ? kiapi::common::types::LockedState::LS_LOCKED
+                                 : kiapi::common::types::LockedState::LS_UNLOCKED );
+
+    if( FOOTPRINT* parent = GetParentFootprint() )
+        point.mutable_parent()->set_value( parent->m_Uuid.AsStdString() );
+    else if( const BOARD* board = GetBoard() )
+        point.mutable_parent()->set_value( board->m_Uuid.AsStdString() );
+
+    kiapi::common::PackCustomProperties( point.mutable_custom_properties(), *this );
+    aContainer.PackFrom( point );
+}
+
+
+bool PCB_POINT::Deserialize( const google::protobuf::Any& aContainer )
+{
+    kiapi::board::types::ReferencePoint point;
+
+    if( !aContainer.UnpackTo( &point ) )
+        return false;
+
+    SetUuidDirect( KIID( point.id().value() ) );
+    SetLayer( FromProtoEnum<PCB_LAYER_ID, kiapi::board::types::BoardLayer>( point.layer() ) );
+    SetPosition( kiapi::common::UnpackVector2( point.position() ) );
+    SetSize( point.size().value_nm() );
+    SetLocked( point.locked() == kiapi::common::types::LockedState::LS_LOCKED );
+    kiapi::common::UnpackCustomProperties( point.custom_properties(), *this );
+
+    return true;
+}
+
+
+void PCB_POINT::GetMsgPanelInfo( EDA_DRAW_FRAME* aFrame, std::vector<MSG_PANEL_ITEM>& aList )
+{
+    aList.emplace_back( _( "PCB Point" ), wxEmptyString );
+
+    aList.emplace_back( _( "Position X" ), aFrame->MessageTextFromValue( GetPosition().x ) );
+    aList.emplace_back( _( "Position Y" ), aFrame->MessageTextFromValue( GetPosition().y ) );
+    aList.emplace_back( _( "Size" ), aFrame->MessageTextFromValue( GetSize() ) );
+    aList.emplace_back( _( "Layer" ), GetLayerName() );
+}
+
+
+void PCB_POINT::TransformShapeToPolygon( SHAPE_POLY_SET& aBuffer, PCB_LAYER_ID aLayer,
+                                          int aClearance, int aError, ERROR_LOC aErrorLoc,
+                                          bool ignoreLineWidth ) const
+{
+}
+
+
+bool PCB_POINT::operator==( const BOARD_ITEM& aBoardItem ) const
+{
+    if( aBoardItem.Type() != Type() )
+        return false;
+
+    const PCB_POINT& other = static_cast<const PCB_POINT&>( aBoardItem );
+
+    return *this == other;
+}
+
+
+bool PCB_POINT::operator==( const PCB_POINT& aOther ) const
+{
+    return GetPosition() == aOther.GetPosition() && m_size == aOther.m_size;
+}
+
+
+double PCB_POINT::Similarity( const BOARD_ITEM& aOther ) const
+{
+    if( aOther.Type() != Type() )
+        return 0.0;
+
+    const PCB_POINT& other = static_cast<const PCB_POINT&>( aOther );
+
+    double similarity = 1.0;
+
+    if( GetPosition() != other.GetPosition() )
+        similarity *= 0.9;
+
+    if( m_size != other.m_size )
+        similarity *= 0.9;
+
+    if( GetLayer() != other.GetLayer() )
+        similarity *= 0.9;
+
+    return similarity;
+}
+
+static struct PCB_POINT_DESC
+{
+    // clang-format off
+    PCB_POINT_DESC()
+    {
+        PROPERTY_MANAGER& propMgr = PROPERTY_MANAGER::Instance();
+        // PROPERTY_MANAGER& propMgr = PROPERTY_MANAGER::Instance();
+        REGISTER_TYPE( PCB_POINT );
+        propMgr.InheritsAfter( TYPE_HASH( PCB_POINT ), TYPE_HASH( BOARD_ITEM ) );
+
+        propMgr.AddProperty( new PROPERTY<PCB_POINT, int>( _HKI( "Size" ),
+                    &PCB_POINT::SetSize, &PCB_POINT::GetSize, PROPERTY_DISPLAY::PT_SIZE ) );
+    }
+    // clang-format on
+} _PCB_POINT_DESC;

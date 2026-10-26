@@ -1,0 +1,170 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2016 CERN
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ * @author Maciej Suminski <maciej.suminski@cern.ch>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <advanced_config.h>
+#include <kicad_gl/gl_context_mgr.h>
+#include <trace_helpers.h>
+#include <wx/debug.h>
+#include <wx/log.h>
+
+
+static bool resetRecoveryEnabled()
+{
+#ifdef __WXMAC__
+    return false;
+#else
+    return ADVANCED_CFG::GetCfg().m_EnableGLResetRecovery;
+#endif
+}
+
+
+wxGLContext* GL_CONTEXT_MANAGER::CreateCtx( wxGLCanvas* aCanvas, const wxGLContext* aOther )
+{
+    // Sharing fails between contexts with different reset strategies
+    bool         loseOnReset = aOther ? IsLoseOnReset( aOther ) : resetRecoveryEnabled();
+    wxGLContext* context = nullptr;
+
+    if( loseOnReset )
+    {
+        wxGLContextAttrs attrs;
+        attrs.PlatformDefaults().LoseOnReset().EndList();
+
+        // wx reports a failed creation with wxLogMessage, which would show a dialog
+        wxLogNull quiet;
+        context = new wxGLContext( aCanvas, aOther, &attrs );
+
+        if( !context->IsOK() )
+        {
+            delete context;
+            context = nullptr;
+
+            if( aOther )
+                return nullptr;
+
+            loseOnReset = false;
+        }
+    }
+
+    if( !context )
+    {
+        context = new wxGLContext( aCanvas, aOther );
+
+        if( !context->IsOK() )
+        {
+            delete context;
+            return nullptr;
+        }
+    }
+
+    wxLogTrace( traceGalContext, wxS( "Created GL context %p on canvas %p, lose on reset %d" ), context,
+                aCanvas, loseOnReset ? 1 : 0 );
+
+    m_glContexts.insert( std::make_pair( context, aCanvas ) );
+
+    if( loseOnReset )
+        m_loseOnResetContexts.insert( context );
+
+    return context;
+}
+
+
+void GL_CONTEXT_MANAGER::DestroyCtx( wxGLContext* aContext )
+{
+    if( m_glContexts.count( aContext ) )
+    {
+        m_glContexts.erase( aContext );
+        m_loseOnResetContexts.erase( aContext );
+        delete aContext;
+    }
+    else
+    {
+        // Do not delete unknown GL contexts
+        wxFAIL;
+    }
+
+    if( m_glCtx == aContext )
+        m_glCtx = nullptr;
+}
+
+
+void GL_CONTEXT_MANAGER::DeleteAll()
+{
+    m_glCtxMutex.lock();
+
+    for( auto& ctx : m_glContexts )
+        delete ctx.first;
+
+    m_glContexts.clear();
+    m_loseOnResetContexts.clear();
+    m_glCtx = nullptr;
+    m_glCtxMutex.unlock();
+}
+
+
+bool GL_CONTEXT_MANAGER::LockCtx( wxGLContext* aContext, wxGLCanvas* aCanvas )
+{
+    wxCHECK( aContext && m_glContexts.count( aContext ) > 0, false );
+
+    m_glCtxMutex.lock();
+    wxGLCanvas* canvas = aCanvas ? aCanvas : m_glContexts.at( aContext );
+    bool        current = false;
+
+#if defined( __WXMSW__ )
+    // Re-binding the current context makes the driver release it first, which hangs NVIDIA after a reset
+    if( wglGetCurrentContext() == aContext->GetGLRC() && wglGetCurrentDC() == canvas->GetHDC() )
+        current = true;
+    else
+#elif defined( __WXGTK__ )
+    // Prevent assertion failure in wxGLContext::SetCurrent during GAL teardown
+    if( canvas->GTKGetDrawingWindow() )
+#endif
+    {
+        current = canvas->SetCurrent( *aContext );
+    }
+
+    if( !current )
+    {
+        wxLogTrace( traceGalContext, wxS( "Could not make GL context %p current on canvas %p" ),
+                    aContext, canvas );
+    }
+
+    m_glCtx = aContext;
+
+    return current;
+}
+
+
+void GL_CONTEXT_MANAGER::UnlockCtx( wxGLContext* aContext )
+{
+    wxCHECK( aContext && m_glContexts.count( aContext ) > 0, /* void */ );
+
+    if( m_glCtx == aContext )
+    {
+        m_glCtxMutex.unlock();
+        m_glCtx = nullptr;
+    }
+    else
+    {
+        wxFAIL_MSG( wxString::Format( wxS( "Trying to unlock GL context mutex from "
+                    "a wrong context: aContext %p m_glCtx %p" ), aContext, m_glCtx ) );
+    }
+}
+

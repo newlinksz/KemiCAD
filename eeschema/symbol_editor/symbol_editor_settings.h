@@ -1,0 +1,135 @@
+/*
+* This program source code file is part of KiCad, a free EDA CAD application.
+*
+* Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+*
+* This program is free software; you can redistribute it and/or
+* modify it under the terms of the GNU General Public License
+* as published by the Free Software Foundation; either version 2
+* of the License, or (at your option) any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
+#pragma once
+
+#include <vector>
+
+#include <settings/app_settings.h>
+#include <settings/bom_settings.h>
+#include <settings/snap_settings.h>
+#include <project/sch_project_settings.h>
+
+
+class SYMBOL_EDITOR_SETTINGS : public APP_SETTINGS_BASE
+{
+public:
+
+    struct AUI_PANELS
+    {
+        int  properties_panel_width;
+        float properties_splitter;
+        bool show_properties;
+    };
+
+    struct DEFAULTS
+    {
+        int line_width;
+        int text_size;
+        int pin_length;
+        int pin_name_size;
+        int pin_num_size;
+    };
+
+    struct REPEAT
+    {
+        int label_delta;
+        int pin_step;
+    };
+
+    struct PIN_TABLE
+    {
+        bool crossprobe_on_selection;
+    };
+
+    /// One persisted open editor tab, restored on the next session.
+    struct OPEN_TAB
+    {
+        wxString lib;
+        wxString name;
+        int      unit = 1;
+        int      bodyStyle = 1;
+        bool     preview = false;
+    };
+
+    SYMBOL_EDITOR_SETTINGS();
+
+    virtual ~SYMBOL_EDITOR_SETTINGS() {}
+
+    virtual bool MigrateFromLegacy( wxConfigBase* aLegacyConfig ) override;
+
+    AUI_PANELS m_AuiPanels;
+
+    DEFAULTS m_Defaults;
+
+    REPEAT m_Repeat;
+
+    bool m_ShowPinElectricalType;
+    bool m_ShowHiddenPins;
+    bool m_ShowHiddenFields;
+    bool m_ShowPinAltIcons;
+
+    /**
+     * Set to true to synchronize pins at the same position when editing symbols with multiple
+     * units or multiple body styles.  Deleting or moving pins will affect all pins at the same
+     * location.
+     * When units are interchangeable, synchronizing editing of pins is usually the best way,
+     * because if units are interchangeable, it implies that all similar pins are at the same
+     * location.
+     * When units are not interchangeable, do not synchronize editing of pins, because each symbol
+     * is specific, and there are no (or few) similar pins between units.
+     *
+     * Setting this to false allows editing each pin per symbol or body style regardless other
+     * pins at the same location. This requires the user to open each symbol or body style to make
+     * changes to the other pins at the same location.
+     *
+     * To know if others pins must be coupled when editing a pin, use SynchronizePins() instead
+     * of m_syncPinEdit, because SynchronizePins() is more reliable (takes in account the fact
+     * units are interchangeable, there are more than one unit).
+     */
+    bool m_SyncPinEdit;
+
+    /// When true, dragging an outline edge will drag pins rooted on it
+    bool m_dragPinsAlongWithEdges;
+
+    int m_LibWidth;
+
+    int m_LibrarySortMode;
+
+    bool m_UseEeschemaColorSettings;
+
+    ARC_EDIT_MODE m_ArcEditMode;
+
+    SNAP_INFERENCE_SETTINGS m_SnapInference;
+
+    SCH_SELECTION_FILTER_OPTIONS m_SelectionFilter;
+
+    FIELDS_TABLE_SETTINGS     m_LibFieldEditor;
+    FIELDS_TABLE_BOM_SETTINGS m_LibFieldEditorBom;
+
+    PIN_TABLE m_PinTable;
+
+    std::vector<OPEN_TAB> m_OpenTabs;
+
+    wxString m_ActiveTabKey;
+
+protected:
+
+    virtual std::string getLegacyFrameName() const override { return "LibeditFrame"; }
+};

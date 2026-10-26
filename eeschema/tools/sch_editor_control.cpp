@@ -1,0 +1,3807 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2019-2023 CERN
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <advanced_config.h>
+#include <symbol_edit_frame.h>
+#include "tools/sch_editor_control.h"
+
+#include <algorithm>
+#include <unordered_set>
+
+#include <wx_filename.h>
+#include <wx/clipbrd.h>
+#include <wx/buffer.h>
+#include <wx/filedlg.h>
+#include <wx/filefn.h>
+#include <wx/imagpng.h>
+#include <wx/log.h>
+#include <wx/log.h>
+#include <wx/msgdlg.h>
+#include <wx/mstream.h>
+#include <wx/textdlg.h>
+#include <wx/treectrl.h>
+
+#include <api/api_plugin_manager.h>
+#include <core/base64.h>
+#include <clipboard.h>
+#include <confirm.h>
+#include <connection_graph.h>
+#include <connectivity/conn_netchain_manager.h>
+#include <connectivity/conn_navigation.h>
+#include <connectivity/conn_facade.h>
+#include <design_block.h>
+#include <dialogs/dialog_symbol_fields_table.h>
+#include <dialogs/dialog_eeschema_page_settings.h>
+#include <dialogs/dialog_paste_special.h>
+#include <dialogs/dialog_plot_schematic.h>
+#include <dialogs/dialog_symbol_remap.h>
+#include <dialogs/dialog_assign_netclass.h>
+#include <dialogs/dialog_update_from_pcb.h>
+#include <dialogs/hotkey_cycle_popup.h>
+#include <dialogs/dialog_increment_annotations_base.h>
+#include <dialogs/dialog_create_net_chain.h>
+#include <project_rescue.h>
+#include <erc/erc.h>
+#include <invoke_sch_dialog.h>
+#include <locale_io.h>
+#include <string_utils.h>
+#include <kiway.h>
+#include <kiplatform/ui.h>
+#include <netlist_exporters/netlist_exporter_spice.h>
+#include <paths.h>
+#include <pgm_base.h>
+#include <project/project_file.h>
+#include <project/net_settings.h>
+#include <project_sch.h>
+#include <settings/color_settings.h>
+#include <richio.h>
+#include <sch_design_block_pane.h>
+#include <sch_edit_frame.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
+#include <sch_bitmap.h>
+#include <sch_group.h>
+#include <sch_line.h>
+#include <sch_junction.h>
+#include <sch_bus_entry.h>
+#include <sch_shape.h>
+#include <sch_painter.h>
+#include <sch_sheet_pin.h>
+#include <sch_table.h>
+#include <sch_tablecell.h>
+#include <sch_label.h>
+#include <sch_commit.h>
+#include <sim/simulator_frame.h>
+#include <symbol_library_manager.h>
+#include <symbol_viewer_frame.h>
+#include <tool/picker_tool.h>
+#include <tool/tool_manager.h>
+#include <tools/sch_actions.h>
+#include <tools/sch_selection.h>
+#include <tools/sch_selection_tool.h>
+#include <tools/sch_tool_utils.h>
+#include <tools/sch_edit_table_tool.h>
+#include <drawing_sheet/ds_proxy_undo_item.h>
+#include <drawing_sheet/ds_proxy_view_item.h>
+#include <view/view_controls.h>
+#include <widgets/wx_infobar.h>
+#include <wildcards_and_files_ext.h>
+#include <io/kicad/kicad_io_utils.h>
+#include <libraries/symbol_library_adapter.h>
+#include <printing/dialog_print.h>
+#include <plotters/plotters_pslike.h>
+#include <view/view.h>
+#include <zoom_defines.h>
+#include <gal/graphics_abstraction_layer.h>
+#include <gal/gal_print.h>
+#include <gal/cairo/cairo_print.h>
+
+/**
+ * Flag to enable schematic paste debugging output.
+ *
+ * @ingroup trace_env_vars
+ */
+static const wxChar traceSchPaste[] = wxT( "KICAD_SCH_PASTE" );
+
+namespace
+{
+constexpr int clipboardMaxBitmapSize = 4096;
+constexpr double clipboardBboxInflation = 0.02;  // Small padding around selection
+
+
+std::vector<SCH_ITEM*> collectSelectionItems( const SCH_SELECTION& aSelection )
+{
+    std::vector<SCH_ITEM*> items;
+    items.reserve( aSelection.GetSize() );
+
+    for( EDA_ITEM* item : aSelection.GetItems() )
+    {
+        SCH_ITEM* schItem = dynamic_cast<SCH_ITEM*>( item );
+
+        if( schItem )
+            items.push_back( schItem );
+    }
+
+    return items;
+}
+
+
+BOX2I expandedSelectionBox( const SCH_SELECTION& aSelection )
+{
+    BOX2I bbox = aSelection.GetBoundingBox();
+
+    if( bbox.GetWidth() > 0 && bbox.GetHeight() > 0 )
+        bbox.Inflate( bbox.GetWidth() * clipboardBboxInflation,
+                      bbox.GetHeight() * clipboardBboxInflation );
+
+    return bbox;
+}
+
+
+bool generateHtmlFromPngData( const wxMemoryBuffer& aPngData, wxMemoryBuffer& aHtmlBuffer )
+{
+    if( aPngData.GetDataLen() == 0 )
+        return false;
+
+    std::vector<uint8_t> pngVec( static_cast<const uint8_t*>( aPngData.GetData() ),
+                                 static_cast<const uint8_t*>( aPngData.GetData() ) + aPngData.GetDataLen() );
+
+    std::vector<uint8_t> base64Data;
+    base64::encode( pngVec, base64Data );
+
+    std::string html = "<img src=\"data:image/png;base64,";
+    html.append( reinterpret_cast<const char*>( base64Data.data() ), base64Data.size() );
+    html.append( "\" />" );
+
+    aHtmlBuffer.SetDataLen( 0 );
+    aHtmlBuffer.AppendData( html.data(), html.size() );
+
+    return true;
+}
+
+
+bool plotSelectionToSvg( SCH_EDIT_FRAME* aFrame, const SCH_SELECTION& aSelection, const BOX2I& aBBox,
+                         wxMemoryBuffer& aBuffer )
+{
+    SCH_RENDER_SETTINGS renderSettings( *aFrame->GetRenderSettings() );
+    renderSettings.LoadColors( aFrame->GetColorSettings() );
+    renderSettings.SetDefaultFont( aFrame->eeconfig()->m_Appearance.default_font );
+    renderSettings.m_ShowHiddenPins = false;
+    renderSettings.m_ShowHiddenFields = false;
+
+    std::unique_ptr<SVG_PLOTTER> plotter = std::make_unique<SVG_PLOTTER>();
+    plotter->SetRenderSettings( &renderSettings );
+
+    PAGE_INFO pageInfo = aFrame->GetScreen()->GetPageSettings();
+    pageInfo.SetWidthMils( schIUScale.IUToMils( aBBox.GetWidth() ) );
+    pageInfo.SetHeightMils( schIUScale.IUToMils( aBBox.GetHeight() ) );
+
+    plotter->SetPageSettings( pageInfo );
+    plotter->SetColorMode( true );
+
+    VECTOR2I plot_offset = aBBox.GetOrigin();
+    plotter->SetViewport( plot_offset, schIUScale.IU_PER_MILS / 10, 1.0, false );
+    plotter->SetCreator( wxT( "Eeschema-SVG" ) );
+
+    wxFileName tempFile( wxFileName::CreateTempFileName( wxS( "kicad_svg" ) ) );
+
+    if( !plotter->OpenFile( tempFile.GetFullPath() ) )
+    {
+        wxRemoveFile( tempFile.GetFullPath() );
+        return false;
+    }
+
+    LOCALE_IO     toggle;
+    SCH_PLOT_OPTS plotOpts;
+    plotOpts.m_plotHopOver = aFrame->Schematic().Settings().GetHopOverScale() > 0.0;
+
+    plotter->StartPlot( wxT( "1" ) );
+    aFrame->GetScreen()->Plot( plotter.get(), plotOpts, collectSelectionItems( aSelection ) );
+    plotter->EndPlot();
+    plotter.reset();
+
+    bool ok = LoadFileToMemory( tempFile.GetFullPath(), aBuffer );
+    wxRemoveFile( tempFile.GetFullPath() );
+    return ok;
+}
+
+
+/**
+ * Helper to render selection to an image with optional alpha support.
+ *
+ * @param aIncludeDrawingSheet If true, include the drawing sheet layer in the render
+ */
+wxImage renderSelectionToBitmap( SCH_EDIT_FRAME* aFrame, const SCH_SELECTION& aSelection, const BOX2I& aBBox,
+                                  int aWidth, int aHeight, bool aUseAlpha, bool aIncludeDrawingSheet )
+{
+    wxImage image( aWidth, aHeight, false );
+    image.SetAlpha();
+
+    double actualPPI_x = (double) aWidth / schIUScale.IUTomm( aBBox.GetWidth() ) * 25.4;
+    double actualPPI_y = (double) aHeight / schIUScale.IUTomm( aBBox.GetHeight() ) * 25.4;
+    double actualPPI = std::max( actualPPI_x, actualPPI_y );
+
+    VECTOR2D pageSizeIn( (double) aWidth / actualPPI, (double) aHeight / actualPPI );
+
+    {
+        KIGFX::GAL_DISPLAY_OPTIONS options;
+        options.antialiasing_mode = KIGFX::GAL_ANTIALIASING_MODE::AA_HIGHQUALITY;
+
+        std::unique_ptr<KIGFX::CAIRO_PRINT_GAL> gal = KIGFX::CAIRO_PRINT_GAL::Create( options, &image, actualPPI );
+
+        if( !gal )
+            return wxImage();
+
+        KIGFX::PRINT_CONTEXT*               printCtx = gal->GetPrintCtx();
+        std::unique_ptr<KIGFX::SCH_PAINTER> painter = std::make_unique<KIGFX::SCH_PAINTER>( gal.get() );
+        std::unique_ptr<KIGFX::VIEW>        view = std::make_unique<KIGFX::VIEW>();
+
+        painter->SetSchematic( &aFrame->Schematic() );
+        view->SetGAL( gal.get() );
+        view->SetPainter( painter.get() );
+        view->SetScaleLimits( ZOOM_MAX_LIMIT_EESCHEMA, ZOOM_MIN_LIMIT_EESCHEMA );
+        view->SetScale( 1.0 );
+
+        gal->SetWorldUnitLength( SCH_WORLD_UNIT );
+        gal->SetSheetSize( pageSizeIn );
+        gal->SetNativePaperSize( pageSizeIn, printCtx->HasNativeLandscapeRotation() );
+
+        // Clone items and add to view
+        std::vector<std::unique_ptr<SCH_ITEM>> clonedItems;
+        clonedItems.reserve( aSelection.GetSize() );
+
+        for( EDA_ITEM* item : aSelection.GetItems() )
+        {
+            SCH_ITEM* schItem = dynamic_cast<SCH_ITEM*>( item );
+
+            if( !schItem )
+                continue;
+
+            SCH_ITEM* clone = static_cast<SCH_ITEM*>( schItem->Clone() );
+            clonedItems.emplace_back( clone );
+            view->Add( clone );
+        }
+
+        SCH_RENDER_SETTINGS* dstSettings = painter->GetSettings();
+        *dstSettings = *aFrame->GetRenderSettings();
+        dstSettings->m_ShowPinsElectricalType = false;
+        dstSettings->LoadColors( aFrame->GetColorSettings( false ) );
+        dstSettings->SetLayerColor( LAYER_DRAWINGSHEET, dstSettings->GetLayerColor( LAYER_SCHEMATIC_DRAWINGSHEET ) );
+        dstSettings->SetDefaultFont( aFrame->eeconfig()->m_Appearance.default_font );
+        dstSettings->SetIsPrinting( true );
+
+        if( aUseAlpha )
+            dstSettings->SetBackgroundColor( COLOR4D::CLEAR );
+
+        for( int i = 0; i < KIGFX::VIEW::VIEW_MAX_LAYERS; ++i )
+        {
+            view->SetLayerVisible( i, true );
+            view->SetLayerTarget( i, KIGFX::TARGET_NONCACHED );
+        }
+
+        view->SetLayerVisible( LAYER_DRAWINGSHEET, aIncludeDrawingSheet );
+
+        // Create and add drawing sheet proxy view item if requested
+        std::unique_ptr<DS_PROXY_VIEW_ITEM> drawingSheet;
+
+        if( aIncludeDrawingSheet )
+        {
+            SCH_SCREEN* screen = aFrame->GetScreen();
+
+            drawingSheet.reset( new DS_PROXY_VIEW_ITEM( schIUScale, &screen->GetPageSettings(),
+                                                        &screen->Schematic()->Project(), &screen->GetTitleBlock(),
+                                                        screen->Schematic()->GetProperties() ) );
+            drawingSheet->SetPageNumber( TO_UTF8( screen->GetPageNumber() ) );
+            drawingSheet->SetSheetCount( screen->GetPageCount() );
+            drawingSheet->SetFileName( TO_UTF8( screen->GetFileName() ) );
+            drawingSheet->SetColorLayer( LAYER_SCHEMATIC_DRAWINGSHEET );
+            drawingSheet->SetPageBorderColorLayer( LAYER_SCHEMATIC_PAGE_LIMITS );
+            drawingSheet->SetIsFirstPage( screen->GetVirtualPageNumber() == 1 );
+            drawingSheet->SetSheetName( TO_UTF8( aFrame->GetScreenDesc() ) );
+            drawingSheet->SetSheetPath( TO_UTF8( aFrame->GetFullScreenDesc() ) );
+
+            wxString currentVariant = screen->Schematic()->GetCurrentVariant();
+            wxString variantDesc = screen->Schematic()->GetVariantDescription( currentVariant );
+            drawingSheet->SetVariantName( TO_UTF8( currentVariant ) );
+            drawingSheet->SetVariantDesc( TO_UTF8( variantDesc ) );
+
+            view->Add( drawingSheet.get() );
+        }
+
+        view->SetCenter( aBBox.Centre() );
+        view->UseDrawPriority( true );
+
+        gal->SetClearColor( dstSettings->GetBackgroundColor() );
+        gal->ClearScreen();
+
+        {
+            KIGFX::GAL_DRAWING_CONTEXT ctx( gal.get() );
+            view->Redraw();
+        }
+    }
+
+    return image;
+}
+
+
+wxImage renderSelectionToImageForClipboard( SCH_EDIT_FRAME* aFrame, const SCH_SELECTION& aSelection,
+                                             const BOX2I& aBBox, bool aUseAlpha, bool aIncludeDrawingSheet )
+{
+    const double c_targetPPI = 300;
+    const double c_targetPixelsPerMM = c_targetPPI / 25.4;
+
+    VECTOR2I size = aBBox.GetSize();
+
+    if( size.x <= 0 || size.y <= 0 )
+        return wxImage();
+
+    int bitmapWidth = KiROUND( schIUScale.IUTomm( size.x ) * c_targetPixelsPerMM );
+    int bitmapHeight = KiROUND( schIUScale.IUTomm( size.y ) * c_targetPixelsPerMM );
+
+    // Clamp to maximum size while preserving aspect ratio
+    if( bitmapWidth > clipboardMaxBitmapSize || bitmapHeight > clipboardMaxBitmapSize )
+    {
+        double scaleDown = (double) clipboardMaxBitmapSize / std::max( bitmapWidth, bitmapHeight );
+        bitmapWidth = KiROUND( bitmapWidth * scaleDown );
+        bitmapHeight = KiROUND( bitmapHeight * scaleDown );
+    }
+
+    if( bitmapWidth <= 0 || bitmapHeight <= 0 )
+        return wxImage();
+
+    wxImage result = renderSelectionToBitmap( aFrame, aSelection, aBBox, bitmapWidth, bitmapHeight, aUseAlpha,
+                                              aIncludeDrawingSheet );
+
+    return result;
+}
+} // namespace
+
+
+int SCH_EDITOR_CONTROL::New( const TOOL_EVENT& aEvent )
+{
+    m_frame->NewProject();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::Open( const TOOL_EVENT& aEvent )
+{
+    m_frame->LoadProject();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::Save( const TOOL_EVENT& aEvent )
+{
+    m_frame->SaveProject();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::SaveAs( const TOOL_EVENT& aEvent )
+{
+    m_frame->SaveProject( true );
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::SaveCurrSheetCopyAs( const TOOL_EVENT& aEvent )
+{
+    SCH_SHEET*   curr_sheet = m_frame->GetCurrentSheet().Last();
+    wxFileName   curr_fn = curr_sheet->GetFileName();
+    wxFileDialog dlg( m_frame, _( "Schematic Files" ), curr_fn.GetPath(), curr_fn.GetFullName(),
+                      FILEEXT::KiCadSchematicFileWildcard(), wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
+
+    KIPLATFORM::UI::AllowNetworkFileSystems( &dlg );
+
+    if( dlg.ShowModal() == wxID_CANCEL )
+        return false;
+
+    wxString newFilename = EnsureFileExtension( dlg.GetPath(), FILEEXT::KiCadSchematicFileExtension );
+
+    m_frame->saveSchematicFile( curr_sheet, newFilename, true );
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::Revert( const TOOL_EVENT& aEvent )
+{
+    wxString msg;
+    msg.Printf( _( "Revert '%s' (and all sub-sheets) to last version saved?" ), m_frame->Schematic().GetFileName() );
+
+    if( !IsOK( m_frame, msg ) )
+        return 0;
+
+    m_frame->ReloadFromDisk();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ShowSchematicSetup( const TOOL_EVENT& aEvent )
+{
+    m_frame->ShowSchematicSetupDialog();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::PageSetup( const TOOL_EVENT& aEvent )
+{
+    PICKED_ITEMS_LIST   undoCmd;
+    DS_PROXY_UNDO_ITEM* undoItem = new DS_PROXY_UNDO_ITEM( m_frame );
+    ITEM_PICKER         wrapper( m_frame->GetScreen(), undoItem, UNDO_REDO::PAGESETTINGS );
+
+    undoCmd.PushItem( wrapper );
+    undoCmd.SetDescription( _( "Page Settings" ) );
+    m_frame->SaveCopyInUndoList( undoCmd, UNDO_REDO::PAGESETTINGS, false );
+
+    DIALOG_EESCHEMA_PAGE_SETTINGS dlg( m_frame, m_frame->Schematic().GetEmbeddedFiles(),
+                                       VECTOR2I( MAX_PAGE_SIZE_EESCHEMA_MILS, MAX_PAGE_SIZE_EESCHEMA_MILS ) );
+    dlg.SetWksFileName( BASE_SCREEN::m_DrawingSheetFileName );
+
+    if( dlg.ShowModal() == wxID_OK )
+    {
+        // Update text variables
+        m_frame->GetCanvas()->GetView()->MarkDirty();
+        m_frame->GetCanvas()->GetView()->UpdateAllItems( KIGFX::REPAINT );
+        m_frame->GetCanvas()->Refresh();
+
+        m_frame->OnModify();
+    }
+    else
+    {
+        m_frame->RollbackSchematicFromUndo();
+    }
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::RescueSymbols( const TOOL_EVENT& aEvent )
+{
+    SCH_SCREENS schematic( m_frame->Schematic().Root() );
+
+    if( schematic.HasNoFullyDefinedLibIds() )
+        RescueLegacyProject( true );
+    else
+        RescueSymbolLibTableProject( true );
+
+    return 0;
+}
+
+
+bool SCH_EDITOR_CONTROL::RescueLegacyProject( bool aRunningOnDemand )
+{
+    LEGACY_RESCUER rescuer( m_frame->Prj(), &m_frame->Schematic(), &m_frame->GetCurrentSheet(),
+                            m_frame->GetCanvas()->GetBackend() );
+
+    return rescueProject( rescuer, aRunningOnDemand );
+}
+
+
+bool SCH_EDITOR_CONTROL::RescueSymbolLibTableProject( bool aRunningOnDemand )
+{
+    SYMBOL_LIB_TABLE_RESCUER rescuer( m_frame->Prj(), &m_frame->Schematic(), &m_frame->GetCurrentSheet(),
+                                      m_frame->GetCanvas()->GetBackend() );
+
+    return rescueProject( rescuer, aRunningOnDemand );
+}
+
+
+bool SCH_EDITOR_CONTROL::rescueProject( RESCUER& aRescuer, bool aRunningOnDemand )
+{
+    if( !RESCUER::RescueProject( m_frame, aRescuer, aRunningOnDemand ) )
+        return false;
+
+    if( aRescuer.GetCandidateCount() )
+    {
+        KIWAY_PLAYER* viewer = m_frame->Kiway().Player( FRAME_SCH_VIEWER, false );
+
+        if( viewer )
+            static_cast<SYMBOL_VIEWER_FRAME*>( viewer )->ReCreateLibList();
+
+        if( aRunningOnDemand )
+        {
+            SCH_SCREENS schematic( m_frame->Schematic().Root() );
+
+            schematic.UpdateSymbolLinks();
+            m_frame->RecalculateConnections( nullptr, GLOBAL_CLEANUP );
+        }
+
+        m_frame->ClearUndoRedoList();
+        m_frame->SyncView();
+        m_frame->GetCanvas()->Refresh();
+        m_frame->OnModify();
+    }
+
+    return true;
+}
+
+
+int SCH_EDITOR_CONTROL::RemapSymbols( const TOOL_EVENT& aEvent )
+{
+    DIALOG_SYMBOL_REMAP dlgRemap( m_frame );
+
+    dlgRemap.ShowQuasiModal();
+
+    m_frame->GetCanvas()->Refresh( true );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::Print( const TOOL_EVENT& aEvent )
+{
+    DIALOG_PRINT dlg( m_frame );
+
+    dlg.ShowModal();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::Plot( const TOOL_EVENT& aEvent )
+{
+    DIALOG_PLOT_SCHEMATIC dlg( m_frame );
+
+    dlg.ShowModal();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::CrossProbeToPcb( const TOOL_EVENT& aEvent )
+{
+    m_frame->Schematic().OnSchSelectionChanged();
+    doCrossProbeSchToPcb( aEvent, false );
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ExplicitCrossProbeToPcb( const TOOL_EVENT& aEvent )
+{
+    doCrossProbeSchToPcb( aEvent, true );
+    return 0;
+}
+
+
+void SCH_EDITOR_CONTROL::doCrossProbeSchToPcb( const TOOL_EVENT& aEvent, bool aForce )
+{
+    // Don't get in an infinite loop SCH -> PCB -> SCH -> PCB -> SCH -> ...
+    if( m_probingPcbToSch || m_frame->IsSyncingSelection() )
+        return;
+
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCH_SELECTION&      selection = aForce ? selTool->RequestSelection() : selTool->GetSelection();
+
+    m_frame->SendSelectItemsToPcb( selection.GetItemsSortedBySelectionOrder(), aForce );
+}
+
+
+int SCH_EDITOR_CONTROL::ExportSymbolsToLibrary( const TOOL_EVENT& aEvent )
+{
+    bool                   savePowerSymbols = false;
+    bool                   map = false;
+    SYMBOL_LIBRARY_MANAGER mgr( *m_frame );
+    wxString               targetLib;
+    wxString               msg;
+
+    targetLib = m_frame->SelectLibrary( _( "Export Symbols" ), _( "Export symbols to library:" ),
+                                        { { _( "Include power symbols in export" ), &savePowerSymbols },
+                                          { _( "Update schematic symbols to link to exported symbols" ), &map }
+                                        } );
+
+    if( targetLib.empty() )
+        return 0;
+
+    SCH_SHEET_LIST     sheets = m_frame->Schematic().BuildSheetListSortedByPageNumbers();
+    SCH_REFERENCE_LIST symbols;
+    sheets.GetSymbols( symbols, savePowerSymbols ? SYMBOL_FILTER_ALL : SYMBOL_FILTER_NON_POWER );
+
+    std::map<LIB_ID, LIB_SYMBOL*>              libSymbols;
+    std::map<LIB_ID, std::vector<SCH_SYMBOL*>> symbolMap;
+
+    for( size_t i = 0; i < symbols.GetCount(); ++i )
+    {
+        SCH_SYMBOL* symbol = symbols[i].GetSymbol();
+        LIB_SYMBOL* libSymbol = symbol->GetLibSymbolRef().get();
+        LIB_ID      id = libSymbol->GetLibId();
+
+        if( libSymbols.count( id ) )
+        {
+            wxASSERT_MSG( libSymbols[id]->Compare( *libSymbol, ~SCH_ITEM::COMPARE_FLAGS::UUID ) == 0,
+                          "Two symbols have the same LIB_ID but are different!" );
+        }
+        else
+        {
+            libSymbols[id] = libSymbol;
+        }
+
+        symbolMap[id].emplace_back( symbol );
+    }
+
+    bool                    append = false;
+    SCH_COMMIT              commit( m_frame );
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame->Prj() );
+
+    auto optRow = adapter->GetRow( targetLib );
+    wxCHECK( optRow, 0 );
+    const LIBRARY_TABLE_ROW* row = *optRow;
+
+    SCH_IO_MGR::SCH_FILE_T type = SCH_IO_MGR::EnumFromStr( row->Type() );
+    IO_RELEASER<SCH_IO>    pi( SCH_IO_MGR::FindPlugin( type ) );
+
+    wxFileName dest = LIBRARY_MANAGER::GetFullURI( row );
+    dest.Normalize( FN_NORMALIZE_FLAGS | wxPATH_NORM_ENV_VARS );
+
+    for( const std::pair<const LIB_ID, LIB_SYMBOL*>& it : libSymbols )
+    {
+        LIB_SYMBOL*                 origSym = it.second;
+        std::unique_ptr<LIB_SYMBOL> newSym = origSym->Flatten();
+        const wxString              newSymName = newSym->GetName();
+
+        try
+        {
+            pi->SaveSymbol( dest.GetFullPath(), std::move( newSym ) );
+        }
+        catch( const IO_ERROR& ioe )
+        {
+            msg.Printf( _( "Error saving symbol %s to library '%s'." ), newSymName, row->Nickname() );
+            msg += wxS( "\n\n" ) + ioe.What();
+            wxLogWarning( msg );
+            return 0;
+        }
+
+        if( map )
+        {
+            LIB_ID id = it.first;
+            id.SetLibNickname( targetLib );
+
+            for( SCH_SYMBOL* symbol : symbolMap[it.first] )
+            {
+                SCH_SCREEN* parentScreen = static_cast<SCH_SCREEN*>( symbol->GetParent() );
+
+                wxCHECK2( parentScreen, continue );
+
+                commit.Modify( symbol, parentScreen, RECURSE_MODE::NO_RECURSE );
+                symbol->SetLibId( id );
+                append = true;
+            }
+        }
+    }
+
+    if( append )
+    {
+        std::set<SCH_SCREEN*> processedScreens;
+
+        for( SCH_SHEET_PATH& sheet : sheets )
+        {
+            SCH_SCREEN* screen = sheet.LastScreen();
+
+            if( processedScreens.find( ( screen ) ) == processedScreens.end() )
+            {
+                processedScreens.insert( screen );
+                screen->UpdateSymbolLinks();
+            }
+        }
+
+        commit.Push( wxS( "Update Library Identifiers" ) );
+    }
+
+    return 0;
+}
+
+
+#define HITTEST_THRESHOLD_PIXELS 5
+
+int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
+{
+    static const std::vector<KICAD_T> voltageProbeTypes = {
+        SCH_ITEM_LOCATE_WIRE_T, SCH_JUNCTION_T, SCH_LABEL_T,
+        SCH_GLOBAL_LABEL_T, SCH_HIER_LABEL_T, SCH_SHEET_PIN_T
+    };
+
+    PICKER_TOOL*     picker = m_toolMgr->GetTool<PICKER_TOOL>();
+    KIWAY_PLAYER*    sim_player = m_frame->Kiway().Player( FRAME_SIMULATOR, false );
+    SIMULATOR_FRAME* sim_Frame = static_cast<SIMULATOR_FRAME*>( sim_player );
+
+    if( !sim_Frame )     // Defensive coding; shouldn't happen.
+        return 0;
+
+    if( wxWindow* blocking_win = sim_Frame->Kiway().GetBlockingDialog() )
+        blocking_win->Close( true );
+
+    if( ADVANCED_CFG::GetCfg().m_ConnectivityEngine && !m_frame->RecalculateConnections( nullptr, NO_CLEANUP ) )
+        return 0;
+
+    // Deactivate other tools; particularly important if another PICKER is currently running
+    Activate();
+
+    picker->SetCursor( KICURSOR::VOLTAGE_PROBE );
+    picker->SetSnapping( false );
+    picker->ClearHandlers();
+
+    picker->SetClickHandler(
+            [this]( const VECTOR2D& aPosition )
+            {
+                KIWAY_PLAYER*       player = m_frame->Kiway().Player( FRAME_SIMULATOR, false );
+                SIMULATOR_FRAME*    simFrame = static_cast<SIMULATOR_FRAME*>( player );
+                SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+
+                // We do not really want to keep an item selected in schematic,
+                // so clear the current selection
+                selTool->ClearSelection();
+
+                EDA_ITEM*       item = selTool->GetNode( aPosition );
+                SCH_SHEET_PATH& sheet = m_frame->GetCurrentSheet();
+                wxString        variant = m_frame->Schematic().GetCurrentVariant();
+
+                if( !item )
+                    return false;
+
+                if( item->Type() == SCH_PIN_T )
+                {
+                    SCH_PIN*    schPin = static_cast<SCH_PIN*>( item );
+                    SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( schPin->GetParentSymbol() );
+                    SCH_PIN*    libPin = schPin->GetLibPin();
+
+                    if( !symbol || !libPin )
+                        return false;
+
+                    try
+                    {
+                        WX_STRING_REPORTER reporter;
+                        SIM_LIB_MGR        mgr( &m_frame->Prj() );
+
+                        std::vector<EMBEDDED_FILES*> embeddedFilesStack;
+                        embeddedFilesStack.push_back( m_frame->Schematic().GetEmbeddedFiles() );
+
+                        if( EMBEDDED_FILES* symbolEmbeddedFile = symbol->GetEmbeddedFiles() )
+                            embeddedFilesStack.push_back( symbolEmbeddedFile );
+
+                        mgr.SetFilesStack( std::move( embeddedFilesStack ) );
+
+                        SIM_MODEL& model = mgr.CreateModel( &sheet, *symbol, true, 0, variant, reporter ).model;
+
+                        if( reporter.HasMessage() )
+                            THROW_IO_ERROR( reporter.GetMessages() );
+
+                        SPICE_ITEM spiceItem;
+                        spiceItem.refName = symbol->GetRef( &sheet ).ToStdString();
+                        std::vector<std::string> currentNames = model.SpiceGenerator().CurrentNames( spiceItem );
+
+                        if( currentNames.size() == 0 )
+                        {
+                            return true;
+                        }
+                        else if( currentNames.size() == 1 )
+                        {
+                            if( simFrame )
+                                simFrame->AddCurrentTrace( currentNames.at( 0 ) );
+
+                            return true;
+                        }
+
+                        int modelPinIndex = model.FindModelPinIndex( libPin->GetNumber().ToStdString() );
+
+                        if( modelPinIndex != SIM_MODEL_PIN::NOT_CONNECTED )
+                        {
+                            wxString name = currentNames.at( modelPinIndex );
+
+                            if( simFrame )
+                                simFrame->AddCurrentTrace( name );
+                        }
+                    }
+                    catch( const IO_ERROR& e )
+                    {
+                        DisplayErrorMessage( m_frame, e.What() );
+                    }
+                }
+                else if( item->IsType( voltageProbeTypes ) )
+                {
+                    const SCH_ITEM* schItem = static_cast<const SCH_ITEM*>( item );
+
+                    if( schItem->HasBusConnection( &sheet ) )
+                        return true;
+
+                    if( const auto name = schItem->GetConnectionName( &sheet );
+                        name && !name->IsEmpty() )
+                    {
+                        wxString spiceNet = *name;
+                        NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( &spiceNet );
+
+                        if( simFrame )
+                            simFrame->AddVoltageTrace( wxString::Format( "V(%s)", spiceNet ) );
+                    }
+                }
+
+                return true;
+            } );
+
+    picker->SetMotionHandler(
+            [this]( const VECTOR2D& aPos )
+            {
+                SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+                EDA_ITEM* item = selectionTool->GetNode( aPos );
+                wxString connectionName;
+
+                if( item && item->IsType( voltageProbeTypes ) )
+                {
+                    const SCH_ITEM* schItem = static_cast<const SCH_ITEM*>( item );
+                    const SCH_SHEET_PATH& sheet = m_frame->GetCurrentSheet();
+                    item = nullptr;
+
+                    if( !schItem->HasBusConnection( &sheet ) )
+                        connectionName = schItem->GetConnectionName( &sheet ).value_or( wxString() );
+                }
+                else if( item && item->Type() != SCH_PIN_T )
+                {
+                    item = nullptr;
+                }
+
+                if( item && item->Type() == SCH_PIN_T )
+                    m_toolMgr->GetTool<PICKER_TOOL>()->SetCursor( KICURSOR::CURRENT_PROBE );
+                else
+                    m_toolMgr->GetTool<PICKER_TOOL>()->SetCursor( KICURSOR::VOLTAGE_PROBE );
+
+                if( m_pickerItem != item )
+                {
+                    if( m_pickerItem )
+                        selectionTool->UnbrightenItem( m_pickerItem );
+
+                    m_pickerItem = item;
+
+                    if( m_pickerItem )
+                        selectionTool->BrightenItem( m_pickerItem );
+                }
+
+                if( m_frame->GetHighlightedConnection() != connectionName )
+                {
+                    m_frame->SetHighlightedConnection( connectionName );
+
+                    TOOL_EVENT dummyEvent;
+                    UpdateNetHighlighting( dummyEvent );
+                }
+            } );
+
+    picker->SetFinalizeHandler(
+            [this]( const int& aFinalState )
+            {
+                if( m_pickerItem )
+                    m_toolMgr->GetTool<SCH_SELECTION_TOOL>()->UnbrightenItem( m_pickerItem );
+
+                if( !m_frame->GetHighlightedConnection().IsEmpty() )
+                {
+                    m_frame->SetHighlightedConnection( wxEmptyString );
+
+                    TOOL_EVENT dummyEvent;
+                    UpdateNetHighlighting( dummyEvent );
+                }
+
+                // Wake the selection tool after exiting to ensure the cursor gets updated
+                // and deselect previous selection from simulator to avoid any issue
+                // ( avoid crash in some cases when the SimProbe tool is deselected )
+                SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+                selectionTool->ClearSelection();
+                m_toolMgr->PostAction( ACTIONS::selectionActivate );
+            } );
+
+    m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
+{
+    PICKER_TOOL* picker = m_toolMgr->GetTool<PICKER_TOOL>();
+
+    // Deactivate other tools; particularly important if another PICKER is currently running
+    Activate();
+
+    picker->SetCursor( KICURSOR::TUNE );
+    picker->SetSnapping( false );
+    picker->ClearHandlers();
+
+    picker->SetClickHandler(
+            [this]( const VECTOR2D& aPosition )
+            {
+                SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+                EDA_ITEM*           item = nullptr;
+                selTool->SelectPoint( aPosition, { SCH_SYMBOL_T, SCH_FIELD_T }, &item );
+
+                if( !item )
+                    return false;
+
+                if( item->Type() != SCH_SYMBOL_T )
+                {
+                    item = item->GetParent();
+
+                    if( item->Type() != SCH_SYMBOL_T )
+                        return false;
+                }
+
+                SCH_SYMBOL*    symbol = static_cast<SCH_SYMBOL*>( item );
+                SCH_SHEET_PATH sheetPath = symbol->Schematic()->CurrentSheet();
+                KIWAY_PLAYER*  simFrame = m_frame->Kiway().Player( FRAME_SIMULATOR, false );
+
+                if( simFrame )
+                {
+                    if( wxWindow* blocking_win = simFrame->Kiway().GetBlockingDialog() )
+                        blocking_win->Close( true );
+
+                    static_cast<SIMULATOR_FRAME*>( simFrame )->AddTuner( sheetPath, symbol );
+                }
+
+                // We do not really want to keep a symbol selected in schematic,
+                // so clear the current selection
+                selTool->ClearSelection();
+                return true;
+            } );
+
+    picker->SetMotionHandler(
+            [this]( const VECTOR2D& aPos )
+            {
+                SCH_COLLECTOR collector;
+                collector.m_Threshold = KiROUND( getView()->ToWorld( HITTEST_THRESHOLD_PIXELS ) );
+                collector.Collect( m_frame->GetScreen(), { SCH_SYMBOL_T, SCH_FIELD_T }, aPos );
+
+                SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+                selectionTool->GuessSelectionCandidates( collector, aPos );
+
+                EDA_ITEM* item = collector.GetCount() == 1 ? collector[0] : nullptr;
+
+                if( item && item->Type() == SCH_FIELD_T )
+                    item = static_cast<SCH_FIELD*>( item )->GetParentSymbol();
+
+                if( m_pickerItem != item )
+                {
+                    if( m_pickerItem )
+                        selectionTool->UnbrightenItem( m_pickerItem );
+
+                    m_pickerItem = item;
+
+                    if( m_pickerItem )
+                        selectionTool->BrightenItem( m_pickerItem );
+                }
+            } );
+
+    picker->SetFinalizeHandler(
+            [this]( const int& aFinalState )
+            {
+                if( m_pickerItem )
+                    m_toolMgr->GetTool<SCH_SELECTION_TOOL>()->UnbrightenItem( m_pickerItem );
+
+                // Wake the selection tool after exiting to ensure the cursor gets updated
+                // and deselect previous selection from simulator to avoid any issue
+                // ( avoid crash in some cases when the SimTune tool is deselected )
+                SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+                selectionTool->ClearSelection();
+                m_toolMgr->PostAction( ACTIONS::selectionActivate );
+            } );
+
+    m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
+
+    return 0;
+}
+
+
+// A singleton reference for clearing the highlight
+static VECTOR2D CLEAR;
+
+
+static void recalculateIfStale( SCH_EDIT_FRAME* aFrame, SCH_ITEM* aItem )
+{
+    if( ( aItem && aItem->IsConnectivityDirty() ) || !aFrame->Schematic().NetChains().NetChainsBuilt() )
+        aFrame->RecalculateConnections( nullptr, NO_CLEANUP );
+}
+
+
+static bool setNetHighlight( SCH_ITEM* aItem, bool aHighlight )
+{
+    if( aItem->IsNetHighlighted() == aHighlight )
+        return false;
+
+    aItem->SetNetHighlighted( aHighlight );
+    return true;
+}
+
+
+static bool highlightNet( TOOL_MANAGER* aToolMgr, const SCH_SHEET_PATH& aSheetPath, const VECTOR2D& aPosition )
+{
+    wxLogTrace( "KICAD_SCH_HIGHLIGHT", "highlightNet: pos=(%f,%f) clear=%d", aPosition.x, aPosition.y,
+                ( aPosition == CLEAR ) );
+    SCH_EDIT_FRAME*         editFrame     = static_cast<SCH_EDIT_FRAME*>( aToolMgr->GetToolHolder() );
+    SCH_SELECTION_TOOL*     selTool       = aToolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCH_EDITOR_CONTROL*     editorControl = aToolMgr->GetTool<SCH_EDITOR_CONTROL>();
+    std::optional<wxString> connName;
+    SCH_ITEM*               item          = nullptr;
+    bool                    retVal        = true;
+
+    if( aPosition != CLEAR )
+    {
+        ERC_TESTER erc( &editFrame->Schematic() );
+
+        if( erc.TestDuplicateSheetNames( false ) > 0 )
+        {
+            wxMessageBox( _( "Error: duplicate sub-sheet names found in current sheet." ) );
+            retVal = false;
+        }
+        else
+        {
+            item = static_cast<SCH_ITEM*>( selTool->GetNode( aPosition ) );
+            wxLogTrace( "KICAD_SCH_HIGHLIGHT", "highlightNet: item=%p type=%d", (void*) item, item ? (int) item->Type()
+                                                                                                   : -1 );
+            SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( item );
+
+            if( item )
+            {
+                recalculateIfStale( editFrame, item );
+
+                if( item->Type() == SCH_FIELD_T )
+                    symbol = dynamic_cast<SCH_SYMBOL*>( item->GetParent() );
+
+                if( symbol && symbol->GetLibSymbolRef() && symbol->GetLibSymbolRef()->IsPower() )
+                {
+                    std::vector<SCH_PIN*> pins = symbol->GetPins( &aSheetPath );
+
+                    if( pins.size() == 1 )
+                        connName = pins[0]->GetConnectionName( &editFrame->GetCurrentSheet() );
+                }
+                else
+                {
+                    connName = item->GetConnectionName( &editFrame->GetCurrentSheet() );
+                }
+            }
+        }
+    }
+
+    if( !connName || connName->IsEmpty() )
+    {
+        wxLogTrace( "KICAD_SCH_HIGHLIGHT", "highlightNet: no connection under cursor" );
+        editFrame->SetStatusText( wxT( "" ) );
+        editFrame->SendCrossProbeClearHighlight();
+        editFrame->SetHighlightedConnection( wxEmptyString );
+        // Also clear any highlighted net chain so ESC or clicking empty space clears both modes
+        editFrame->SetHighlightedNetChain( wxEmptyString );
+        editorControl->SetHighlightBusMembers( false );
+    }
+    else
+    {
+        NET_NAVIGATOR_ITEM_DATA itemData( editFrame->GetCurrentSheet(), item );
+
+        if( *connName != editFrame->GetHighlightedConnection() )
+        {
+            wxLogTrace( "KICAD_SCH_HIGHLIGHT", "highlightNet: setting highlighted connection to %s", *connName );
+            editorControl->SetHighlightBusMembers( false );
+            // Clear any previous chain highlight when switching to net highlight
+            editFrame->SetHighlightedNetChain( wxEmptyString );
+            editFrame->SetCrossProbeConnection( *connName );
+            editFrame->SetHighlightedConnection( *connName, &itemData );
+        }
+        else
+        {
+            auto& chains = editFrame->Schematic().NetChains();
+
+            if( SCH_NETCHAIN* chain = chains.GetNetChainForNet( *connName ) )
+            {
+                editFrame->SetHighlightedConnection( wxEmptyString );
+                editFrame->SetHighlightedNetChain( chain->GetName() );
+                editorControl->SetHighlightBusMembers( false );
+            }
+            else
+            {
+                editorControl->SetHighlightBusMembers( !editorControl->GetHighlightBusMembers() );
+
+                if( item != editFrame->GetSelectedNetNavigatorItem() )
+                    editFrame->SelectNetNavigatorItem( &itemData );
+            }
+        }
+    }
+
+    editFrame->UpdateNetHighlightStatus();
+
+    TOOL_EVENT dummy;
+    editorControl->UpdateNetHighlighting( dummy );
+    wxLogTrace( "KICAD_SCH_HIGHLIGHT", "highlightNet: done" );
+
+    return retVal;
+}
+
+
+int SCH_EDITOR_CONTROL::HighlightNet( const TOOL_EVENT& aEvent )
+{
+    KIGFX::VIEW_CONTROLS* controls = getViewControls();
+    VECTOR2D              cursorPos = controls->GetCursorPosition( !aEvent.DisableGridSnapping() );
+
+    highlightNet( m_toolMgr, m_frame->GetCurrentSheet(), cursorPos );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::HighlightNetChain( const TOOL_EVENT& aEvent )
+{
+    KIGFX::VIEW_CONTROLS* controls = getViewControls();
+    const VECTOR2D cursorPos = controls->GetCursorPosition( !aEvent.DisableGridSnapping() );
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCH_ITEM* item = static_cast<SCH_ITEM*>( selTool->GetNode( cursorPos ) );
+    auto& chains = m_frame->Schematic().NetChains();
+
+    recalculateIfStale( m_frame, item );
+
+    const auto name = item ? item->GetConnectionName( &m_frame->GetCurrentSheet() ) : std::nullopt;
+    wxString newChain;
+    wxString newConnection;
+
+    if( name && !name->IsEmpty() )
+    {
+        if( SCH_NETCHAIN* chain = chains.GetNetChainForNet( *name ) )
+        {
+            newChain = chain->GetName();
+
+            if( !chain->GetNets().empty() )
+                m_frame->SendCrossProbeNetName( *chain->GetNets().begin() );
+        }
+        else
+        {
+            newConnection = *name;
+            m_frame->SetCrossProbeConnection( *name );
+        }
+    }
+    else
+    {
+        m_frame->SendCrossProbeClearHighlight();
+    }
+
+    SetHighlightBusMembers( false );
+    m_frame->SetHighlightedNetChain( newChain );
+    m_frame->SetHighlightedConnection( newConnection );
+    m_frame->UpdateNetHighlightStatus();
+    TOOL_EVENT dummy;
+    UpdateNetHighlighting( dummy );
+    return 0;
+}
+
+int SCH_EDITOR_CONTROL::RemoveFromNetChain( const TOOL_EVENT& aEvent )
+{
+    SCH_EDIT_FRAME*       editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    if( !editFrame )
+        return 0;
+
+    SCH_SELECTION_TOOL*   selTool   = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    KIGFX::VIEW_CONTROLS* controls  = getViewControls();
+    VECTOR2D              cursorPos = controls->GetCursorPosition( !aEvent.DisableGridSnapping() );
+
+    SCH_ITEM* target = nullptr;
+
+    // Prefer current selection; otherwise, use item under cursor
+    if( selTool && selTool->GetSelection().GetSize() == 1 )
+        target = static_cast<SCH_ITEM*>( selTool->GetSelection().Front() );
+    else if( selTool )
+        target = static_cast<SCH_ITEM*>( selTool->GetNode( cursorPos ) );
+
+    if( !target )
+        return 0;
+
+    auto&          chains = editFrame->Schematic().NetChains();
+    const wxString net = SCH_CONNECTIVITY::NETCHAIN_MANAGER::NetKeyForItem( *target, editFrame->GetCurrentSheet() );
+    const SCH_NETCHAIN* chain = chains.GetNetChainForNet( net );
+
+    if( !chain )
+        return 0;
+
+    SCH_COMMIT commit( editFrame );
+
+    for( const auto& [symbol, screen] : chains.GetBridgeSymbols( *chain, net ) )
+    {
+        commit.Modify( symbol, screen );
+        symbol->SetPassthroughMode( SCH_SYMBOL::PASSTHROUGH_MODE::BLOCK );
+    }
+
+    commit.Push( _( "Remove from Net Chain" ) );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ClearHighlight( const TOOL_EVENT& aEvent )
+{
+    highlightNet( m_toolMgr, m_frame->GetCurrentSheet(), CLEAR );
+
+    // Also clear any highlighted chain explicitly
+    if( m_frame )
+        m_frame->SetHighlightedNetChain( wxEmptyString );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::AssignNetclass( const TOOL_EVENT& aEvent )
+{
+    SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCHEMATIC&          schematic = m_frame->Schematic();
+    const SCH_SHEET_PATH path = m_frame->GetCurrentSheet();
+    SCH_SCREEN*         screen = path.LastScreen();
+    const bool usePublished = ADVANCED_CFG::GetCfg().m_ConnectivityEngine;
+
+    if( usePublished && !m_frame->RecalculateConnections( nullptr, NO_CLEANUP ) )
+        return 0;
+
+    const auto getNetNamePattern =
+            []( const auto& aConn ) -> std::optional<wxString>
+            {
+                wxString netName = aConn.Name();
+
+                if( aConn.IsBus() )
+                {
+                    wxString prefix;
+
+                    if( NET_SETTINGS::ParseBusVector( netName, &prefix, nullptr ) )
+                        return prefix + wxT( "*" );
+                    else if( NET_SETTINGS::ParseBusGroup( netName, &prefix, nullptr ) )
+                        return prefix + wxT( ".*" );
+                }
+                else if( !aConn.Driver() || CONNECTION_SUBGRAPH::GetDriverPriority( aConn.Driver() )
+                                                < CONNECTION_SUBGRAPH::PRIORITY::SHEET_PIN )
+                {
+                    return std::nullopt;
+                }
+
+                return netName;
+            };
+
+    std::set<wxString> netNames;
+
+    for( EDA_ITEM* item : selectionTool->GetSelection() )
+    {
+        SCH_ITEM* schItem = static_cast<SCH_ITEM*>( item );
+        std::optional<wxString> netNamePattern;
+
+        if( usePublished )
+        {
+            const auto connection = schematic.Connectivity().Connection( schItem->m_Uuid, path.PathRef() );
+
+            if( !connection )
+                continue;
+
+            netNamePattern = getNetNamePattern( *connection );
+        }
+        else
+        {
+            const SCH_CONNECTION* connection = schItem->Connection( &path );
+
+            if( !connection )
+                continue;
+
+            netNamePattern = getNetNamePattern( *connection );
+        }
+
+        if( !netNamePattern )
+        {
+            // This is a choice, we can also allow some un-labeled nets as long as some are labeled.
+            m_frame->ShowInfoBarError( _( "All selected nets must be labeled to assign a netclass." ) );
+            return 0;
+        }
+
+        netNames.insert( *netNamePattern );
+    }
+
+    if( netNames.empty() )
+    {
+        m_frame->ShowInfoBarError( _( "No nets selected." ) );
+        return 0;
+    }
+
+    selectionTool->ClearSelection();
+
+    DIALOG_ASSIGN_NETCLASS dlg( m_frame, netNames, schematic.GetNetClassAssignmentCandidates(),
+            [&]( const std::vector<wxString>& aNetNames )
+            {
+                std::unordered_set<SCH_ITEM*> highlighted;
+                const SCH_CONNECTIVITY::NAVIGATION_QUERY query( schematic );
+
+                for( const wxString& name : aNetNames )
+                    query.CollectNetItems( name, path, highlighted );
+
+                for( SCH_ITEM* item : screen->Items() )
+                {
+                    bool redraw = setNetHighlight( item, highlighted.contains( item ) );
+
+                    item->RunOnChildren(
+                            [&]( SCH_ITEM* aChild )
+                            {
+                                redraw |= setNetHighlight( aChild, highlighted.contains( aChild ) );
+                            },
+                            RECURSE_MODE::NO_RECURSE );
+
+                    if( redraw )
+                        getView()->Update( item, KIGFX::VIEW_UPDATE_FLAGS::REPAINT );
+                }
+
+                m_frame->GetCanvas()->ForceRefresh();
+            } );
+
+    if( dlg.ShowModal() )
+    {
+        getView()->UpdateAllItemsConditionally(
+                [&]( KIGFX::VIEW_ITEM* aItem ) -> int
+                {
+                    int flags = 0;
+
+                    auto invalidateTextVars =
+                            [&flags]( EDA_TEXT* text )
+                            {
+                                if( text->HasTextVars() )
+                                {
+                                    text->ClearRenderCache();
+                                    text->ClearBoundingBoxCache();
+                                    flags |= KIGFX::GEOMETRY | KIGFX::REPAINT;
+                                }
+                            };
+
+                    // Netclass coloured items
+                    //
+                    if( dynamic_cast<SCH_LINE*>( aItem ) )
+                        flags |= KIGFX::REPAINT;
+                    else if( dynamic_cast<SCH_JUNCTION*>( aItem ) )
+                        flags |= KIGFX::REPAINT;
+                    else if( dynamic_cast<SCH_BUS_ENTRY_BASE*>( aItem ) )
+                        flags |= KIGFX::REPAINT;
+
+                    // Items that might reference an item's netclass name
+                    //
+                    if( EDA_TEXT* text = dynamic_cast<EDA_TEXT*>( aItem ) )
+                        invalidateTextVars( text );
+
+                    if( SCH_ITEM* item = dynamic_cast<SCH_ITEM*>( aItem ) )
+                    {
+                        item->RunOnChildren(
+                                [&invalidateTextVars]( SCH_ITEM* aChild )
+                                {
+                                    if( EDA_TEXT* text = dynamic_cast<EDA_TEXT*>( aChild ) )
+                                        invalidateTextVars( text );
+                                },
+                                RECURSE_MODE::NO_RECURSE );
+
+                        if( flags & KIGFX::GEOMETRY )
+                            m_frame->GetScreen()->UpdateDisplayBounds( item );
+                    }
+
+                    return flags;
+                } );
+    }
+
+    highlightNet( m_toolMgr, m_frame->GetCurrentSheet(), CLEAR );
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::FindNetInInspector( const TOOL_EVENT& aEvent )
+{
+    SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+
+    if( !selectionTool )
+        return 0;
+
+    const SCH_SHEET_PATH path = m_frame->GetCurrentSheet();
+    const bool usePublished = ADVANCED_CFG::GetCfg().m_ConnectivityEngine;
+
+    if( usePublished && !m_frame->RecalculateConnections( nullptr, NO_CLEANUP ) )
+        return 0;
+
+    wxString netName;
+
+    for( EDA_ITEM* item : selectionTool->GetSelection() )
+    {
+        if( SCH_ITEM* schItem = dynamic_cast<SCH_ITEM*>( item ) )
+        {
+            if( usePublished )
+            {
+                const auto connection = m_frame->Schematic().Connectivity().Connection(
+                        schItem->m_Uuid, path.PathRef() );
+
+                if( connection && !connection->IsUnconnected() )
+                    netName = connection->Name();
+            }
+            else if( const SCH_CONNECTION* connection = schItem->Connection( &path ) )
+            {
+                netName = connection->GetNetName();
+            }
+
+            if( !netName.IsEmpty() )
+                break;
+        }
+    }
+
+    if( netName.IsEmpty() )
+        netName = m_frame->GetHighlightedConnection();
+
+    if( netName.IsEmpty() )
+    {
+        m_frame->ShowInfoBarError( _( "No connected net selected." ) );
+        return 0;
+    }
+
+    m_frame->FindNetInInspector( netName );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::UpdateNetHighlighting( const TOOL_EVENT& aEvent )
+{
+    wxCHECK( m_frame, 0 );
+
+    const SCH_SHEET_PATH& sheetPath = m_frame->GetCurrentSheet();
+    SCH_SCREEN*           screen = sheetPath.LastScreen();
+    wxCHECK( screen, 0 );
+
+    const wxString selectedName = m_frame->GetHighlightedConnection();
+    const wxString chainName = m_frame->GetHighlightedNetChain();
+    SCH_NETCHAIN*  chain = chainName.IsEmpty() ? nullptr
+                                               : m_frame->Schematic().NetChains().GetNetChainByName( chainName );
+    std::unordered_set<SCH_ITEM*> highlighted;
+
+    if( !selectedName.IsEmpty() || chain )
+    {
+        const SCH_CONNECTIVITY::NAVIGATION_QUERY query( m_frame->Schematic() );
+
+        if( !selectedName.IsEmpty() )
+            query.CollectNetItems( selectedName, sheetPath, highlighted, true, m_highlightBusMembers );
+
+        if( chain )
+        {
+            for( const wxString& name : chain->GetNets() )
+                query.CollectNetItems( name, sheetPath, highlighted );
+        }
+    }
+
+    bool changed = false;
+
+    for( SCH_ITEM* item : screen->Items() )
+    {
+        if( !item )
+            continue;
+
+        bool        redraw = setNetHighlight( item, highlighted.contains( item ) );
+        SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( item );
+        bool        powerHighlight = false;
+
+        if( symbol && symbol->IsPower() )
+        {
+            std::vector<SCH_PIN*> pins = symbol->GetPins( &sheetPath );
+            powerHighlight = !pins.empty() && highlighted.contains( pins.front() );
+        }
+
+        item->RunOnChildren(
+                [&]( SCH_ITEM* child )
+                {
+                    bool highlight = highlighted.contains( child );
+
+                    if( powerHighlight && child->Type() == SCH_FIELD_T )
+                    {
+                        const auto* field = static_cast<SCH_FIELD*>( child );
+                        highlight = field->IsVisible() && (   field->GetId() == FIELD_T::REFERENCE
+                                                           || field->GetId() == FIELD_T::VALUE );
+                    }
+
+                    redraw |= setNetHighlight( child, highlight );
+                }, RECURSE_MODE::NO_RECURSE );
+
+        if( redraw )
+        {
+            getView()->Update( item, KIGFX::REPAINT );
+            changed = true;
+        }
+    }
+
+    if( changed )
+        m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::HighlightNetCursor( const TOOL_EVENT& aEvent )
+{
+    PICKER_TOOL* picker = m_toolMgr->GetTool<PICKER_TOOL>();
+
+    // Deactivate other tools; particularly important if another PICKER is currently running
+    Activate();
+
+    picker->SetCursor( KICURSOR::BULLSEYE );
+    picker->SetSnapping( false );
+    picker->ClearHandlers();
+
+    picker->SetClickHandler(
+            [this]( const VECTOR2D& aPos )
+            {
+                return highlightNet( m_toolMgr, m_frame->GetCurrentSheet(), aPos );
+            } );
+
+    m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ReplaceTerminalPin( const TOOL_EVENT& aEvent )
+{
+    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    const auto change = aEvent.Parameter<SCH_CONNECTIVITY::NETCHAIN_MANAGER::TERMINAL_CHANGE>();
+
+    if( editFrame->Schematic().NetChains().ReplaceNetChainTerminalPin( change ) )
+    {
+        editFrame->OnModify();
+        editFrame->GetCanvas()->Refresh();
+    }
+    else
+    {
+        DisplayError( editFrame, _( "Unable to replace the net chain terminal pin." ) );
+    }
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::NameNetChain( const TOOL_EVENT& aEvent )
+{
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCH_ITEM* item = static_cast<SCH_ITEM*>( selTool->GetSelection().Front() );
+    SCH_PIN* pin = dynamic_cast<SCH_PIN*>( item );
+
+    if( !pin )
+        return 0;
+
+    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    auto& chains = editFrame->Schematic().NetChains();
+    const auto netName = pin->GetConnectionName( &editFrame->GetCurrentSheet() );
+
+    if( !netName )
+        return 0;
+
+    if( SCH_NETCHAIN* sig = chains.GetNetChainForNet( *netName ) )
+    {
+        const wxString oldName = sig->GetName();
+        const wxString newName = wxGetTextFromUser( _( "Net chain name:" ), _( "Name Net Chain" ), oldName );
+
+        if( newName.IsEmpty() || newName == oldName )
+            return 0;
+
+        if( !SCH_NETCHAIN::IsValidName( newName ) )
+        {
+            DisplayError( editFrame, _( "Chain name cannot contain spaces, quotes, or parentheses." ) );
+            return 0;
+        }
+
+        if( !chains.RenameCommittedNetChain( oldName, newName ) )
+        {
+            DisplayError( editFrame, wxString::Format( _( "Unable to rename net chain '%s' to '%s'." ),
+                                                       oldName, newName ) );
+            return 0;
+        }
+
+        editFrame->OnModify();
+        editFrame->SetHighlightedNetChain( newName );
+        TOOL_EVENT dummy;
+        UpdateNetHighlighting( dummy );
+        editFrame->UpdateNetHighlightStatus();
+    }
+
+    return 0;
+}
+
+int SCH_EDITOR_CONTROL::CreateNetChainBetweenPins( const TOOL_EVENT& aEvent )
+{
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    auto& selection = selTool->GetSelection();
+
+    if( selection.GetSize() != 2 )
+        return 0;
+
+    SCH_PIN* pinA = dynamic_cast<SCH_PIN*>( static_cast<SCH_ITEM*>( selection[0] ) );
+    SCH_PIN* pinB = dynamic_cast<SCH_PIN*>( static_cast<SCH_ITEM*>( selection[1] ) );
+
+    if( !pinA || !pinB )
+        return 0;
+
+    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+    auto& chains = editFrame->Schematic().NetChains();
+    const SCH_SHEET_PATH& path = editFrame->GetCurrentSheet();
+
+    SCH_NETCHAIN* potential = chains.FindPotentialNetChainBetweenPins( pinA, path, pinB, path );
+    if( !potential )
+    {
+        DisplayError( editFrame, _( "No potential net chain connects the selected pins." ) );
+        return 0;
+    }
+
+    // Potentials are rebuilt regardless of commitment and GetNetChainForNet() returns the first owner
+    for( const wxString& net : potential->GetNets() )
+    {
+        if( SCH_NETCHAIN* owner = chains.GetNetChainForNet( net ) )
+        {
+            DisplayError( editFrame, wxString::Format( _( "The selected pins are already in net chain '%s'." ),
+                                                       owner->GetName() ) );
+            return 0;
+        }
+    }
+
+    // Build default suggestion name
+    wxString suggestion = wxString::Format( wxS( "%s_%s" ), pinA->GetParentSymbol()->GetRef( &editFrame->GetCurrentSheet() ), pinB->GetParentSymbol()->GetRef( &editFrame->GetCurrentSheet() ) );
+
+    // Compose display text for dialog
+    wxString msg = wxString::Format( _( "Create Net Chain between %s:%s and %s:%s" ),
+                                     pinA->GetParentSymbol()->GetRef( &editFrame->GetCurrentSheet() ), pinA->GetNumber(),
+                                     pinB->GetParentSymbol()->GetRef( &editFrame->GetCurrentSheet() ), pinB->GetNumber() );
+
+    // Temporary highlight preview: highlight all nets in potential (reuse SetHighlightedNetChain with temp name)
+    // We use the potential's current name as a temporary highlight identifier
+    wxString prevHighlightedChain = editFrame->GetHighlightedNetChain();
+    wxString prevHighlightedConn = editFrame->GetHighlightedConnection();
+
+    editFrame->SetHighlightedConnection( wxEmptyString );
+    editFrame->SetHighlightedNetChain( potential->GetName() );
+    TOOL_EVENT dummy;
+    UpdateNetHighlighting( dummy );
+    editFrame->UpdateNetHighlightStatus();
+
+    // Zoom to bounding box of the two pins (union) expanded slightly
+    BOX2I bbox = pinA->GetBoundingBox();
+    bbox.Merge( pinB->GetBoundingBox() );
+    // Expand by 25% for context
+    int dx = bbox.GetWidth() / 4; if( dx < 100 ) dx = 100;
+    int dy = bbox.GetHeight() / 4; if( dy < 100 ) dy = 100;
+    bbox.Inflate( dx, dy );
+    if( auto canvas = editFrame->GetCanvas() )
+    {
+        canvas->GetView()->SetCenter( bbox.GetCenter() );
+        // Compute scale so bbox roughly fits viewport height
+        auto view = canvas->GetView();
+        if( view )
+        {
+            BOX2D viewBox = view->GetBoundary();
+            double scaleX = (double) viewBox.GetWidth() / (double) bbox.GetWidth();
+            double scaleY = (double) viewBox.GetHeight() / (double) bbox.GetHeight();
+            double scale = std::min( scaleX, scaleY );
+            if( scale > 0 )
+                view->SetScale( scale );
+        }
+    }
+
+    const auto restoreHighlight =
+            [&]()
+            {
+                editFrame->SetHighlightedNetChain( prevHighlightedChain );
+                editFrame->SetHighlightedConnection( prevHighlightedConn );
+                UpdateNetHighlighting( dummy );
+                editFrame->UpdateNetHighlightStatus();
+            };
+
+    wxString name = wxGetTextFromUser( msg, _( "Create Net Chain" ), suggestion, editFrame );
+
+    if( name.IsEmpty() )
+    {
+        restoreHighlight();
+        return 0; // cancelled
+    }
+
+    if( !SCH_NETCHAIN::IsValidName( name ) )
+    {
+        restoreHighlight();
+        DisplayError( editFrame, _( "Chain name cannot contain spaces, quotes, or parentheses." ) );
+        return 0;
+    }
+
+    if( chains.GetNetChainByName( name ) )
+    {
+        restoreHighlight();
+        DisplayError( editFrame, wxString::Format( _( "A net chain named '%s' already exists." ), name ) );
+        return 0;
+    }
+
+    if( !chains.CreateNetChainFromPotential( potential, name ) )
+    {
+        restoreHighlight();
+        DisplayError( editFrame, wxString::Format( _( "Unable to create net chain '%s'." ), name ) );
+        return 0;
+    }
+
+    editFrame->OnModify();
+
+    // Replace temporary highlight with new chain name
+    editFrame->SetHighlightedNetChain( name );
+    editFrame->SetHighlightedConnection( wxEmptyString );
+    UpdateNetHighlighting( dummy );
+    editFrame->UpdateNetHighlightStatus();
+    editFrame->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ShowCreateNetChain( const TOOL_EVENT& aEvent )
+{
+    SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_toolMgr->GetToolHolder() );
+
+    editFrame->RecalculateConnections( nullptr, NO_CLEANUP );
+
+    DIALOG_CREATE_NET_CHAIN::FOCUS_HINT hint;
+
+    if( SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>() )
+    {
+        const SCH_SELECTION& sel = selTool->GetSelection();
+
+        std::vector<SCH_SYMBOL*> symbols;
+
+        for( EDA_ITEM* item : sel )
+        {
+            if( SCH_SYMBOL* sym = dynamic_cast<SCH_SYMBOL*>( static_cast<SCH_ITEM*>( item ) ) )
+                symbols.push_back( sym );
+        }
+
+        if( symbols.size() >= 1 )
+            hint.fromRef = symbols[0]->GetRef( &editFrame->GetCurrentSheet() );
+
+        if( symbols.size() >= 2 )
+            hint.toRef = symbols[1]->GetRef( &editFrame->GetCurrentSheet() );
+
+        // Single pin or single wire/bus → use its connection's net name as the focus hint.
+        if( symbols.empty() && sel.GetSize() == 1 )
+        {
+            SCH_ITEM* schItem = static_cast<SCH_ITEM*>( sel.Front() );
+
+            if( schItem && schItem->IsType( { SCH_PIN_T, SCH_ITEM_LOCATE_WIRE_T, SCH_ITEM_LOCATE_BUS_T } ) )
+            {
+                if( const auto name = schItem->GetConnectionName( &editFrame->GetCurrentSheet() ) )
+                    hint.netName = *name;
+            }
+        }
+    }
+
+    DIALOG_CREATE_NET_CHAIN dlg( editFrame, hint );
+    dlg.ShowModal();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::Undo( const TOOL_EVENT& aEvent )
+{
+    wxCHECK( m_frame, 0 );
+
+    if( m_frame->GetUndoCommandCount() <= 0 )
+        return 0;
+
+    // Inform tools that undo command was issued
+    m_toolMgr->ProcessEvent( { TC_MESSAGE, TA_UNDO_REDO_PRE, AS_GLOBAL } );
+
+    // Get the old list
+    PICKED_ITEMS_LIST* undo_list = m_frame->PopCommandFromUndoList();
+
+    wxCHECK( undo_list, 0 );
+
+    m_frame->PutDataInPreviousState( undo_list );
+
+    // Now push the old command to the RedoList
+    undo_list->ReversePickersListOrder();
+    m_frame->PushCommandToRedoList( undo_list );
+
+    m_toolMgr->GetTool<SCH_SELECTION_TOOL>()->RebuildSelection();
+
+    m_frame->GetCanvas()->Refresh();
+    m_frame->OnModify();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::Redo( const TOOL_EVENT& aEvent )
+{
+    wxCHECK( m_frame, 0 );
+
+    if( m_frame->GetRedoCommandCount() == 0 )
+        return 0;
+
+    // Inform tools that undo command was issued
+    m_toolMgr->ProcessEvent( { TC_MESSAGE, TA_UNDO_REDO_PRE, AS_GLOBAL } );
+
+    /* Get the old list */
+    PICKED_ITEMS_LIST* list = m_frame->PopCommandFromRedoList();
+
+    wxCHECK( list, 0 );
+
+    /* Redo the command: */
+    m_frame->PutDataInPreviousState( list );
+
+    /* Put the old list in UndoList */
+    list->ReversePickersListOrder();
+    m_frame->PushCommandToUndoList( list );
+
+    m_toolMgr->GetTool<SCH_SELECTION_TOOL>()->RebuildSelection();
+
+    m_frame->GetCanvas()->Refresh();
+    m_frame->OnModify();
+
+    return 0;
+}
+
+
+bool SCH_EDITOR_CONTROL::doCopy( bool aUseDuplicateClipboard )
+{
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCH_SELECTION&      selection = selTool->RequestSelection();
+    SCHEMATIC&          schematic = m_frame->Schematic();
+
+    if( selection.Empty() )
+        return false;
+
+    if( aUseDuplicateClipboard )
+        m_duplicateIsHoverSelection = selection.IsHover();
+
+    selection.SetScreen( m_frame->GetScreen() );
+    m_supplementaryClipboard.clear();
+
+    for( EDA_ITEM* item : selection.GetItems() )
+    {
+        if( item->Type() == SCH_SHEET_T )
+        {
+            SCH_SHEET* sheet = (SCH_SHEET*) item;
+            m_supplementaryClipboard[sheet->GetFileName()] = sheet->GetScreen();
+        }
+        else if( item->Type() == SCH_FIELD_T && selection.IsHover() )
+        {
+            // Most of the time the user is trying to duplicate the parent symbol
+            // and the field text is in it
+            selection.Add( item->GetParent() );
+        }
+        else if( item->Type() == SCH_MARKER_T )
+        {
+            // Don't let the markers be copied
+            selection.Remove( item );
+        }
+        else if( item->Type() == SCH_GROUP_T )
+        {
+            // Groups need to have all their items selected
+            static_cast<SCH_ITEM*>( item )->RunOnChildren(
+                    [&]( EDA_ITEM* aChild )
+                    {
+                        selection.Add( aChild );
+                    },
+                    RECURSE_MODE::RECURSE );
+        }
+    }
+
+    bool               result = true;
+    STRING_FORMATTER   formatter;
+    SCH_IO_KICAD_SEXPR plugin;
+    SCH_SHEET_PATH     selPath = m_frame->GetCurrentSheet();
+
+    plugin.Format( &selection, &selPath, schematic, &formatter, true );
+
+    std::string prettyData = formatter.GetString();
+    KICAD_FORMAT::Prettify( prettyData, KICAD_FORMAT::FORMAT_MODE::COMPACT_TEXT_PROPERTIES );
+
+    if( !aUseDuplicateClipboard )
+    {
+        wxLogNull doNotLog; // disable logging of failed clipboard actions
+
+        result &= wxTheClipboard->Open();
+
+        if( result )
+        {
+            wxDataObjectComposite* data = new wxDataObjectComposite();
+
+            // Add KiCad data
+            wxCustomDataObject* kicadObj = new wxCustomDataObject( wxDataFormat( "application/kicad" ) );
+            kicadObj->SetData( prettyData.size(), prettyData.data() );
+            data->Add( kicadObj );
+
+            BOX2I selectionBox = expandedSelectionBox( selection );
+
+            if( selectionBox.GetWidth() > 0 && selectionBox.GetHeight() > 0 )
+            {
+                // Add bitmap data (encoded once, used for both PNG clipboard and HTML)
+                wxImage image = renderSelectionToImageForClipboard( m_frame, selection, selectionBox, true, false );
+                wxMemoryBuffer pngBuffer;
+
+                if( image.IsOk() && EncodeImageToPng( image, pngBuffer ) )
+                {
+                    AddPngToClipboardData( data, pngBuffer, &image );
+
+                    // Add HTML with embedded base64 PNG for pasting into documents
+                    wxMemoryBuffer htmlBuffer;
+
+                    if( generateHtmlFromPngData( pngBuffer, htmlBuffer ) )
+                    {
+                        wxCustomDataObject* htmlObj = new wxCustomDataObject( wxDF_HTML );
+                        htmlObj->SetData( htmlBuffer.GetDataLen(), htmlBuffer.GetData() );
+                        data->Add( htmlObj );
+                    }
+                }
+
+                // Add SVG data
+                wxMemoryBuffer svgBuffer;
+
+                if( plotSelectionToSvg( m_frame, selection, selectionBox, svgBuffer ) )
+                {
+                    wxCustomDataObject* svgObj = new wxCustomDataObject( wxDataFormat( "image/svg+xml" ) );
+                    svgObj->SetData( svgBuffer.GetDataLen(), svgBuffer.GetData() );
+                    data->Add( svgObj );
+                }
+            }
+
+            // Finally add text data
+            data->Add( new wxTextDataObject( wxString::FromUTF8( prettyData ) ) );
+
+            result &= wxTheClipboard->SetData( data );
+            result &= wxTheClipboard->Flush(); // Allow data to be available after closing KiCad
+            wxTheClipboard->Close();
+        }
+    }
+
+    if( selection.IsHover() )
+        m_toolMgr->RunAction( ACTIONS::selectionClear );
+
+    if( aUseDuplicateClipboard )
+    {
+        m_duplicateClipboard = prettyData;
+        return true;
+    }
+
+    return result;
+}
+
+
+bool SCH_EDITOR_CONTROL::searchSupplementaryClipboard( const wxString& aSheetFilename, SCH_SCREEN** aScreen )
+{
+    if( m_supplementaryClipboard.count( aSheetFilename ) > 0 )
+    {
+        *aScreen = m_supplementaryClipboard[aSheetFilename];
+        return true;
+    }
+
+    return false;
+}
+
+
+int SCH_EDITOR_CONTROL::Duplicate( const TOOL_EVENT& aEvent )
+{
+    doCopy( true ); // Use the local clipboard
+    Paste( aEvent );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::Cut( const TOOL_EVENT& aEvent )
+{
+    wxTextEntry* textEntry = dynamic_cast<wxTextEntry*>( wxWindow::FindFocus() );
+
+    if( textEntry )
+    {
+        textEntry->Cut();
+        return 0;
+    }
+
+    if( doCopy() )
+        m_toolMgr->RunAction( ACTIONS::doDelete );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::Copy( const TOOL_EVENT& aEvent )
+{
+    wxTextEntry* textEntry = dynamic_cast<wxTextEntry*>( wxWindow::FindFocus() );
+
+    if( textEntry )
+    {
+        textEntry->Copy();
+        return 0;
+    }
+
+    doCopy();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::CopyAsText( const TOOL_EVENT& aEvent )
+{
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCH_SELECTION&      selection = selTool->RequestSelection();
+
+    if( selection.Empty() )
+        return false;
+
+    wxString itemsAsText = GetSelectedItemsAsText( selection );
+
+    if( selection.IsHover() )
+        m_toolMgr->RunAction( ACTIONS::selectionClear );
+
+    return SaveClipboard( itemsAsText.ToStdString() );
+}
+
+
+void SCH_EDITOR_CONTROL::updatePastedSymbol( SCH_SYMBOL* aSymbol, const SCH_SHEET_PATH& aPastePath,
+                                             const KIID_PATH& aClipPath, bool aForceKeepAnnotations )
+{
+    wxCHECK( m_frame && aSymbol, /* void */ );
+
+    SCH_SYMBOL_INSTANCE newInstance;
+    bool                instanceFound = false;
+    KIID_PATH           pasteLookupPath = aClipPath;
+
+    m_pastedSymbols.insert( aSymbol );
+
+    for( const SCH_SYMBOL_INSTANCE& tmp : aSymbol->GetInstances() )
+    {
+        if( ( tmp.m_Path.empty() && aClipPath.empty() ) || ( !aClipPath.empty() && tmp.m_Path.EndsWith( aClipPath ) ) )
+        {
+            newInstance = tmp;
+            instanceFound = true;
+
+            wxLogTrace( traceSchPaste, wxS( "Pasting found symbol instance with reference %s, unit %d:\n"
+                                            "\tClipboard path: %s\n"
+                                            "\tSymbol UUID: %s." ),
+                        tmp.m_Reference,
+                        tmp.m_Unit,
+                        aClipPath.AsString(),
+                        aSymbol->m_Uuid.AsString() );
+
+            break;
+        }
+    }
+
+    // The pasted symbol look up paths include the symbol UUID.
+    pasteLookupPath.push_back( aSymbol->m_Uuid );
+
+    if( !instanceFound )
+    {
+        wxLogTrace( traceSchPaste, wxS( "Clipboard symbol instance **not** found:\n\tClipboard path: %s\n"
+                                        "\tSymbol UUID: %s." ),
+                    aClipPath.AsString(),
+                    aSymbol->m_Uuid.AsString() );
+
+        // Some legacy versions saved value fields escaped.  While we still do in the symbol
+        // editor, we don't anymore in the schematic, so be sure to unescape them.
+        SCH_FIELD* valueField = aSymbol->GetField( FIELD_T::VALUE );
+        valueField->SetText( UnescapeString( valueField->GetText() ) );
+
+        // Pasted from notepad or an older instance of eeschema.  Use the values in the fields
+        // instead.
+        newInstance.m_Reference = aSymbol->GetField( FIELD_T::REFERENCE )->GetText();
+        newInstance.m_Unit = aSymbol->GetUnit();
+    }
+
+    newInstance.m_Path = aPastePath.Path();
+    newInstance.m_ProjectName = m_frame->Prj().GetProjectName();
+
+    aSymbol->AddHierarchicalReference( newInstance );
+
+    if( !aForceKeepAnnotations )
+        aSymbol->ClearAnnotation( &aPastePath, false );
+
+    // We might clear annotations but always leave the original unit number from the paste.
+    aSymbol->SetUnit( newInstance.m_Unit );
+}
+
+
+SCH_SHEET_PATH SCH_EDITOR_CONTROL::updatePastedSheet( SCH_SHEET* aSheet, const SCH_SHEET_PATH& aPastePath,
+                                                      const KIID_PATH& aClipPath, bool aForceKeepAnnotations,
+                                                      SCH_SHEET_LIST* aPastedSheets, std::map<SCH_SHEET_PATH,
+                                                      SCH_REFERENCE_LIST>& aPastedSymbols )
+{
+    wxCHECK( aSheet && aPastedSheets, aPastePath );
+
+    SCH_SHEET_PATH sheetPath = aPastePath;
+    sheetPath.push_back( aSheet );
+
+    aPastedSheets->push_back( sheetPath );
+
+    if( aSheet->GetScreen() == nullptr )
+        return sheetPath; // We can only really set the page number but not load any items
+
+    bool isSharedPath = sheetPath.IsSharedPath();
+
+    for( SCH_ITEM* item : aSheet->GetScreen()->Items() )
+    {
+        if( item->IsConnectable() )
+            item->SetConnectivityDirty();
+
+        if( item->Type() == SCH_SYMBOL_T )
+        {
+            SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+
+            wxCHECK2( symbol, continue );
+
+            // Only do this once if the symbol is shared across multiple sheets.
+            if( !m_pastedSymbols.count( symbol ) )
+            {
+                if( !isSharedPath )
+                    const_cast<KIID&>( symbol->m_Uuid ) = KIID();
+
+                for( SCH_PIN* pin : symbol->GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES ) )
+                {
+                    // Only update the UUID if the symbol is not in a shared sheet.
+                    if( !isSharedPath )
+                        const_cast<KIID&>( pin->m_Uuid ) = KIID();
+
+                    pin->SetConnectivityDirty();
+                }
+            }
+
+            updatePastedSymbol( symbol, sheetPath, aClipPath, aForceKeepAnnotations );
+        }
+        else if( item->Type() == SCH_SHEET_T )
+        {
+            SCH_SHEET* subsheet = static_cast<SCH_SHEET*>( item );
+
+            wxCHECK2( subsheet, continue );
+
+            // Make sure pins get a new UUID and set the dirty connectivity flag.
+            if( !aPastedSheets->ContainsSheet( subsheet ) )
+            {
+                if( !isSharedPath )
+                    const_cast<KIID&>( subsheet->m_Uuid ) = KIID();
+
+                for( SCH_SHEET_PIN* pin : subsheet->GetPins() )
+                {
+                    if( !isSharedPath )
+                        const_cast<KIID&>( pin->m_Uuid ) = KIID();
+
+                    pin->SetConnectivityDirty();
+                }
+            }
+
+            KIID_PATH newClipPath = aClipPath;
+            newClipPath.push_back( subsheet->m_Uuid );
+
+            updatePastedSheet( subsheet, sheetPath, newClipPath, aForceKeepAnnotations, aPastedSheets, aPastedSymbols );
+        }
+    }
+
+    sheetPath.GetSymbols( aPastedSymbols[aPastePath], SYMBOL_FILTER_ALL );
+
+    return sheetPath;
+}
+
+
+void SCH_EDITOR_CONTROL::prunePastedSymbolInstances()
+{
+    wxCHECK( m_frame, /* void */ );
+
+    for( SCH_SYMBOL* symbol : m_pastedSymbols )
+    {
+        wxCHECK2( symbol, continue );
+
+        PrunePastedSymbolInstances( symbol, m_frame->Schematic() );
+    }
+}
+
+
+const LIB_SYMBOL* SCH_EDITOR_CONTROL::ChoosePasteLibSymbol( const SCH_SCREEN* aClipboardScreen,
+                                                            const SCH_SCREEN* aDestScreen,
+                                                            const wxString&   aLibSymbolName )
+{
+    // The clipboard's cached library symbol is a matched pair with the pasted instance, so it
+    // must win over the destination's same-named cache. Pasting from the destination cache would
+    // silently remap the instance to a different definition and drop in-place edits such as
+    // renumbered pins (issue 21401) or a changed power type (issue 22162). Fall back to the
+    // destination cache only when the clipboard carries no copy.
+    if( aClipboardScreen )
+    {
+        auto clipIt = aClipboardScreen->GetLibSymbols().find( aLibSymbolName );
+
+        if( clipIt != aClipboardScreen->GetLibSymbols().end() )
+            return clipIt->second;
+    }
+
+    if( aDestScreen )
+    {
+        auto destIt = aDestScreen->GetLibSymbols().find( aLibSymbolName );
+
+        if( destIt != aDestScreen->GetLibSymbols().end() )
+            return destIt->second;
+    }
+
+    return nullptr;
+}
+
+
+int SCH_EDITOR_CONTROL::Paste( const TOOL_EVENT& aEvent )
+{
+    wxTextEntry* textEntry = dynamic_cast<wxTextEntry*>( wxWindow::FindFocus() );
+
+    if( textEntry )
+    {
+        textEntry->Paste();
+        return 0;
+    }
+
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    std::string         content;
+    VECTOR2I            eventPos;
+
+    SCH_SHEET tempSheet;
+
+    // Priority for paste:
+    // 1. application/kicad format (handled by GetClipboardUTF8 which checks this first)
+    // 2. Text data that can be parsed as KiCad S-expressions
+    // 3. Bitmap/image data (fallback only if no valid text content)
+    if( aEvent.IsAction( &ACTIONS::duplicate ) )
+        content = m_duplicateClipboard;
+    else
+        content = GetClipboardUTF8();
+
+    // Only fall back to image data if there's no text content
+    if( content.empty() )
+    {
+        std::unique_ptr<wxBitmap> clipImg = GetImageFromClipboard();
+
+        if( clipImg )
+        {
+            auto bitmap = std::make_unique<SCH_BITMAP>();
+
+            if( bitmap->GetReferenceImage().SetImage( clipImg->ConvertToImage() ) )
+                return m_toolMgr->RunAction( SCH_ACTIONS::placeImage, bitmap.release() );
+        }
+
+        return 0;
+    }
+
+    if( aEvent.IsAction( &ACTIONS::duplicate ) )
+        eventPos = getViewControls()->GetCursorPosition( false );
+
+    STRING_LINE_READER reader( content, "Clipboard" );
+    SCH_IO_KICAD_SEXPR plugin;
+
+    // Screen object on heap is owned by the sheet.
+    SCH_SCREEN* tempScreen = new SCH_SCREEN( &m_frame->Schematic() );
+    tempSheet.SetScreen( tempScreen );
+
+    try
+    {
+        plugin.LoadContent( reader, &tempSheet );
+    }
+    catch( IO_ERROR& )
+    {
+        // If it wasn't schematic content, paste as a text object
+        {
+            if( content.size() > static_cast<size_t>( ADVANCED_CFG::GetCfg().m_MaxPastedTextLength ) )
+            {
+                int result = IsOK( m_frame, _( "Pasting a long text text string may be very slow.  "
+                                               "Do you want to continue?" ) );
+                if( !result )
+                    return 0;
+            }
+
+            SCH_TEXT* text_item = new SCH_TEXT( VECTOR2I( 0, 0 ), content );
+            tempScreen->Append( text_item );
+        }
+    }
+
+    SELECTION& currentSelection = selTool->GetSelection();
+
+    bool hasTableCells = false;
+
+    for( EDA_ITEM* item : currentSelection )
+    {
+        if( item->Type() == SCH_TABLECELL_T )
+        {
+            hasTableCells = true;
+            break;
+        }
+    }
+
+    if( hasTableCells )
+    {
+        SCH_TABLE* clipboardTable = nullptr;
+
+        for( SCH_ITEM* item : tempScreen->Items() )
+        {
+            if( item->Type() == SCH_TABLE_T )
+            {
+                clipboardTable = static_cast<SCH_TABLE*>( item );
+                break;
+            }
+        }
+
+        if( clipboardTable )
+        {
+            SCH_EDIT_TABLE_TOOL* tableEditTool = m_toolMgr->GetTool<SCH_EDIT_TABLE_TOOL>();
+
+            if( tableEditTool )
+            {
+                wxString errorMsg;
+
+                if( !tableEditTool->validatePasteIntoSelection( currentSelection, errorMsg ) )
+                {
+                    DisplayError( m_frame, errorMsg );
+                    return 0;
+                }
+
+                SCH_COMMIT commit( m_toolMgr );
+
+                if( tableEditTool->pasteCellsIntoSelection( currentSelection, clipboardTable, commit ) )
+                {
+                    commit.Push( _( "Paste Cells" ) );
+                    return 0;
+                }
+                else
+                {
+                    DisplayError( m_frame, _( "Failed to paste cells" ) );
+                    return 0;
+                }
+            }
+        }
+    }
+
+    m_pastedSymbols.clear();
+
+    tempScreen->MigrateSimModels();
+
+    bool                annotateAutomatic = m_frame->eeconfig()->m_AnnotatePanel.automatic;
+    SCHEMATIC_SETTINGS& schematicSettings = m_frame->Schematic().Settings();
+    int                 annotateStartNum = schematicSettings.m_AnnotateStartNum;
+
+    PASTE_MODE pasteMode = annotateAutomatic ? PASTE_MODE::UNIQUE_ANNOTATIONS : PASTE_MODE::REMOVE_ANNOTATIONS;
+    bool       forceRemoveAnnotations = false;
+
+    if( aEvent.IsAction( &ACTIONS::pasteSpecial ) )
+    {
+        PASTE_MODE           defaultPasteMode = pasteMode;
+        DIALOG_PASTE_SPECIAL dlg( m_frame, &pasteMode );
+
+        if( dlg.ShowModal() == wxID_CANCEL )
+            return 0;
+
+        // We have to distinguish if removing was explicit
+        forceRemoveAnnotations = pasteMode == PASTE_MODE::REMOVE_ANNOTATIONS && pasteMode != defaultPasteMode;
+    }
+
+    bool forceKeepAnnotations = pasteMode != PASTE_MODE::REMOVE_ANNOTATIONS;
+
+    // SCH_SEXP_PLUGIN added the items to the paste screen, but not to the view or anything
+    // else.  Pull them back out to start with.
+    SCH_COMMIT             commit( m_toolMgr );
+    EDA_ITEMS              loadedItems;
+    std::vector<SCH_ITEM*> sortedLoadedItems;
+    bool                   sheetsPasted = false;
+    SCH_SHEET_LIST         hierarchy = m_frame->Schematic().Hierarchy();
+    SCH_SHEET_PATH&        pasteRoot = m_frame->GetCurrentSheet();
+    wxFileName             destFn = pasteRoot.Last()->GetFileName();
+
+    if( destFn.IsRelative() )
+        destFn.MakeAbsolute( m_frame->Prj().GetProjectPath() );
+
+    // List of paths in the hierarchy that refer to the destination sheet of the paste
+    SCH_SHEET_LIST sheetPathsForScreen = hierarchy.FindAllSheetsForScreen( pasteRoot.LastScreen() );
+    sheetPathsForScreen.SortByPageNumbers();
+
+    // Build a list of screens from the current design (to avoid loading sheets that already exist)
+    std::map<wxString, SCH_SCREEN*> loadedScreens;
+
+    for( const SCH_SHEET_PATH& item : hierarchy )
+    {
+        if( item.LastScreen() )
+            loadedScreens[item.Last()->GetFileName()] = item.LastScreen();
+    }
+
+    // Get set of sheet names in the current schematic to prevent duplicate sheet names on paste.
+    std::set<wxString> existingSheetNames = pasteRoot.LastScreen()->GetSheetNames();
+
+    // Build symbol list for reannotation of duplicates
+    SCH_REFERENCE_LIST existingRefs;
+    hierarchy.GetSymbols( existingRefs, SYMBOL_FILTER_ALL );
+    existingRefs.SortByReferenceOnly();
+
+    std::set<wxString> existingRefsSet;
+
+    for( const SCH_REFERENCE& ref : existingRefs )
+        existingRefsSet.insert( ref.GetRef() );
+
+    // Build UUID map for fetching last-resolved-properties
+    std::unordered_map<KIID, EDA_ITEM*> itemMap;
+    hierarchy.FillItemMap( itemMap );
+
+    // Keep track of pasted sheets and symbols for the different paths to the hierarchy.
+    std::map<SCH_SHEET_PATH, SCH_REFERENCE_LIST> pastedSymbols;
+    std::map<SCH_SHEET_PATH, SCH_SHEET_LIST>     pastedSheets;
+
+    for( SCH_ITEM* item : tempScreen->Items() )
+    {
+        if( item->Type() == SCH_SHEET_T )
+            sortedLoadedItems.push_back( item );
+        else
+            loadedItems.push_back( item );
+    }
+
+    sort( sortedLoadedItems.begin(), sortedLoadedItems.end(),
+          []( SCH_ITEM* firstItem, SCH_ITEM* secondItem )
+          {
+              SCH_SHEET* firstSheet = static_cast<SCH_SHEET*>( firstItem );
+              SCH_SHEET* secondSheet = static_cast<SCH_SHEET*>( secondItem );
+              return StrNumCmp( firstSheet->GetName(), secondSheet->GetName(), false ) < 0;
+          } );
+
+
+    for( SCH_ITEM* item : sortedLoadedItems )
+    {
+        loadedItems.push_back( item );
+
+        if( item->Type() == SCH_SHEET_T )
+        {
+            SCH_SHEET* sheet = static_cast<SCH_SHEET*>( item );
+            wxFileName srcFn = sheet->GetFileName();
+
+            if( srcFn.IsRelative() )
+                srcFn.MakeAbsolute( m_frame->Prj().GetProjectPath() );
+
+            SCH_SHEET_LIST sheetHierarchy( sheet );
+
+            if( hierarchy.TestForRecursion( sheetHierarchy, destFn.GetFullPath( wxPATH_UNIX ) ) )
+            {
+                auto msg = wxString::Format( _( "The pasted sheet '%s'\n"
+                                                "was dropped because the destination already has "
+                                                "the sheet or one of its subsheets as a parent." ),
+                                             sheet->GetFileName() );
+                DisplayError( m_frame, msg );
+                loadedItems.pop_back();
+            }
+        }
+    }
+
+    // Remove the references from our temporary screen to prevent freeing on the DTOR
+    tempScreen->Clear( false );
+
+    for( EDA_ITEM* item : loadedItems )
+    {
+        KIID_PATH clipPath( wxT( "/" ) ); // clipboard is at root
+
+        SCH_ITEM* schItem = static_cast<SCH_ITEM*>( item );
+
+        wxCHECK2( schItem, continue );
+
+        if( schItem->IsConnectable() )
+            schItem->SetConnectivityDirty();
+
+        // Clear lock state on paste to match PCB editor behavior
+        schItem->SetLocked( false );
+
+        if( item->Type() == SCH_SYMBOL_T )
+        {
+            SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+
+            SCH_SCREEN* currentScreen = m_frame->GetScreen();
+
+            wxCHECK2( currentScreen, continue );
+
+            const LIB_SYMBOL* source = ChoosePasteLibSymbol( tempScreen, currentScreen,
+                                                             symbol->GetSchSymbolLibraryName() );
+
+            if( source )
+                symbol->SetLibSymbol( new LIB_SYMBOL( *source ) );
+
+            // If the symbol is already in the schematic we have to always keep the annotations. The exception
+            // is if the user has chosen to remove them.
+            for( const SCH_SYMBOL_INSTANCE& instance : symbol->GetInstances() )
+            {
+                if( !existingRefsSet.contains( instance.m_Reference ) )
+                {
+                    forceKeepAnnotations = !forceRemoveAnnotations;
+                    break;
+                }
+            }
+
+            for( SCH_SHEET_PATH& sheetPath : sheetPathsForScreen )
+                updatePastedSymbol( symbol, sheetPath, clipPath, forceKeepAnnotations );
+
+            // Most modes will need new KIIDs for the symbol and its pins.  However, if we are pasting
+            // unique annotations, we need to check if the symbol is not already in the hierarchy.  If we
+            // don't already have a copy of the symbol, we just keep the existing KIID data as it is likely
+            // the same symbol being moved around the schematic.
+            bool needsNewKiid = ( pasteMode == PASTE_MODE::UNIQUE_ANNOTATIONS );
+
+            for( const SCH_SYMBOL_INSTANCE& instance : symbol->GetInstances() )
+            {
+                if( existingRefsSet.contains( instance.m_Reference ) )
+                {
+                    needsNewKiid = true;
+                    break;
+                }
+            }
+
+            if( needsNewKiid )
+            {
+                // Assign a new KIID
+                const_cast<KIID&>( item->m_Uuid ) = KIID();
+
+                // Make sure pins get a new UUID
+                for( SCH_PIN* pin : symbol->GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES ) )
+                {
+                    const_cast<KIID&>( pin->m_Uuid ) = KIID();
+                    pin->SetConnectivityDirty();
+                }
+
+                for( SCH_SHEET_PATH& sheetPath : sheetPathsForScreen )
+                {
+                    // Ignore symbols from a non-existant library.
+                    if( source )
+                    {
+                        SCH_REFERENCE schReference( symbol, sheetPath );
+                        schReference.SetSheetNumber( sheetPath.GetPageNumberAsInt() );
+                        pastedSymbols[sheetPath].AddItem( schReference );
+                    }
+                }
+            }
+        }
+        else if( item->Type() == SCH_SHEET_T )
+        {
+            SCH_SHEET* sheet = (SCH_SHEET*) item;
+            SCH_FIELD* nameField = sheet->GetField( FIELD_T::SHEET_NAME );
+            wxString   baseName = nameField->GetText();
+            wxString   candidateName = baseName;
+            wxString   number;
+
+            while( !baseName.IsEmpty() && wxIsdigit( baseName.Last() ) )
+            {
+                number = baseName.Last() + number;
+                baseName.RemoveLast();
+            }
+
+            // Update hierarchy to include any other sheets we already added, avoiding
+            // duplicate sheet names
+            hierarchy = m_frame->Schematic().Hierarchy();
+
+            int uniquifier = std::max( 0, wxAtoi( number ) ) + 1;
+
+            while( existingSheetNames.count( candidateName ) )
+                candidateName = wxString::Format( wxT( "%s%d" ), baseName, uniquifier++ );
+
+            nameField->SetText( candidateName );
+            existingSheetNames.emplace( candidateName );
+
+            wxFileName  fn = sheet->GetFileName();
+            SCH_SCREEN* existingScreen = nullptr;
+
+            sheet->SetParent( pasteRoot.Last() );
+            sheet->SetScreen( nullptr );
+
+            if( !fn.IsAbsolute() )
+            {
+                wxFileName currentSheetFileName = pasteRoot.LastScreen()->GetFileName();
+                fn.Normalize( FN_NORMALIZE_FLAGS | wxPATH_NORM_ENV_VARS, currentSheetFileName.GetPath() );
+            }
+
+            // Try to find the screen for the pasted sheet by several means
+            if( !m_frame->Schematic().Root().SearchHierarchy( fn.GetFullPath( wxPATH_UNIX ), &existingScreen ) )
+            {
+                if( loadedScreens.count( sheet->GetFileName() ) > 0 )
+                    existingScreen = loadedScreens.at( sheet->GetFileName() );
+                else
+                    searchSupplementaryClipboard( sheet->GetFileName(), &existingScreen );
+            }
+
+            if( existingScreen )
+            {
+                sheet->SetScreen( existingScreen );
+            }
+            else
+            {
+                if( !m_frame->LoadSheetFromFile( sheet, &pasteRoot, fn.GetFullPath() ) )
+                    m_frame->InitSheet( sheet, sheet->GetFileName() );
+            }
+
+            sheetsPasted = true;
+
+            // Push it to the clipboard path while it still has its old KIID
+            clipPath.push_back( sheet->m_Uuid );
+
+            // Assign a new KIID to the pasted sheet
+            const_cast<KIID&>( sheet->m_Uuid ) = KIID();
+
+            // Make sure pins get a new UUID
+            for( SCH_SHEET_PIN* pin : sheet->GetPins() )
+            {
+                const_cast<KIID&>( pin->m_Uuid ) = KIID();
+                pin->SetConnectivityDirty();
+            }
+
+            // Once we have our new KIID we can update all pasted instances. This will either
+            // reset the annotations or copy "kept" annotations from the supplementary clipboard.
+            for( SCH_SHEET_PATH& sheetPath : sheetPathsForScreen )
+            {
+                SCH_SHEET_PATH subPath = updatePastedSheet( sheet, sheetPath, clipPath,
+                                                            ( forceKeepAnnotations && annotateAutomatic ),
+                                                            &pastedSheets[sheetPath], pastedSymbols );
+            }
+        }
+        else
+        {
+            SCH_ITEM* srcItem = dynamic_cast<SCH_ITEM*>( itemMap[item->m_Uuid] );
+            SCH_ITEM* destItem = dynamic_cast<SCH_ITEM*>( item );
+
+            // Everything gets a new KIID
+            const_cast<KIID&>( item->m_Uuid ) = KIID();
+
+            if( srcItem && destItem )
+            {
+                destItem->SetConnectivityDirty( true );
+                destItem->SetLastResolvedState( srcItem );
+            }
+
+            // Pasted named groups need a unique name, the multichannel tool matches groups by name.
+            if( item->Type() == SCH_GROUP_T )
+            {
+                SCH_GROUP* group = static_cast<SCH_GROUP*>( item );
+
+                if( !group->GetName().IsEmpty() )
+                    group->SetName( UniqueGroupName( m_frame->GetScreen(), group->GetName() ) );
+            }
+        }
+
+        // Lines need both ends selected for a move after paste so the whole line moves.
+        if( item->Type() == SCH_LINE_T )
+            item->SetFlags( STARTPOINT | ENDPOINT );
+
+        item->SetFlags( IS_NEW | IS_PASTED | IS_MOVING );
+
+        if( !m_frame->GetScreen()->CheckIfOnDrawList( (SCH_ITEM*) item ) )  // don't want a loop!
+            m_frame->AddToScreen( item, m_frame->GetScreen() );
+
+        commit.Added( (SCH_ITEM*) item, m_frame->GetScreen() );
+
+        // Start out hidden so the pasted items aren't "ghosted" in their original location
+        // before being moved to the current location.
+        getView()->Hide( item, true );
+    }
+
+    if( sheetsPasted )
+    {
+        // The full schematic hierarchy need to be update before assigning new annotation and page numbers.
+        m_frame->Schematic().RefreshHierarchy();
+
+        // Update sheet instance page and virtual page numbers to ensure annotation works correctly.
+        for( SCH_SHEET_PATH& sheetPath : sheetPathsForScreen )
+        {
+            for( SCH_SHEET_PATH& pastedSheet : pastedSheets[sheetPath] )
+            {
+                // Find next free string page number for the sheet instance.
+                int      page = 1;
+                wxString pageNum = wxString::Format( "%d", page );
+
+                while( hierarchy.PageNumberExists( pageNum ) )
+                    pageNum = wxString::Format( "%d", ++page );
+
+                int virtualPageNumber = page;
+
+                // The virtual page and sheet instance page numbers do not necessarily track. Increment by one
+                // to ensure the annotation sheet paths all have unique virtual page numbers.
+                if( page == hierarchy.GetLastVirtualPageNumber() )
+                    virtualPageNumber = hierarchy.GetLastVirtualPageNumber() + 1;
+
+                pastedSheet.SetVirtualPageNumber( virtualPageNumber );
+
+                SCH_SHEET_INSTANCE sheetInstance;
+
+                sheetInstance.m_Path = pastedSheet.Path();
+
+                // Don't include the actual sheet in the instance path.
+                sheetInstance.m_Path.pop_back();
+                sheetInstance.m_PageNumber = pageNum;
+                sheetInstance.m_ProjectName = m_frame->Prj().GetProjectName();
+
+                SCH_SHEET* sheet = pastedSheet.Last();
+
+                wxCHECK2( sheet, continue );
+
+                sheet->AddInstance( sheetInstance );
+                hierarchy.push_back( pastedSheet );
+
+                // Remove all pasted sheet instance data that is not part of the current project.
+                std::vector<KIID_PATH> instancesToRemove;
+
+                for( const SCH_SHEET_INSTANCE& instance : sheet->GetInstances() )
+                {
+                    if( !hierarchy.HasPath( instance.m_Path ) )
+                        instancesToRemove.push_back( instance.m_Path );
+                }
+
+                for( const KIID_PATH& instancePath : instancesToRemove )
+                    sheet->RemoveInstance( instancePath );
+
+                // The sheet paths for the annotation code where copied in updatePastedSheets() when the virtual
+                // page number was still 1.  Set the virtual page number in the copied sheet paths.
+                for( auto&[path, refs] : pastedSymbols )
+                {
+                    for( SCH_REFERENCE& ref : refs )
+                    {
+                        if( ref.GetSheetPath() == pastedSheet )
+                        {
+                            ref.GetSheetPath().SetVirtualPageNumber( virtualPageNumber );
+                            ref.SetSheetNumber( virtualPageNumber );
+                        }
+                    }
+                }
+            }
+        }
+
+        m_frame->SetSheetNumberAndCount();
+
+        // Get a version with correct sheet numbers since we've pasted sheets,
+        // we'll need this when annotating next
+        hierarchy = m_frame->Schematic().Hierarchy();
+    }
+
+    std::map<SCH_SHEET_PATH, SCH_REFERENCE_LIST> annotatedSymbols;
+
+    // Update the list of symbol instances that satisfy the annotation criteria.
+    for( const SCH_SHEET_PATH& sheetPath : sheetPathsForScreen )
+    {
+        for( size_t i = 0; i < pastedSymbols[sheetPath].GetCount(); i++ )
+        {
+            if( pasteMode == PASTE_MODE::UNIQUE_ANNOTATIONS || pastedSymbols[sheetPath][i].AlwaysAnnotate() )
+                annotatedSymbols[sheetPath].AddItem( pastedSymbols[sheetPath][i] );
+        }
+
+        for( const SCH_SHEET_PATH& pastedSheetPath : pastedSheets[sheetPath] )
+        {
+            for( size_t i = 0; i < pastedSymbols[pastedSheetPath].GetCount(); i++ )
+            {
+                if( pasteMode == PASTE_MODE::UNIQUE_ANNOTATIONS || pastedSymbols[pastedSheetPath][i].AlwaysAnnotate() )
+                    annotatedSymbols[pastedSheetPath].AddItem( pastedSymbols[pastedSheetPath][i] );
+            }
+        }
+    }
+
+    if( !annotatedSymbols.empty() )
+    {
+        ANNOTATE_ORDER_T annotateOrder = static_cast<ANNOTATE_ORDER_T>( schematicSettings.m_AnnotateSortOrder );
+        ANNOTATE_ALGO_T  annotateAlgo  = static_cast<ANNOTATE_ALGO_T>( schematicSettings.m_AnnotateMethod );
+
+        for( SCH_SHEET_PATH& path : sheetPathsForScreen )
+        {
+            annotatedSymbols[path].SortByReferenceOnly();
+            annotatedSymbols[path].SetRefDesTracker( schematicSettings.m_refDesTracker );
+
+            if( pasteMode == PASTE_MODE::UNIQUE_ANNOTATIONS )
+            {
+                annotatedSymbols[path].ReannotateDuplicates( existingRefs, annotateAlgo );
+            }
+            else
+            {
+                annotatedSymbols[path].ReannotateByOptions( annotateOrder, annotateAlgo, annotateStartNum,
+                                                            existingRefs, false, &hierarchy );
+            }
+
+            annotatedSymbols[path].UpdateAnnotation();
+
+            // Update existing refs for next iteration
+            for( size_t i = 0; i < annotatedSymbols[path].GetCount(); i++ )
+                existingRefs.AddItem( annotatedSymbols[path][i] );
+
+            for( const SCH_SHEET_PATH& pastedSheetPath : pastedSheets[path] )
+            {
+                annotatedSymbols[pastedSheetPath].SortByReferenceOnly();
+                annotatedSymbols[pastedSheetPath].SetRefDesTracker( schematicSettings.m_refDesTracker );
+
+                if( pasteMode == PASTE_MODE::UNIQUE_ANNOTATIONS )
+                {
+                    annotatedSymbols[pastedSheetPath].ReannotateDuplicates( existingRefs, annotateAlgo );
+                }
+                else
+                {
+                    annotatedSymbols[pastedSheetPath].ReannotateByOptions( annotateOrder, annotateAlgo,
+                                                                           annotateStartNum, existingRefs,
+                                                                           false, &hierarchy );
+                }
+
+                annotatedSymbols[pastedSheetPath].UpdateAnnotation();
+
+                // Update existing refs for next iteration
+                for( size_t i = 0; i < annotatedSymbols[pastedSheetPath].GetCount(); i++ )
+                    existingRefs.AddItem( annotatedSymbols[pastedSheetPath][i] );
+            }
+        }
+    }
+
+    m_frame->GetCurrentSheet().UpdateAllScreenReferences();
+
+    // The copy operation creates instance paths that are not valid for the current project or
+    // saved as part of another project.  Prune them now so they do not accumulate in the saved
+    // schematic file.
+    prunePastedSymbolInstances();
+
+    SCH_SHEET_LIST sheets = m_frame->Schematic().Hierarchy();
+    SCH_SCREENS    allScreens( m_frame->Schematic().Root() );
+
+    allScreens.PruneOrphanedSymbolInstances( m_frame->Prj().GetProjectName(), sheets );
+    allScreens.PruneOrphanedSheetInstances( m_frame->Prj().GetProjectName(), sheets );
+
+    // Now clear the previous selection, select the pasted items, and fire up the "move" tool.
+    m_toolMgr->RunAction( ACTIONS::selectionClear );
+
+    // If the item has a parent group, it will be part of the loadedItems, and will handle
+    // the move action. Iterate backwards to avoid invalidating the iterator.
+    for( int i = loadedItems.size() - 1; i >= 0; i-- )
+    {
+        EDA_ITEM* item = loadedItems[i];
+
+        if( item->GetParentGroup() )
+        {
+            loadedItems.erase( loadedItems.begin() + i );
+            // These were hidden before because they would be added to the move preview,
+            // but now they need to be shown as a preview so they appear to move when
+            // the group moves.
+            getView()->SetVisible( item );
+            getView()->AddToPreview( item, false );
+        }
+    }
+
+    m_toolMgr->RunAction<EDA_ITEMS*>( ACTIONS::selectItems, &loadedItems );
+
+    SCH_SELECTION& selection = selTool->GetSelection();
+
+    if( !selection.Empty() )
+    {
+        if( aEvent.IsAction( &ACTIONS::duplicate ) )
+        {
+            int closest_dist = INT_MAX;
+
+            auto processPt =
+                    [&]( const VECTOR2I& pt )
+                    {
+                        int dist = ( eventPos - pt ).EuclideanNorm();
+
+                        if( dist < closest_dist )
+                        {
+                            selection.SetReferencePoint( pt );
+                            closest_dist = dist;
+                        }
+                    };
+
+            std::vector<SCH_ITEM*> anchorCandidates = FlattenGroups( selection.Items() );
+
+            // Prefer connection points (which should remain on grid)
+            for( EDA_ITEM* item : anchorCandidates )
+            {
+                SCH_ITEM* sch_item = dynamic_cast<SCH_ITEM*>( item );
+                SCH_PIN*  pin = dynamic_cast<SCH_PIN*>( item );
+
+                if( sch_item && sch_item->IsConnectable() )
+                {
+                    for( const VECTOR2I& pt : sch_item->GetConnectionPoints() )
+                        processPt( pt );
+                }
+                else if( pin )
+                {
+                    processPt( pin->GetPosition() );
+                }
+
+                // Symbols need to have their center point added since often users are trying to
+                // move parts from their center.
+                if( dynamic_cast<SCH_SYMBOL*>( item ) )
+                    processPt( item->GetPosition() );
+            }
+
+            // Only process other points if we didn't find any connection points
+            if( closest_dist == INT_MAX )
+            {
+                for( EDA_ITEM* item : anchorCandidates )
+                {
+                    switch( item->Type() )
+                    {
+                    // A group's position is its bounding box centre, which is off grid
+                    case SCH_GROUP_T: break;
+
+                    case SCH_LINE_T:
+                        processPt( static_cast<SCH_LINE*>( item )->GetStartPoint() );
+                        processPt( static_cast<SCH_LINE*>( item )->GetEndPoint() );
+                        break;
+
+                    case SCH_SHAPE_T:
+                    {
+                        SCH_SHAPE* shape = static_cast<SCH_SHAPE*>( item );
+
+                        switch( shape->GetShape() )
+                        {
+                        case SHAPE_T::RECTANGLE:
+                            for( const VECTOR2I& pt : shape->GetRectCorners() )
+                                processPt( pt );
+
+                            break;
+
+                        case SHAPE_T::CIRCLE:
+                            processPt( shape->GetCenter() );
+                            break;
+
+                        case SHAPE_T::POLY:
+                            for( int ii = 0; ii < shape->GetPolyShape().TotalVertices(); ++ii )
+                                processPt( shape->GetPolyShape().CVertex( ii ) );
+
+                            break;
+
+                        default:
+                            processPt( shape->GetStart() );
+                            processPt( shape->GetEnd() );
+                            break;
+                        }
+
+                        break;
+                    }
+
+                    default:
+                        processPt( item->GetPosition() );
+                        break;
+                    }
+                }
+            }
+
+            selection.SetIsHover( m_duplicateIsHoverSelection );
+        }
+        // We want to the first non-group item in the selection to be the reference point.
+        else if( selection.GetTopLeftItem()->Type() == SCH_GROUP_T )
+        {
+            SCH_GROUP* group = static_cast<SCH_GROUP*>( selection.GetTopLeftItem() );
+
+            bool      found = false;
+            SCH_ITEM* item = nullptr;
+
+            group->RunOnChildren(
+                    [&]( SCH_ITEM* schItem )
+                    {
+                        if( !found && schItem->Type() != SCH_GROUP_T )
+                        {
+                            item = schItem;
+                            found = true;
+                        }
+                    },
+                    RECURSE_MODE::RECURSE );
+
+            if( found )
+                selection.SetReferencePoint( item->GetPosition() );
+            else
+                selection.SetReferencePoint( group->GetPosition() );
+        }
+        else
+        {
+            SCH_ITEM* item = static_cast<SCH_ITEM*>( selection.GetTopLeftItem() );
+
+            selection.SetReferencePoint( item->GetPosition() );
+        }
+
+        if( m_toolMgr->RunSynchronousAction( SCH_ACTIONS::move, &commit ) )
+        {
+            // Pushing the commit will update the connectivity.
+            commit.Push( _( "Paste" ) );
+
+            if( !sheetsPasted && !ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
+                m_frame->RefreshNetNavigator();
+        }
+        else
+        {
+            commit.Revert();
+        }
+
+        getView()->ClearPreview();
+    }
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::EditWithSymbolEditor( const TOOL_EVENT& aEvent )
+{
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCH_SELECTION&      selection = selTool->RequestSelection( { SCH_SYMBOL_T } );
+    SCH_SYMBOL*         symbol = nullptr;
+    SYMBOL_EDIT_FRAME*  symbolEditor;
+
+    if( selection.GetSize() >= 1 )
+        symbol = (SCH_SYMBOL*) selection.Front();
+
+    if( selection.IsHover() )
+        m_toolMgr->RunAction( ACTIONS::selectionClear );
+
+    if( !symbol )
+    {
+        // Giant hack: by default we assign Edit Table to the same hotkey, so give the table
+        // tool a chance to handle it if we can't.
+        if( SCH_EDIT_TABLE_TOOL* tableTool = m_toolMgr->GetTool<SCH_EDIT_TABLE_TOOL>() )
+            tableTool->EditTable( aEvent );
+
+        return 0;
+    }
+
+    if( symbol->GetEditFlags() != 0 )
+        return 0;
+
+    if( symbol->IsMissingLibSymbol() )
+    {
+        m_frame->ShowInfoBarError( _( "Symbols with broken library symbol links cannot be edited." ) );
+        return 0;
+    }
+
+    m_toolMgr->RunAction( ACTIONS::showSymbolEditor );
+    symbolEditor = (SYMBOL_EDIT_FRAME*) m_frame->Kiway().Player( FRAME_SCH_SYMBOL_EDITOR, false );
+
+    if( symbolEditor )
+    {
+        if( wxWindow* blocking_win = symbolEditor->Kiway().GetBlockingDialog() )
+            blocking_win->Close( true );
+
+        if( aEvent.IsAction( &SCH_ACTIONS::editWithLibEdit ) )
+        {
+            symbolEditor->LoadSymbolFromSchematic( symbol );
+        }
+        else if( aEvent.IsAction( &SCH_ACTIONS::editLibSymbolWithLibEdit ) )
+        {
+            symbolEditor->LoadSymbol( symbol->GetLibId(), symbol->GetUnit(), symbol->GetBodyStyle() );
+
+            if( !symbolEditor->IsLibraryTreeShown() )
+                symbolEditor->ToggleLibraryTree();
+        }
+    }
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::Annotate( const TOOL_EVENT& aEvent )
+{
+    m_frame->OnAnnotate();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::IncrementAnnotations( const TOOL_EVENT& aEvent )
+{
+    DIALOG_INCREMENT_ANNOTATIONS_BASE dlg( m_frame );
+    dlg.m_FirstRefDes->SetValidator( wxTextValidator( wxFILTER_EMPTY ) );
+
+    dlg.SetInitialFocus( dlg.m_FirstRefDes );
+
+    if( dlg.ShowModal() == wxID_OK )
+    {
+        SCH_REFERENCE startRef;
+        startRef.SetRef( dlg.m_FirstRefDes->GetValue() );
+
+        if( startRef.IsSplitNeeded() )
+            startRef.Split();
+        else
+            return 0;
+
+        int startNum = atoi( startRef.GetRefNumber().utf8_string().c_str() );
+
+        SCH_COMMIT         commit( m_frame );
+        SCHEMATIC*         schematic = m_frame->m_schematic;
+        SCH_REFERENCE_LIST references;
+
+        if( dlg.m_AllSheets->GetValue() )
+            schematic->Hierarchy().GetSymbols( references, SYMBOL_FILTER_ALL );
+        else
+            schematic->CurrentSheet().GetSymbols( references, SYMBOL_FILTER_ALL );
+
+        references.SplitReferences();
+
+        for( SCH_REFERENCE& ref : references )
+        {
+            if( ref.GetRef() == startRef.GetRef() )
+            {
+                int num = atoi( ref.GetRefNumber().utf8_string().c_str() );
+
+                if( num >= startNum )
+                {
+                    const SCH_SHEET_PATH& sheet = ref.GetSheetPath();
+                    wxString              fullRef = ref.GetRef();
+
+                    num += dlg.m_Increment->GetValue();
+                    fullRef << num;
+
+                    commit.Modify( ref.GetSymbol(), sheet.LastScreen(), RECURSE_MODE::NO_RECURSE );
+                    ref.GetSymbol()->SetRef( &sheet, From_UTF8( fullRef.c_str() ) );
+                }
+            }
+        }
+
+        if( !commit.Empty() )
+            commit.Push( _( "Increment Annotations" ) );
+    }
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ShowCvpcb( const TOOL_EVENT& aEvent )
+{
+    m_frame->OnOpenCvpcb();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ImportNonKicadSchematic( const TOOL_EVENT& aEvent )
+{
+    m_frame->OnImportProject();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::EditSymbolFields( const TOOL_EVENT& aEvent )
+{
+    DIALOG_SYMBOL_FIELDS_TABLE* dlg = m_frame->GetSymbolFieldsTableDialog();
+
+    if( !dlg )
+        return 0;
+
+    // Needed at least on Windows. Raise() is not enough
+    dlg->Show( true );
+
+    // Bring it to the top if already open.  Dual monitor users need this.
+    dlg->Raise();
+
+    dlg->ShowEditTab();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::EditSymbolLibraryLinks( const TOOL_EVENT& aEvent )
+{
+    if( !m_frame->Schematic().GetCurrentVariant().IsEmpty() )
+    {
+        DisplayInfoMessage( m_frame,
+                _( "Bulk Edit Symbol Library Links is not available when a design variant is "
+                   "active. Switch to the default variant first." ) );
+        return 0;
+    }
+
+    if( InvokeDialogEditSymbolsLibId( m_frame ) )
+        m_frame->HardRedraw();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ShowPcbNew( const TOOL_EVENT& aEvent )
+{
+    m_frame->OnOpenPcbnew();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::UpdatePCB( const TOOL_EVENT& aEvent )
+{
+    m_frame->OnUpdatePCB();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::UpdateFromPCB( const TOOL_EVENT& aEvent )
+{
+    DIALOG_UPDATE_FROM_PCB dlg( m_frame );
+    dlg.ShowModal();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ExportNetlist( const TOOL_EVENT& aEvent )
+{
+    int result = NET_PLUGIN_CHANGE;
+
+    // If a plugin is removed or added, rebuild and reopen the new dialog
+    while( result == NET_PLUGIN_CHANGE )
+        result = InvokeDialogNetList( m_frame );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::GenerateBOM( const TOOL_EVENT& aEvent )
+{
+    DIALOG_SYMBOL_FIELDS_TABLE* dlg = m_frame->GetSymbolFieldsTableDialog();
+
+    if( !dlg )
+        return 0;
+
+    // Needed at least on Windows. Raise() is not enough
+    dlg->Show( true );
+
+    // Bring it to the top if already open.  Dual monitor users need this.
+    dlg->Raise();
+
+    dlg->ShowExportTab();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::GenerateBOMLegacy( const TOOL_EVENT& aEvent )
+{
+    InvokeDialogCreateBOM( m_frame );
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::DrawSheetOnClipboard( const TOOL_EVENT& aEvent )
+{
+    m_frame->RecalculateConnections( nullptr, LOCAL_CLEANUP );
+
+    // Create a selection with all items from the current sheet
+    SCH_SELECTION sheetSelection;
+    SCH_SCREEN* screen = m_frame->GetScreen();
+
+    for( SCH_ITEM* item : screen->Items() )
+    {
+        sheetSelection.Add( item );
+    }
+
+    // Get the full page bounding box for rendering the complete sheet
+    BOX2I pageBBox( VECTOR2I( 0, 0 ), m_frame->GetPageSizeIU() );
+
+    // Render the full sheet selection including the worksheet
+    wxImage image = renderSelectionToImageForClipboard( m_frame, sheetSelection, pageBBox, true, true );
+
+    if( image.IsOk() )
+    {
+        wxLogNull doNotLog; // disable logging of failed clipboard actions
+
+        if( wxTheClipboard->Open() )
+        {
+            wxDataObjectComposite* data = new wxDataObjectComposite();
+
+            AddTransparentImageToClipboardData( data, image );
+
+            wxTheClipboard->SetData( data );
+            wxTheClipboard->Flush(); // Allow data to be available after closing KiCad
+            wxTheClipboard->Close();
+        }
+    }
+    else
+    {
+        wxLogMessage( _( "Cannot create the schematic image" ) );
+    }
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ShowSearch( const TOOL_EVENT& aEvent )
+{
+    getEditFrame<SCH_EDIT_FRAME>()->ToggleSearch();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ShowHierarchy( const TOOL_EVENT& aEvent )
+{
+    getEditFrame<SCH_EDIT_FRAME>()->ToggleSchematicHierarchy();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ShowNetNavigator( const TOOL_EVENT& aEvent )
+{
+    getEditFrame<SCH_EDIT_FRAME>()->ToggleNetNavigator();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleProperties( const TOOL_EVENT& aEvent )
+{
+    getEditFrame<SCH_EDIT_FRAME>()->ToggleProperties();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleGitCommitPane( const TOOL_EVENT& aEvent )
+{
+    getEditFrame<SCH_EDIT_FRAME>()->ToggleGitCommitPane();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleLibraryTree( const TOOL_EVENT& aEvent )
+{
+    getEditFrame<SCH_EDIT_FRAME>()->ToggleLibraryTree();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleRemoteSymbolPanel( const TOOL_EVENT& aEvent )
+{
+    getEditFrame<SCH_EDIT_FRAME>()->ToggleRemoteSymbolPanel();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleHiddenPins( const TOOL_EVENT& aEvent )
+{
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_Appearance.show_hidden_pins = !cfg->m_Appearance.show_hidden_pins;
+
+    getView()->UpdateAllItems( KIGFX::LAYERS | KIGFX::GEOMETRY | KIGFX::REPAINT );
+    m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleHiddenFields( const TOOL_EVENT& aEvent )
+{
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_Appearance.show_hidden_fields = !cfg->m_Appearance.show_hidden_fields;
+
+    m_frame->GetRenderSettings()->m_ShowHiddenFields = cfg->m_Appearance.show_hidden_fields;
+
+    getView()->UpdateAllItems( KIGFX::LAYERS | KIGFX::GEOMETRY | KIGFX::REPAINT );
+    m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleDirectiveLabels( const TOOL_EVENT& aEvent )
+{
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_Appearance.show_directive_labels = !cfg->m_Appearance.show_directive_labels;
+
+    getView()->UpdateAllItems( KIGFX::LAYERS | KIGFX::GEOMETRY | KIGFX::REPAINT );
+    m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleERCWarnings( const TOOL_EVENT& aEvent )
+{
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_Appearance.show_erc_warnings = !cfg->m_Appearance.show_erc_warnings;
+
+    getView()->SetLayerVisible( LAYER_ERC_WARN, cfg->m_Appearance.show_erc_warnings );
+    m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleERCErrors( const TOOL_EVENT& aEvent )
+{
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_Appearance.show_erc_errors = !cfg->m_Appearance.show_erc_errors;
+
+    getView()->SetLayerVisible( LAYER_ERC_ERR, cfg->m_Appearance.show_erc_errors );
+    m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleERCExclusions( const TOOL_EVENT& aEvent )
+{
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_Appearance.show_erc_exclusions = !cfg->m_Appearance.show_erc_exclusions;
+
+    m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::MarkSimExclusions( const TOOL_EVENT& aEvent )
+{
+    SCH_SHEET_PATH*    sheetPath = &m_frame->GetCurrentSheet();
+    wxString           variant = m_frame->Schematic().GetCurrentVariant();
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_Appearance.mark_sim_exclusions = !cfg->m_Appearance.mark_sim_exclusions;
+
+    m_frame->GetCanvas()->GetView()->UpdateAllItemsConditionally(
+            [&]( KIGFX::VIEW_ITEM* aItem ) -> int
+            {
+                int flags = 0;
+
+                auto invalidateTextVars =
+                        [&flags]( EDA_TEXT* text )
+                        {
+                            if( text->HasTextVars() )
+                            {
+                                text->ClearRenderCache();
+                                text->ClearBoundingBoxCache();
+                                flags |= KIGFX::GEOMETRY | KIGFX::REPAINT;
+                            }
+                        };
+
+                if( SCH_ITEM* item = dynamic_cast<SCH_ITEM*>( aItem ) )
+                {
+                    item->RunOnChildren(
+                            [&invalidateTextVars]( SCH_ITEM* aChild )
+                            {
+                                if( EDA_TEXT* text = dynamic_cast<EDA_TEXT*>( aChild ) )
+                                    invalidateTextVars( text );
+                            },
+                            RECURSE_MODE::NO_RECURSE );
+
+                    if( item->GetExcludedFromSim( sheetPath, variant ) )
+                        flags |= KIGFX::GEOMETRY | KIGFX::REPAINT;
+                }
+
+                if( EDA_TEXT* text = dynamic_cast<EDA_TEXT*>( aItem ) )
+                    invalidateTextVars( text );
+
+                return flags;
+            } );
+
+    m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleOPVoltages( const TOOL_EVENT& aEvent )
+{
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_Appearance.show_op_voltages = !cfg->m_Appearance.show_op_voltages;
+
+    getView()->SetLayerVisible( LAYER_OP_VOLTAGES, cfg->m_Appearance.show_op_voltages );
+    m_frame->RefreshOperatingPointDisplay();
+    m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleOPCurrents( const TOOL_EVENT& aEvent )
+{
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_Appearance.show_op_currents = !cfg->m_Appearance.show_op_currents;
+
+    getView()->SetLayerVisible( LAYER_OP_CURRENTS, cfg->m_Appearance.show_op_currents );
+    m_frame->RefreshOperatingPointDisplay();
+    m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::TogglePinAltIcons( const TOOL_EVENT& aEvent )
+{
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_Appearance.show_pin_alt_icons = !cfg->m_Appearance.show_pin_alt_icons;
+
+    m_frame->GetRenderSettings()->m_ShowPinAltIcons = cfg->m_Appearance.show_pin_alt_icons;
+
+    getView()->UpdateAllItems( KIGFX::LAYERS | KIGFX::GEOMETRY | KIGFX::REPAINT );
+    m_frame->GetCanvas()->Refresh();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ChangeLineMode( const TOOL_EVENT& aEvent )
+{
+    m_frame->eeconfig()->m_Drawing.line_mode = aEvent.Parameter<LINE_MODE>();
+    m_toolMgr->PostAction( ACTIONS::refreshPreview );
+    // Notify toolbar to update selection
+    m_toolMgr->RunAction( SCH_ACTIONS::angleSnapModeChanged );
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::NextLineMode( const TOOL_EVENT& aEvent )
+{
+    m_frame->eeconfig()->m_Drawing.line_mode++;
+    m_frame->eeconfig()->m_Drawing.line_mode %= LINE_MODE::LINE_MODE_COUNT;
+    m_toolMgr->PostAction( ACTIONS::refreshPreview );
+    // Notify toolbar to update selection
+    m_toolMgr->RunAction( SCH_ACTIONS::angleSnapModeChanged );
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::ToggleAnnotateAuto( const TOOL_EVENT& aEvent )
+{
+    EESCHEMA_SETTINGS* cfg = m_frame->eeconfig();
+    cfg->m_AnnotatePanel.automatic = !cfg->m_AnnotatePanel.automatic;
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::OnAngleSnapModeChanged( const TOOL_EVENT& aEvent )
+{
+    // Update the left toolbar Line modes group icon to match current mode
+    switch( static_cast<LINE_MODE>( m_frame->eeconfig()->m_Drawing.line_mode ) )
+    {
+    case LINE_MODE::LINE_MODE_FREE: m_frame->SelectToolbarAction( SCH_ACTIONS::lineModeFree ); break;
+    case LINE_MODE::LINE_MODE_90:   m_frame->SelectToolbarAction( SCH_ACTIONS::lineMode90 );   break;
+    default:
+    case LINE_MODE::LINE_MODE_45:   m_frame->SelectToolbarAction( SCH_ACTIONS::lineMode45 );   break;
+    }
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::GridFeedback( const TOOL_EVENT& aEvent )
+{
+    if( !Pgm().GetCommonSettings()->m_Input.hotkey_feedback )
+        return 0;
+
+    GRID_SETTINGS& gridSettings = m_toolMgr->GetSettings()->m_Window.grid;
+    int            currentIdx = m_toolMgr->GetSettings()->m_Window.grid.last_size_idx;
+
+    wxArrayString gridsLabels;
+
+    for( const GRID& grid : gridSettings.grids )
+        gridsLabels.Add( grid.UserUnitsMessageText( m_frame ) );
+
+    if( !m_frame->GetHotkeyPopup() )
+        m_frame->CreateHotkeyPopup();
+
+    HOTKEY_CYCLE_POPUP* popup = m_frame->GetHotkeyPopup();
+
+    if( popup )
+        popup->Popup( _( "Grid" ), gridsLabels, currentIdx );
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::PlaceLinkedDesignBlock( const TOOL_EVENT& aEvent )
+{
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+
+    if( !editFrame )
+        return 1;
+
+    // Need to have a group selected and it needs to have a linked design block
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCH_SELECTION       selection = selTool->GetSelection();
+
+    if( selection.Size() != 1 || selection[0]->Type() != SCH_GROUP_T )
+        return 1;
+
+    SCH_GROUP* group = static_cast<SCH_GROUP*>( selection[0] );
+
+    if( !group->HasDesignBlockLink() )
+        return 1;
+
+    // Get the associated design block
+    DESIGN_BLOCK_PANE*            designBlockPane = editFrame->GetDesignBlockPane();
+    std::unique_ptr<DESIGN_BLOCK> designBlock( designBlockPane->GetDesignBlock( group->GetDesignBlockLibId(),
+                                                                                true, true ) );
+
+    if( !designBlock )
+        return 1;
+
+    if( designBlock->GetSchematicFile().IsEmpty() )
+    {
+        wxString msg;
+        msg.Printf( _( "Design block %s does not have a schematic file." ),
+                    group->GetDesignBlockLibId().GetUniStringLibId() );
+        m_frame->GetInfoBar()->ShowMessageFor( msg, 5000, wxICON_WARNING );
+        return 1;
+    }
+
+    editFrame->GetDesignBlockPane()->SelectLibId( group->GetDesignBlockLibId() );
+
+    return m_toolMgr->RunAction( SCH_ACTIONS::placeDesignBlock, designBlock.release() );
+}
+
+
+int SCH_EDITOR_CONTROL::SaveToLinkedDesignBlock( const TOOL_EVENT& aEvent )
+{
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+
+    if( !editFrame )
+        return 1;
+
+    // Need to have a group selected and it needs to have a linked design block
+    SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+    SCH_SELECTION       selection = selTool->GetSelection();
+
+    if( selection.Size() != 1 || selection[0]->Type() != SCH_GROUP_T )
+        return 1;
+
+    SCH_GROUP* group = static_cast<SCH_GROUP*>( selection[0] );
+
+    if( !group->HasDesignBlockLink() )
+        return 1;
+
+    // Get the associated design block
+    DESIGN_BLOCK_PANE*            designBlockPane = editFrame->GetDesignBlockPane();
+    std::unique_ptr<DESIGN_BLOCK> designBlock( designBlockPane->GetDesignBlock( group->GetDesignBlockLibId(),
+                                                                                true, true ) );
+
+    if( !designBlock )
+        return 1;
+
+    editFrame->GetDesignBlockPane()->SelectLibId( group->GetDesignBlockLibId() );
+
+    return m_toolMgr->RunAction( SCH_ACTIONS::updateDesignBlockFromSelection ) ? 1 : 0;
+}
+
+
+int SCH_EDITOR_CONTROL::AddVariant( const TOOL_EVENT& aEvent )
+{
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+
+    if( !editFrame )
+        return 1;
+
+    editFrame->AddVariant();
+
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::RemoveVariant( const TOOL_EVENT& aEvent )
+{
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+
+    if( !editFrame )
+        return 1;
+
+    editFrame->RemoveVariant();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::EditVariantDescription( const TOOL_EVENT& aEvent )
+{
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+
+    if( !editFrame )
+        return 1;
+
+    editFrame->EditVariantDescription();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::RenameVariant( const TOOL_EVENT& aEvent )
+{
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+
+    if( !editFrame )
+        return 1;
+
+    editFrame->RenameVariant();
+    return 0;
+}
+
+
+int SCH_EDITOR_CONTROL::CopyVariant( const TOOL_EVENT& aEvent )
+{
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+
+    if( !editFrame )
+        return 1;
+
+    editFrame->CopyVariant();
+    return 0;
+}
+
+
+void SCH_EDITOR_CONTROL::setTransitions()
+{
+    Go( &SCH_EDITOR_CONTROL::New,                     ACTIONS::doNew.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Open,                    ACTIONS::open.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Save,                    ACTIONS::save.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::SaveAs,                  ACTIONS::saveAs.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::SaveCurrSheetCopyAs,     SCH_ACTIONS::saveCurrSheetCopyAs.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Revert,                  ACTIONS::revert.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ShowSchematicSetup,      SCH_ACTIONS::schematicSetup.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::PageSetup,               ACTIONS::pageSettings.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Print,                   ACTIONS::print.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Plot,                    ACTIONS::plot.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::RescueSymbols,           SCH_ACTIONS::rescueSymbols.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::RemapSymbols,            SCH_ACTIONS::remapSymbols.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::CrossProbeToPcb,         EVENTS::PointSelectedEvent );
+    Go( &SCH_EDITOR_CONTROL::CrossProbeToPcb,         EVENTS::SelectedEvent );
+    Go( &SCH_EDITOR_CONTROL::CrossProbeToPcb,         EVENTS::UnselectedEvent );
+    Go( &SCH_EDITOR_CONTROL::CrossProbeToPcb,         EVENTS::ClearedEvent );
+    Go( &SCH_EDITOR_CONTROL::ExplicitCrossProbeToPcb, SCH_ACTIONS::selectOnPCB.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::SimProbe,                SCH_ACTIONS::simProbe.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::SimTune,                 SCH_ACTIONS::simTune.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::HighlightNet,            SCH_ACTIONS::highlightNet.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::CreateNetChainBetweenPins, SCH_ACTIONS::createNetChainBetweenPins.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ShowCreateNetChain, SCH_ACTIONS::createNetChain.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ClearHighlight,          SCH_ACTIONS::clearHighlight.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::HighlightNetCursor,      SCH_ACTIONS::highlightNetTool.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::HighlightNetChain,         SCH_ACTIONS::highlightNetChain.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::RemoveFromNetChain,        SCH_ACTIONS::removeFromNetChain.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ReplaceTerminalPin,      SCH_ACTIONS::replaceTerminalPin.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::NameNetChain,              SCH_ACTIONS::nameNetChain.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::UpdateNetHighlighting,   EVENTS::SelectedItemsModified );
+    Go( &SCH_EDITOR_CONTROL::UpdateNetHighlighting,   SCH_ACTIONS::updateNetHighlighting.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::AssignNetclass,          SCH_ACTIONS::assignNetclass.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::FindNetInInspector,      SCH_ACTIONS::findNetInInspector.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::Undo,                    ACTIONS::undo.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Redo,                    ACTIONS::redo.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Cut,                     ACTIONS::cut.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Copy,                    ACTIONS::copy.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::CopyAsText,              ACTIONS::copyAsText.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Paste,                   ACTIONS::paste.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Paste,                   ACTIONS::pasteSpecial.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Duplicate,               ACTIONS::duplicate.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::GridFeedback,            EVENTS::GridChangedByKeyEvent );
+
+    Go( &SCH_EDITOR_CONTROL::EditWithSymbolEditor,    SCH_ACTIONS::editWithLibEdit.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::EditWithSymbolEditor,    SCH_ACTIONS::editLibSymbolWithLibEdit.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ShowCvpcb,               SCH_ACTIONS::assignFootprints.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ImportFPAssignments,     SCH_ACTIONS::importFPAssignments.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ImportNonKicadSchematic, SCH_ACTIONS::importNonKicadSchematic.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::Annotate,                SCH_ACTIONS::annotate.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::IncrementAnnotations,    SCH_ACTIONS::incrementAnnotations.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::EditSymbolFields,        SCH_ACTIONS::editSymbolFields.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::EditSymbolLibraryLinks,  SCH_ACTIONS::editSymbolLibraryLinks.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ShowPcbNew,              SCH_ACTIONS::showPcbNew.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::UpdatePCB,               ACTIONS::updatePcbFromSchematic.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::UpdateFromPCB,           ACTIONS::updateSchematicFromPcb.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ExportNetlist,           SCH_ACTIONS::exportNetlist.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::GenerateBOM,             SCH_ACTIONS::generateBOM.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::GenerateBOMLegacy,       SCH_ACTIONS::generateBOMLegacy.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::DrawSheetOnClipboard,    SCH_ACTIONS::drawSheetOnClipboard.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::ShowSearch,              SCH_ACTIONS::showSearch.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ShowHierarchy,           SCH_ACTIONS::showHierarchy.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ShowNetNavigator,        SCH_ACTIONS::showNetNavigator.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleProperties,        ACTIONS::showProperties.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleGitCommitPane, ACTIONS::showGitCommitPane.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleLibraryTree,       SCH_ACTIONS::showDesignBlockPanel.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleLibraryTree,       SCH_ACTIONS::showDesignBlockPanel.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleRemoteSymbolPanel, SCH_ACTIONS::showRemoteSymbolPanel.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::ToggleHiddenPins,        SCH_ACTIONS::toggleHiddenPins.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleHiddenFields,      SCH_ACTIONS::toggleHiddenFields.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleDirectiveLabels,   SCH_ACTIONS::toggleDirectiveLabels.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleERCWarnings,       SCH_ACTIONS::toggleERCWarnings.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleERCErrors,         SCH_ACTIONS::toggleERCErrors.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleERCExclusions,     SCH_ACTIONS::toggleERCExclusions.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::MarkSimExclusions,       SCH_ACTIONS::markSimExclusions.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleOPVoltages,        SCH_ACTIONS::toggleOPVoltages.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleOPCurrents,        SCH_ACTIONS::toggleOPCurrents.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::TogglePinAltIcons,       SCH_ACTIONS::togglePinAltIcons.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ChangeLineMode,          SCH_ACTIONS::lineModeFree.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ChangeLineMode,          SCH_ACTIONS::lineMode90.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ChangeLineMode,          SCH_ACTIONS::lineMode45.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::NextLineMode,            SCH_ACTIONS::lineModeNext.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::OnAngleSnapModeChanged,  SCH_ACTIONS::angleSnapModeChanged.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::ToggleAnnotateAuto,      SCH_ACTIONS::toggleAnnotateAuto.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::ExportSymbolsToLibrary,  SCH_ACTIONS::exportSymbolsToLibrary.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::PlaceLinkedDesignBlock,  SCH_ACTIONS::placeLinkedDesignBlock.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::SaveToLinkedDesignBlock, SCH_ACTIONS::saveToLinkedDesignBlock.MakeEvent() );
+
+    Go( &SCH_EDITOR_CONTROL::AddVariant,              SCH_ACTIONS::addVariant.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::RemoveVariant,           SCH_ACTIONS::removeVariant.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::EditVariantDescription, SCH_ACTIONS::editVariantDescription.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::RenameVariant,           SCH_ACTIONS::renameVariant.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::CopyVariant,             SCH_ACTIONS::copyVariant.MakeEvent() );
+}

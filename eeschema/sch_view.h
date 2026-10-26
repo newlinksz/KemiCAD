@@ -1,0 +1,158 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef SCH_VIEW_H_
+#define SCH_VIEW_H_
+
+#include <layer_ids.h>
+#include <math/vector2d.h>
+#include <view/view.h>
+
+#include <memory>
+#include <vector>
+
+class SCH_SHEET;
+class SCH_SCREEN;
+class LIB_SYMBOL;
+class SCH_PIN;
+class SCH_BASE_FRAME;
+class SCH_EDIT_FRAME;
+class DS_PROXY_VIEW_ITEM;
+class SCHEMATIC_TEXT_VAR_ADAPTER;
+class TEXT_VAR_TRACKER;
+
+
+// Eeschema 100nm as the internal units
+constexpr double SCH_WORLD_UNIT ( 1e-7 / 0.0254 );
+
+static const int SCH_LAYER_ORDER[] = { LAYER_GP_OVERLAY,
+                                       LAYER_SELECT_OVERLAY,
+                                       LAYER_ERC_ERR,
+                                       LAYER_ERC_WARN,
+                                       LAYER_ERC_EXCLUSION,
+                                       LAYER_DANGLING,
+                                       LAYER_OP_VOLTAGES,
+                                       LAYER_OP_CURRENTS,
+                                       LAYER_REFERENCEPART,
+                                       LAYER_VALUEPART,
+                                       LAYER_FIELDS,
+                                       LAYER_PINNUM,
+                                       LAYER_PINNAM,
+                                       LAYER_INTERSHEET_REFS,
+                                       LAYER_NETCLASS_REFS,
+                                       LAYER_RULE_AREAS,
+                                       LAYER_BUS_JUNCTION,
+                                       LAYER_JUNCTION,
+                                       LAYER_NOCONNECT,
+                                       LAYER_HIERLABEL,
+                                       LAYER_GLOBLABEL,
+                                       LAYER_LOCLABEL,
+                                       LAYER_SHEETFILENAME,
+                                       LAYER_SHEETNAME,
+                                       LAYER_SHEETLABEL,
+                                       LAYER_SHEETFIELDS,
+                                       LAYER_NOTES,
+                                       LAYER_PRIVATE_NOTES,
+                                       LAYER_WIRE,
+                                       LAYER_BUS,
+                                       LAYER_DEVICE,
+                                       LAYER_SHEET,
+                                       LAYER_SELECTION_SHADOWS,
+                                       LAYER_DRAW_BITMAPS,
+                                       LAYER_SHAPES_BACKGROUND,
+                                       LAYER_DEVICE_BACKGROUND,
+                                       LAYER_SHEET_BACKGROUND,
+                                       LAYER_NOTES_BACKGROUND,
+                                       LAYER_DRAWINGSHEET };
+
+
+namespace KIGFX
+{
+    class VIEW_GROUP;
+
+    namespace PREVIEW
+    {
+        class SELECTION_AREA;
+    };
+
+class SCH_VIEW : public KIGFX::VIEW
+{
+public:
+    // Note: aFrame is used to know the sheet path name when drawing the drawing sheet.
+    // It can be null.
+    SCH_VIEW( SCH_BASE_FRAME* aFrame );
+    ~SCH_VIEW();
+
+    void Update( const KIGFX::VIEW_ITEM* aItem, int aUpdateFlags ) const override;
+    void Update( const KIGFX::VIEW_ITEM* aItem ) const override;
+
+    void Cleanup();
+
+    /**
+     * Drop every cached reference into the currently-attached SCHEMATIC's
+     * TEXT_VAR_TRACKER: unregister the invalidate listener and unhook the
+     * drawing-sheet proxy.  Must run before the owning SCHEMATIC is freed.
+     */
+    void DetachTextVarTracker();
+
+    void DisplaySheet( const SCH_SCREEN* aScreen );
+    void DisplaySymbol( LIB_SYMBOL* aSymbol );
+
+    /**
+     * Update the drawing sheet proxy's page number and first-page flag from the current
+     * edit frame state. Call this after any operation that may have temporarily modified
+     * screen page numbers (e.g., save) to ensure the drawing sheet renders correctly.
+     */
+    void RefreshDrawingSheetPageInfo();
+
+    void SetScale( double aScale, VECTOR2D aAnchor = { 0, 0 } ) override;
+
+    /**
+     * Clear the hide flag of all items in the view
+     */
+    void ClearHiddenFlags();
+
+    void HideDrawingSheet();
+
+    DS_PROXY_VIEW_ITEM* GetDrawingSheet() const { return m_drawingSheet.get(); }
+
+private:
+    SCH_BASE_FRAME* m_frame;    // The frame using this view. Can be null. Used mainly
+                                // to know the sheet path name when drawing the drawing sheet
+
+    std::unique_ptr<DS_PROXY_VIEW_ITEM> m_drawingSheet;
+
+    /**
+     * Set the drawing-sheet proxy's page number, count and title-block fields from the frame's
+     * current sheet. The first-page flag is taken from the current sheet path rather than the
+     * screen because save temporarily overwrites screen page numbers for serialization.
+     */
+    void syncDrawingSheetToCurrentSheet( SCH_EDIT_FRAME* aFrame );
+
+    /// Reactive invalidation listener state. The tracker pointer is the
+    /// authoritative owner (schematics can be swapped between views on
+    /// re-open); remove through that pointer rather than re-resolving the
+    /// adapter through any current schematic reference.
+    std::size_t       m_textVarListenerHandle = 0;
+    TEXT_VAR_TRACKER* m_textVarListenerTracker = nullptr;
+};
+
+}; // namespace
+
+#endif

@@ -1,0 +1,1466 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "dialog_lib_symbol_properties.h"
+
+#include <pgm_base.h>
+#include <bitmaps.h>
+#include <confirm.h>
+#include <kiway.h>
+#include <footprint_library_query.h>
+#include <symbol_edit_frame.h>
+#include <lib_symbol_library_manager.h>
+#include <math/util.h> // for KiROUND
+#include <sch_symbol.h>
+#include <kiplatform/ui.h>
+#include <widgets/grid_text_button_helpers.h>
+#include <widgets/wx_grid.h>
+#include <widgets/std_bitmap_button.h>
+#include <string_utils.h>
+#include <template_fieldnames.h>
+#include <project_sch.h>
+#include <refdes_utils.h>
+#include <dialog_sim_model.h>
+#include <tools/sch_actions.h>
+#include <panel_embedded_files.h>
+#include <panel_footprint_filters.h>
+#include <panel_symbol_pin_map.h>
+#include <settings/common_settings.h>
+#include <symbol_editor_settings.h>
+
+#include <map>
+#include <set>
+#include <vector>
+
+#include <wx/msgdlg.h>
+
+#include "pin_numbers.h"
+
+
+int DIALOG_LIB_SYMBOL_PROPERTIES::m_lastOpenedPage = 0;
+DIALOG_LIB_SYMBOL_PROPERTIES::LAST_LAYOUT DIALOG_LIB_SYMBOL_PROPERTIES::m_lastLayout =
+        DIALOG_LIB_SYMBOL_PROPERTIES::LAST_LAYOUT::NONE;
+
+
+DIALOG_LIB_SYMBOL_PROPERTIES::DIALOG_LIB_SYMBOL_PROPERTIES( SYMBOL_EDIT_FRAME* aParent, LIB_SYMBOL* aLibEntry ) :
+        DIALOG_LIB_SYMBOL_PROPERTIES_BASE( aParent ),
+        m_Parent( aParent ),
+        m_libEntry( aLibEntry ),
+        m_pinNameOffset( aParent, m_nameOffsetLabel, m_nameOffsetCtrl, m_nameOffsetUnits, true ),
+        m_delayedFocusCtrl( nullptr ),
+        m_delayedFocusGrid( nullptr ),
+        m_delayedFocusRow( -1 ),
+        m_delayedFocusColumn( -1 ),
+        m_delayedFocusPage( -1 )
+{
+    std::vector<EMBEDDED_FILES*> embeddedFilesStack;
+
+    if( std::shared_ptr<LIB_SYMBOL> parent = m_libEntry->GetParent().lock() )
+    {
+        while( parent )
+        {
+            embeddedFilesStack.push_back( parent->GetEmbeddedFiles() );
+            parent = parent->GetParent().lock();
+        }
+    }
+
+    m_embeddedFiles = new PANEL_EMBEDDED_FILES( m_NoteBook, m_libEntry->GetEmbeddedFiles(), 0, embeddedFilesStack );
+    m_NoteBook->AddPage( m_embeddedFiles, _( "Embedded Files" ) );
+    embeddedFilesStack.push_back( m_embeddedFiles->GetLocalFiles() );
+
+    // The filters page is the third tab, between Units & Body Styles and Pin Connections.
+    m_fpFiltersPanel = new PANEL_FOOTPRINT_FILTERS( m_NoteBook, aParent->Kiway() );
+
+    // The Footprint field a match is assigned to lives on the General page.
+    m_fpFiltersPanel->SetFootprintFieldAccessors( [this]()
+                                                  {
+                                                      return canAssignFootprintToField();
+                                                  },
+                                                  [this]( const wxString& aFootprintName )
+                                                  {
+                                                      assignFootprintToField( aFootprintName );
+                                                  } );
+
+    m_NoteBook->InsertPage( 2, m_fpFiltersPanel, _( "Footprint Filters" ) );
+
+    m_pinMapPanel = new PANEL_SYMBOL_PIN_MAP( m_pinMapPage );
+    bPinMapPageSizer->Add( m_pinMapPanel, 1, wxEXPAND, 5 );
+
+    m_fields = new FIELDS_GRID_TABLE( this, aParent, m_grid, m_libEntry, embeddedFilesStack );
+    m_grid->SetTable( m_fields );
+    m_grid->OverrideMinSize( 1.0, 1.0 );
+    m_grid->PushEventHandler( new FIELDS_GRID_TRICKS( m_grid, this, embeddedFilesStack,
+                                                      [&]( wxCommandEvent& aEvent )
+                                                      {
+                                                          OnAddField( aEvent );
+                                                      } ) );
+    m_grid->SetSelectionMode( wxGrid::wxGridSelectRows );
+
+    // Load the FIELDS_GRID_TABLE -- ensure we are calling the overloaded push_back method
+    std::vector<SCH_FIELD> fields;
+    m_libEntry->CopyFields( fields );
+
+    for( const SCH_FIELD& f : fields )
+        m_fields->push_back( f );
+
+    if( std::shared_ptr<LIB_SYMBOL> parent = m_libEntry->GetParent().lock() )
+        addInheritedFields( parent );
+
+    int minWidth = wxSystemSettings::GetMetric( wxSYS_VSCROLL_X );
+
+    for( int ii = 0; ii <= 7; ++ii )
+    {
+        if( m_grid->IsColShown( ii ) )
+            minWidth += m_grid->GetColSize( ii );
+    }
+
+    m_grid->SetMinSize( wxSize( minWidth, -1 ) );
+
+    // Putting too many columns in wxFormBuilder results in the minimum dialog size getting set too
+    // large (even with the m_grid->SetMinSize() call above).
+    m_grid->SetColSize( 13, 48 );     // "Color"
+    m_grid->SetColSize( 14, 136 );    // "Allow Autoplace"
+    m_grid->SetColSize( 15, 62 );     // "Private"
+    m_grid->SetupColumnAutosizer( 1 );
+
+    m_grid->ShowHideColumns( "0 1 2 3 4 5 6 7" );
+
+    m_SymbolNameCtrl->SetValidator( FIELD_VALIDATOR( FIELD_T::VALUE ) );
+
+    m_unitNamesGrid->PushEventHandler( new GRID_TRICKS( m_unitNamesGrid ) );
+    m_unitNamesGrid->SetSelectionMode( wxGrid::wxGridSelectRows );
+    m_unitNamesGrid->SetupColumnAutosizer( 1 );
+
+    m_bodyStyleNamesGrid->PushEventHandler( new GRID_TRICKS( m_bodyStyleNamesGrid,
+                                                             [this]( wxCommandEvent& aEvent )
+                                                             {
+                                                                 OnAddBodyStyle( aEvent );
+                                                             } ) );
+    m_bodyStyleNamesGrid->SetSelectionMode( wxGrid::wxGridSelectRows );
+    m_bodyStyleNamesGrid->SetupColumnAutosizer( 0 );
+
+    m_jumperGroupsGrid->SetupColumnAutosizer( 0 );
+    m_jumperGroupsGrid->SetSelectionMode( wxGrid::wxGridSelectRows );
+
+    m_jumperGroupsGrid->PushEventHandler( new GRID_TRICKS( m_jumperGroupsGrid,
+                                                           [this]( wxCommandEvent& aEvent )
+                                                           {
+                                                               OnAddJumperGroup( aEvent );
+                                                           } ) );
+
+    // Configure button logos
+    m_bpAdd->SetBitmap( KiBitmapBundle( BITMAPS::small_plus ) );
+    m_bpMoveUp->SetBitmap( KiBitmapBundle( BITMAPS::small_up ) );
+    m_bpMoveDown->SetBitmap( KiBitmapBundle( BITMAPS::small_down ) );
+    m_bpDelete->SetBitmap( KiBitmapBundle( BITMAPS::small_trash ) );
+
+    m_bpAddBodyStyle->SetBitmap( KiBitmapBundle( BITMAPS::small_plus ) );
+    m_bpMoveUpBodyStyle->SetBitmap( KiBitmapBundle( BITMAPS::small_up ) );
+    m_bpMoveDownBodyStyle->SetBitmap( KiBitmapBundle( BITMAPS::small_down ) );
+    m_bpDeleteBodyStyle->SetBitmap( KiBitmapBundle( BITMAPS::small_trash ) );
+
+    m_bpAddJumperGroup->SetBitmap( KiBitmapBundle( BITMAPS::small_plus ) );
+    m_bpRemoveJumperGroup->SetBitmap( KiBitmapBundle( BITMAPS::small_trash ) );
+
+    SetupStandardButtons();
+
+    if( aParent->IsSymbolFromLegacyLibrary() && !aParent->IsSymbolFromSchematic() )
+    {
+        m_stdSizerButtonCancel->SetDefault();
+        m_stdSizerButtonOK->SetLabel( _( "Read Only" ) );
+        m_stdSizerButtonOK->Enable( false );
+    }
+
+    // wxFormBuilder doesn't include this event...
+    m_grid->Bind( wxEVT_GRID_CELL_CHANGING, &DIALOG_LIB_SYMBOL_PROPERTIES::OnGridCellChanging, this );
+    m_grid->Bind( wxEVT_GRID_CELL_CHANGED, &DIALOG_LIB_SYMBOL_PROPERTIES::OnGridCellChanged, this );
+    m_grid->GetGridWindow()->Bind( wxEVT_MOTION, &DIALOG_LIB_SYMBOL_PROPERTIES::OnGridMotion, this );
+
+    // Send a request to load footprint libs (if not loaded)
+    // This will shorten the time it takes to display the matching filters when the user swaps tabs
+    // or opens the footprint assignment dialog.
+    StartFootprintLibrariesLoad( aParent->Kiway() );
+
+    if( m_lastLayout != DIALOG_LIB_SYMBOL_PROPERTIES::LAST_LAYOUT::NONE )
+    {
+        if( ( m_lastLayout == DIALOG_LIB_SYMBOL_PROPERTIES::LAST_LAYOUT::ALIAS && aLibEntry->IsRoot() )
+            || ( m_lastLayout == DIALOG_LIB_SYMBOL_PROPERTIES::LAST_LAYOUT::PARENT && aLibEntry->IsDerived() ) )
+        {
+            resetSize();
+        }
+    }
+
+    m_lastLayout = ( aLibEntry->IsDerived() ) ? DIALOG_LIB_SYMBOL_PROPERTIES::LAST_LAYOUT::ALIAS
+                                              : DIALOG_LIB_SYMBOL_PROPERTIES::LAST_LAYOUT::PARENT;
+
+    m_grid->GetParent()->Layout();
+    syncControlStates( m_libEntry->IsDerived() );
+    Layout();
+
+    finishDialogSettings();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::SelectPinMapPage()
+{
+    // TransferDataToWindow restores the remembered page, so defer the switch to a flag it honours.
+    m_forcePinMapPage = true;
+
+    for( size_t page = 0; page < m_NoteBook->GetPageCount(); ++page )
+    {
+        if( m_NoteBook->GetPage( page ) == m_pinMapPage )
+        {
+            m_NoteBook->SetSelection( page );
+            return;
+        }
+    }
+}
+
+
+DIALOG_LIB_SYMBOL_PROPERTIES::~DIALOG_LIB_SYMBOL_PROPERTIES()
+{
+    m_lastOpenedPage = m_NoteBook->GetSelection( );
+
+    // Prevents crash bug in wxGrid's d'tor
+    m_grid->DestroyTable( m_fields );
+
+    m_grid->Unbind( wxEVT_GRID_CELL_CHANGING, &DIALOG_LIB_SYMBOL_PROPERTIES::OnGridCellChanging, this );
+    m_grid->Unbind( wxEVT_GRID_CELL_CHANGED, &DIALOG_LIB_SYMBOL_PROPERTIES::OnGridCellChanged, this );
+    m_grid->GetGridWindow()->Unbind( wxEVT_MOTION, &DIALOG_LIB_SYMBOL_PROPERTIES::OnGridMotion, this );
+
+    // Delete the GRID_TRICKS.
+    m_grid->PopEventHandler( true );
+    m_unitNamesGrid->PopEventHandler( true );
+    m_bodyStyleNamesGrid->PopEventHandler( true );
+    m_jumperGroupsGrid->PopEventHandler( true );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::addInheritedFields( const std::shared_ptr<LIB_SYMBOL>& aParent )
+{
+    if( std::shared_ptr<LIB_SYMBOL> ancestor = aParent->GetParent().lock() )
+        addInheritedFields( ancestor );
+
+    wxString                source = UnescapeString( aParent->GetName() );
+    std::vector<SCH_FIELD*> parentFields;
+    aParent->GetFields( parentFields );
+
+    for( SCH_FIELD* parentField : parentFields )
+    {
+        // Flatten() only passes down a mandatory field the ancestor actually sets
+        if( parentField->IsMandatory() && parentField->GetText().IsEmpty() )
+            continue;
+
+        bool found = false;
+
+        for( size_t ii = 0; ii < m_fields->size(); ++ii )
+        {
+            SCH_FIELD& field = m_fields->at( ii );
+            bool       match = false;
+
+            if( parentField->IsMandatory() )
+                match = field.GetId() == parentField->GetId();
+            else if( !field.IsMandatory() )
+                match = field.GetUntranslatedName() == parentField->GetUntranslatedName();
+
+            if( match )
+            {
+                m_fields->SetFieldInherited( ii, *parentField, source );
+                found = true;
+                break;
+            }
+        }
+
+        if( !found && !parentField->IsMandatory() )
+            m_fields->AddInheritedField( *parentField, source );
+    }
+}
+
+
+bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataToWindow()
+{
+    if( !wxDialog::TransferDataToWindow() )
+        return false;
+
+    std::set<wxString> defined;
+
+    for( SCH_FIELD& field : *m_fields )
+        defined.insert( field.GetName() );
+
+    // Add in any global template field names not yet defined.
+    for( const TEMPLATE_FIELDNAME& templateFieldname :
+                Pgm().GetCommonSettings()->m_FieldNameTemplates.GetTemplateFieldNames( TEMPLATES::SCOPE::GLOBAL ) )
+    {
+        if( defined.count( templateFieldname.m_Name ) <= 0 )
+        {
+            SCH_FIELD field( m_libEntry, FIELD_T::USER, templateFieldname.m_Name );
+            field.SetVisible( templateFieldname.m_Visible );
+            m_fields->push_back( field );
+            m_addedTemplateFields.insert( templateFieldname.m_Name );
+        }
+    }
+
+    // The Y axis for components in library file is from bottom to top while the screen axis is top
+    // to bottom.However it is nowhandled by the lib file parser/writer.
+
+    // notify the grid
+    wxGridTableMessage msg( m_fields, wxGRIDTABLE_NOTIFY_ROWS_APPENDED, m_fields->GetNumberRows() );
+    m_grid->ProcessTableMessage( msg );
+
+    m_SymbolNameCtrl->ChangeValue( UnescapeString( m_libEntry->GetName() ) );
+
+    // GetKeyWords() resolves through the parent, so saving it would turn inheritance into an override
+    m_KeywordCtrl->ChangeValue( m_libEntry->GetRawKeyWords() );
+
+    // Keywords are not a field, so the inherited value is shown as a hint
+    std::shared_ptr<LIB_SYMBOL> source = m_libEntry->GetParent().lock();
+    std::set<LIB_SYMBOL*>       visited;
+
+    while( source && source->GetRawKeyWords().IsEmpty() && visited.insert( source.get() ).second )
+        source = source->GetParent().lock();
+
+    if( source && !source->GetRawKeyWords().IsEmpty() )
+    {
+        m_keywordsSource = UnescapeString( source->GetName() );
+        m_KeywordCtrl->SetHint( source->GetRawKeyWords() );
+    }
+
+    syncKeywordsToolTip();
+
+    m_unitSpinCtrl->SetValue( m_libEntry->GetUnitCount() );
+    m_OptionPartsInterchangeable->SetValue( !m_libEntry->UnitsLocked() || m_libEntry->GetUnitCount() == 1 );
+
+    updateUnitCount();
+
+    // The map accessor is raw storage, so a derived symbol has to be shown its root's names
+    std::shared_ptr<LIB_SYMBOL>    root = m_libEntry->GetRootSymbol();
+    const std::map<int, wxString>& unitNames = root->GetUnitDisplayNames();
+
+    for( int unit = 0; unit < m_libEntry->GetUnitCount(); unit++ )
+    {
+        if( unitNames.contains( unit + 1 ) )
+            m_unitNamesGrid->SetCellValue( unit, 1, unitNames.at( unit + 1 ) );
+    }
+
+    if( m_libEntry->HasDeMorganBodyStyles() )
+    {
+        m_radioDeMorgan->SetValue( true );
+    }
+    else if( m_libEntry->IsMultiBodyStyle() )
+    {
+        m_radioCustom->SetValue( true );
+
+        for( const wxString& name : m_libEntry->GetBodyStyleNames() )
+        {
+            int row = m_bodyStyleNamesGrid->GetNumberRows();
+            m_bodyStyleNamesGrid->AppendRows( 1 );
+            m_bodyStyleNamesGrid->SetCellValue( row, 0, name );
+        }
+    }
+    else
+    {
+        m_radioSingle->SetValue( true );
+    }
+
+    syncBodyStyleControls();
+
+    m_OptionPower->SetValue( m_libEntry->IsPower() );
+    m_OptionLocalPower->SetValue( m_libEntry->IsLocalPower() );
+
+    if( m_libEntry->IsPower() )
+    {
+        m_spiceFieldsButton->Hide();
+        m_OptionLocalPower->Enable();
+    }
+    else
+    {
+        m_OptionLocalPower->Enable( false );
+    }
+
+    m_excludeFromSimCheckBox->SetValue( m_libEntry->GetExcludedFromSim() );
+    m_excludeFromBomCheckBox->SetValue( m_libEntry->GetExcludedFromBOM() );
+    m_excludeFromBoardCheckBox->SetValue( m_libEntry->GetExcludedFromBoard() );
+    m_excludeFromPosFilesCheckBox->SetValue( m_libEntry->GetExcludedFromPosFiles() );
+
+    m_ShowPinNumButt->SetValue( m_libEntry->GetShowPinNumbers() );
+    m_ShowPinNameButt->SetValue( m_libEntry->GetShowPinNames() );
+    m_PinsNameInsideButt->SetValue( m_libEntry->GetPinNameOffset() != 0 );
+    m_pinNameOffset.ChangeValue( m_libEntry->GetPinNameOffset() );
+
+    m_fpFiltersPanel->SetFilters( m_libEntry->GetFPFilters() );
+
+    m_cbDuplicatePinsAreJumpers->SetValue( m_libEntry->GetDuplicatePinNumbersAreJumpers() );
+
+    std::set<wxString> availablePins;
+
+    for( const SCH_PIN* pin : m_libEntry->GetGraphicalPins( 0, 0 ) )
+        availablePins.insert( pin->GetNumber() );
+
+    for( const JUMPER_GROUP& group : m_libEntry->JumperPinGroups().GetAll() )
+    {
+        wxString groupTxt;
+
+        for( const wxString& pinNumber : group.GetNames() )
+        {
+            if( !groupTxt.IsEmpty() )
+                groupTxt << ", ";
+
+            groupTxt << pinNumber;
+        }
+
+        m_jumperGroupsGrid->AppendRows( 1 );
+        m_jumperGroupsGrid->SetCellValue( m_jumperGroupsGrid->GetNumberRows() - 1, 0, groupTxt );
+    }
+
+    // Populate the list of root parts for inherited objects.
+    if( m_libEntry->IsDerived() )
+    {
+        wxArrayString symbolNames;
+        wxString libName = m_libEntry->GetLibNickname();
+
+        if( !libName.empty() )
+        {
+            m_Parent->GetLibManager().GetSymbolNames( libName, symbolNames );
+
+            // Sort the list of symbols for easier search
+            symbolNames.Sort( []( const wxString& a, const wxString& b ) -> int
+                              {
+                                  return StrNumCmp( a, b, true );
+                              } );
+
+            // Don't allow a symbol to be derived from itself
+            if( symbolNames.Index( m_libEntry->GetName() ) != wxNOT_FOUND )
+                symbolNames.Remove( m_libEntry->GetName() );
+
+            // Don't allow a symbol to be derived from any of its descendants (would create
+            // circular inheritance)
+            wxArrayString descendants;
+            m_Parent->GetLibManager().GetDerivedSymbolNames( m_libEntry->GetName(), libName, descendants );
+
+            for( const wxString& descendant : descendants )
+            {
+                if( symbolNames.Index( descendant ) != wxNOT_FOUND )
+                    symbolNames.Remove( descendant );
+            }
+
+            m_inheritanceSelectCombo->Append( symbolNames );
+
+            if( std::shared_ptr<LIB_SYMBOL> rootSymbol = m_libEntry->GetParent().lock() )
+            {
+                wxString parentName = UnescapeString( rootSymbol->GetName() );
+                int selection = m_inheritanceSelectCombo->FindString( parentName );
+
+                if( selection != wxNOT_FOUND )
+                    m_inheritanceSelectCombo->SetSelection( selection );
+            }
+        }
+
+        m_lastOpenedPage = 0;
+    }
+
+    m_NoteBook->SetSelection( (unsigned) m_lastOpenedPage );
+
+    m_embeddedFiles->TransferDataToWindow();
+
+    m_grid->SetMinVisibleRows( this, 4 );
+
+    m_pinMapPanel->SetSymbol( m_libEntry );
+    m_pinMapPanel->TransferDataToWindow();
+
+    // Always open on the General page, unless the caller explicitly asked for the Pin Map
+    // tab (the Edit Pin Map button).  This overrides DIALOG_SHIM's remembered-tab restore.
+    int targetPage = 0;
+
+    if( m_forcePinMapPage )
+    {
+        for( size_t page = 0; page < m_NoteBook->GetPageCount(); ++page )
+        {
+            if( m_NoteBook->GetPage( page ) == m_pinMapPage )
+            {
+                targetPage = (int) page;
+                break;
+            }
+        }
+    }
+
+    m_NoteBook->ChangeSelection( targetPage );
+
+    return true;
+}
+
+
+bool DIALOG_LIB_SYMBOL_PROPERTIES::Validate()
+{
+    if( !m_grid->CommitPendingChanges() )
+        return false;
+
+    // Symbol reference can be empty because it inherits from the parent symbol.
+    if( m_libEntry->IsRoot() )
+    {
+        SCH_FIELD* field = m_fields->GetField( FIELD_T::REFERENCE );
+
+        if( UTIL::GetRefDesPrefix( field->GetText() ).IsEmpty() )
+        {
+            if( m_NoteBook->GetSelection() != 0 )
+                m_NoteBook->SetSelection( 0 );
+
+            m_delayedErrorMessage = _( "References must start with a letter." );
+            m_delayedFocusGrid = m_grid;
+            m_delayedFocusColumn = FDC_VALUE;
+            m_delayedFocusRow = m_fields->GetFieldRow( FIELD_T::REFERENCE );
+            m_delayedFocusPage = 0;
+
+            return false;
+        }
+    }
+
+    // Check for missing field names.
+    for( int ii = 0; ii < (int) m_fields->size(); ++ii )
+    {
+        SCH_FIELD& field = m_fields->at( ii );
+
+        if( field.IsMandatory() )
+            continue;
+
+        wxString fieldName = field.GetName( false );
+
+        if( fieldName.IsEmpty() && !field.GetText().IsEmpty() )
+        {
+            if( m_NoteBook->GetSelection() != 0 )
+                m_NoteBook->SetSelection( 0 );
+
+            m_delayedErrorMessage = _( "Fields must have a name." );
+            m_delayedFocusGrid = m_grid;
+            m_delayedFocusColumn = FDC_NAME;
+            m_delayedFocusRow = ii;
+            m_delayedFocusPage = 0;
+
+            return false;
+        }
+    }
+
+    // Verify that the parent name is set if the symbol is inherited
+    if( m_libEntry->IsDerived() )
+    {
+        wxString parentName = m_inheritanceSelectCombo->GetValue();
+
+        if( parentName.IsEmpty() )
+        {
+            m_delayedErrorMessage = _( "Derived symbol must have a parent selected" );
+            return false;
+        }
+    }
+
+    if( !m_unitNamesGrid->CommitPendingChanges() )
+        return false;
+
+    std::set<wxString> seenSubRefs;
+
+    for( int row = 0; row < m_unitNamesGrid->GetNumberRows(); ++row )
+    {
+        wxString subRef = m_unitNamesGrid->GetCellValue( row, 1 );
+
+        if( subRef.IsEmpty() )
+            subRef = LIB_SYMBOL::LetterSubReference( row + 1, 'A' );
+
+        // For empty names we only check letter reference for collsions, which means the user _could_
+        // end up with a collision if they name a unit with a digit, and then use the symbol in a
+        // schematic which uses .digit, -digit or _digit notation for units.  We'll leave that to ERC
+        // to catch.
+
+        if( !seenSubRefs.insert( subRef.Upper() ).second )
+        {
+            m_delayedErrorMessage = wxString::Format( _( "The unit name '%s' is already in use." ), subRef );
+            m_delayedFocusGrid = m_unitNamesGrid;
+            m_delayedFocusColumn = 1;
+            m_delayedFocusRow = row;
+            m_delayedFocusPage = 1;
+            return false;
+        }
+    }
+
+    /*
+     * Confirm destructive actions.
+     */
+
+    if( m_unitSpinCtrl->GetValue() < m_libEntry->GetUnitCount() )
+    {
+        if( !IsOK( this, _( "Delete extra units from symbol?" ) ) )
+            return false;
+    }
+
+    int bodyStyleCount = 0;
+
+    if( m_radioSingle->GetValue() )
+    {
+        bodyStyleCount = 1;
+    }
+    else if( m_radioDeMorgan->GetValue() )
+    {
+        bodyStyleCount = 2;
+    }
+    else if( m_radioCustom->GetValue() )
+    {
+        if( !m_bodyStyleNamesGrid->CommitPendingChanges() )
+            return false;
+
+        for( int ii = 0; ii < m_bodyStyleNamesGrid->GetNumberRows(); ++ii )
+        {
+            if( !m_bodyStyleNamesGrid->GetCellValue( ii, 0 ).IsEmpty() )
+                bodyStyleCount++;
+        }
+    }
+
+    if( m_radioCustom->GetValue() && bodyStyleCount < 2 )
+    {
+        m_delayedErrorMessage = _( "Custom body styles must have at least 2 entries" );
+        return false;
+    }
+
+    if( bodyStyleCount < m_libEntry->GetBodyStyleCount() )
+    {
+        if( !IsOK( this, _( "Delete extra body styles from symbol?" ) ) )
+            return false;
+    }
+
+    return true;
+}
+
+
+bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
+{
+    if( !m_grid->CommitPendingChanges()
+            || !m_unitNamesGrid->CommitPendingChanges()
+            || !m_bodyStyleNamesGrid->CommitPendingChanges()
+            || !m_jumperGroupsGrid->CommitPendingChanges()
+            || !m_pinMapPanel->CommitPendingChanges()
+            || !m_embeddedFiles->CommitPendingChanges() )
+    {
+        return false;
+    }
+
+    wxString   newName = EscapeString( m_SymbolNameCtrl->GetValue(), CTX_LIBID );
+    wxString   oldName = m_libEntry->GetName();
+
+    if( newName.IsEmpty() )
+    {
+        wxMessageBox( _( "Symbol must have a name." ) );
+        return false;
+    }
+
+    UNDO_REDO opType = UNDO_REDO::LIBEDIT;
+
+    if( oldName != newName )
+    {
+        wxString libName = m_libEntry->GetLibNickname();
+
+        if( !libName.empty() && m_Parent->GetLibManager().SymbolNameInUse( newName, libName ) )
+        {
+            DisplayErrorMessage( this, wxString::Format( _( "Symbol name '%s' already in use in library '%s'." ),
+                                                         UnescapeString( newName ),
+                                                         libName ) );
+            return false;
+        }
+
+        opType = UNDO_REDO::LIB_RENAME;
+    }
+
+    // When invoked from the library tree (Symbol Properties context menu) we edit a buffered
+    // copy that is not the symbol loaded in the editor.  The editor-coupled side effects below
+    // (undo list, view/title refresh) operate on the frame's current symbol, so only run them
+    // when we are actually editing it.  The library-tree path does its own buffer/tree update.
+    bool editingCurrentSymbol = ( m_libEntry == m_Parent->GetCurSymbol() );
+
+    if( editingCurrentSymbol )
+        m_Parent->SaveCopyInUndoList( _( "Edit Symbol Properties" ), m_libEntry, opType );
+
+    // The Y axis for components in lib is from bottom to top while the screen axis is top
+    // to bottom: we must change the y coord sign when writing back to the library
+    std::vector<SCH_FIELD> fieldsToSave;
+    int ordinal = 42;   // Arbitrarily larger than any mandatory FIELD_T ids.
+
+    for( size_t ii = 0; ii < m_fields->size(); ++ii )
+    {
+        SCH_FIELD& field = m_fields->at( ii );
+
+        if( !field.IsMandatory() )
+            field.SetOrdinal( ordinal++, FIELD_T::USER );
+
+        wxString fieldName = field.GetUntranslatedName();
+
+        // Writing an unmodified inherited row into the derived symbol would stop it from
+        // tracking the parent field, and an empty mandatory field is how the symbol inherits it
+        if( m_fields->IsInherited( ii ) )
+        {
+            if( field.IsMandatory() )
+            {
+                SCH_FIELD emptyField( *m_libEntry->GetField( field.GetId() ) );
+                emptyField.SetText( wxEmptyString );
+                fieldsToSave.push_back( emptyField );
+            }
+
+            continue;
+        }
+
+        if( field.GetText().IsEmpty() )
+        {
+            if( fieldName.IsEmpty() || m_addedTemplateFields.contains( fieldName ) )
+                continue; // Skip empty fields that are not mandatory or template fields
+        }
+        else if( fieldName.IsEmpty() )
+        {
+            field.SetName( _( "untitled" ) ); // Set a default name for unnamed fields
+        }
+
+        fieldsToSave.push_back( field );
+    }
+
+    m_libEntry->SetFields( fieldsToSave );
+
+    // Update the parent for inherited symbols
+    if( m_libEntry->IsDerived() && !m_libEntry->GetLibNickname().empty() )
+    {
+        wxString parentName = EscapeString( m_inheritanceSelectCombo->GetValue(), CTX_LIBID );
+        wxString libName = m_libEntry->GetLibNickname();
+
+        // Get the parent from the libManager based on the name set in the inheritance combo box.
+        LIB_SYMBOL* newParent = m_Parent->GetLibManager().GetSymbol( parentName, libName );
+
+        // Verify that the requested parent exists
+        wxCHECK( newParent, false );
+
+        m_libEntry->SetParent( newParent );
+    }
+
+    m_libEntry->SetName( newName );
+    m_libEntry->SetKeyWords( m_KeywordCtrl->GetValue() );
+
+    // A derived symbol owns no drawings, so none of this is its to change and none of it is
+    // written out on save
+    if( !m_libEntry->IsDerived() )
+    {
+        m_libEntry->SetUnitCount( m_unitSpinCtrl->GetValue(), true );
+        m_libEntry->LockUnits( m_libEntry->GetUnitCount() > 1 && !m_OptionPartsInterchangeable->GetValue() );
+
+        m_libEntry->GetUnitDisplayNames().clear();
+
+        for( int row = 0; row < m_unitNamesGrid->GetNumberRows(); row++ )
+        {
+            if( !m_unitNamesGrid->GetCellValue( row, 1 ).IsEmpty() )
+                m_libEntry->GetUnitDisplayNames()[row+1] = m_unitNamesGrid->GetCellValue( row, 1 );
+        }
+
+        // SetBodyStyleCount() adds and deletes draw items relative to the current count, so it
+        // has to run before the flag and the names it derives from are overwritten
+        if( m_radioSingle->GetValue() )
+        {
+            m_libEntry->SetBodyStyleCount( 1, false, false );
+            m_libEntry->SetHasDeMorganBodyStyles( false );
+            m_libEntry->SetBodyStyleNames( {} );
+        }
+        else if( m_radioDeMorgan->GetValue() )
+        {
+            m_libEntry->SetBodyStyleCount( 2, false, true );
+            m_libEntry->SetHasDeMorganBodyStyles( true );
+            m_libEntry->SetBodyStyleNames( {} );
+        }
+        else
+        {
+            std::vector<wxString> bodyStyleNames;
+
+            for( int row = 0; row < m_bodyStyleNamesGrid->GetNumberRows(); ++row )
+            {
+                if( !m_bodyStyleNamesGrid->GetCellValue( row, 0 ).IsEmpty() )
+                    bodyStyleNames.push_back( m_bodyStyleNamesGrid->GetCellValue( row, 0 ) );
+            }
+
+            m_libEntry->SetBodyStyleCount( bodyStyleNames.size(), true, true );
+            m_libEntry->SetHasDeMorganBodyStyles( false );
+            m_libEntry->SetBodyStyleNames( bodyStyleNames );
+        }
+    }
+
+    if( m_OptionPower->GetValue() )
+    {
+        if( m_OptionLocalPower->GetValue() )
+            m_libEntry->SetLocalPower();
+        else
+            m_libEntry->SetGlobalPower();
+    }
+    else
+    {
+        m_libEntry->SetNormal();
+    }
+
+    m_libEntry->SetExcludedFromSim( m_excludeFromSimCheckBox->GetValue() );
+    m_libEntry->SetExcludedFromBOM( m_excludeFromBomCheckBox->GetValue() );
+    m_libEntry->SetExcludedFromBoard( m_excludeFromBoardCheckBox->GetValue() );
+    m_libEntry->SetExcludedFromPosFiles( m_excludeFromPosFilesCheckBox->GetValue() );
+
+    m_libEntry->SetShowPinNumbers( m_ShowPinNumButt->GetValue() );
+    m_libEntry->SetShowPinNames( m_ShowPinNameButt->GetValue() );
+
+    if( m_PinsNameInsideButt->GetValue() )
+    {
+        int offset = KiROUND( (double) m_pinNameOffset.GetValue() );
+
+        // We interpret an offset of 0 as "outside", so make sure it's non-zero
+        m_libEntry->SetPinNameOffset( offset == 0 ? 20 : offset );
+    }
+    else
+    {
+        m_libEntry->SetPinNameOffset( 0 );   // pin text outside the body (name is on the pin)
+    }
+
+    m_libEntry->SetFPFilters( m_fpFiltersPanel->GetFilters() );
+
+    m_libEntry->SetDuplicatePinNumbersAreJumpers( m_cbDuplicatePinsAreJumpers->GetValue() );
+
+    JUMPER_GROUP_SET jumpers;
+
+    for( int ii = 0; ii < m_jumperGroupsGrid->GetNumberRows(); ++ii )
+    {
+        wxStringTokenizer  tokenizer( m_jumperGroupsGrid->GetCellValue( ii, 0 ), ", \t\r\n", wxTOKEN_STRTOK );
+        std::set<wxString> names;
+
+        while( tokenizer.HasMoreTokens() )
+        {
+            wxString token = tokenizer.GetNextToken();
+
+            if( token.IsEmpty() )
+                continue;
+
+            if( !m_libEntry->HasPinNumber( token ) )
+            {
+                DisplayErrorMessage( this, wxString::Format( _( "Pin '%s' in jumper pin group %d does not exist "
+                                                                "in this symbol." ),
+                                                             token,
+                                                             ii + 1 ) );
+                return false;
+            }
+
+            names.insert( token );
+        }
+
+        if( std::optional<JUMPER_GROUP> group = JUMPER_GROUP::Make( std::move( names ) ) )
+            jumpers.Add( std::move( *group ) );
+    }
+
+    m_libEntry->JumperPinGroups() = jumpers;
+
+    m_pinMapPanel->ApplyToSymbol( m_libEntry );
+
+    (void) m_embeddedFiles->TransferDataFromWindow();
+
+    if( editingCurrentSymbol )
+        m_Parent->UpdateAfterSymbolProperties( &oldName );
+
+    return true;
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnBodyStyle( wxCommandEvent& event )
+{
+    if( event.GetEventObject() == m_radioDeMorgan || event.GetEventObject() == m_radioCustom  )
+    {
+        PIN_NUMBERS pinNumbersWithAlternates;
+
+        for( SCH_PIN* pin : m_libEntry->GetGraphicalPins( ALL_UNITS, ALL_BODY_STYLES ) )
+        {
+            if( !pin->GetAlternates().empty() )
+                pinNumbersWithAlternates.insert( pin->GetNumber() );
+        }
+
+        if( pinNumbersWithAlternates.size() )
+        {
+            DisplayErrorMessage( this, NO_BODY_STYLES_WITH_ALTERNATE_PIN_FUNCTIONS,
+                                 wxString::Format( _( "(Pins %s.)" ), pinNumbersWithAlternates.GetSummary() ) );
+
+            m_radioSingle->SetValue( true );
+            return;
+        }
+    }
+
+    syncBodyStyleControls();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnGridMotion( wxMouseEvent& aEvent )
+{
+    aEvent.Skip();
+
+    wxPoint pos = aEvent.GetPosition();
+    wxPoint unscolled_pos = m_grid->CalcUnscrolledPosition( pos );
+    int row = m_grid->YToRow( unscolled_pos.y );
+    int col = m_grid->XToCol( unscolled_pos.x );
+
+    if( row == wxNOT_FOUND || col == wxNOT_FOUND || !m_fields->IsInherited( row ) )
+    {
+        m_grid->SetToolTip( "" );
+        return;
+    }
+
+    m_grid->SetToolTip( wxString::Format( _( "This field is inherited from '%s'." ), m_fields->InheritedFrom( row ) ) );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnGridCellChanging( wxGridEvent& event )
+{
+    wxGridCellEditor* editor = m_grid->GetCellEditor( event.GetRow(), event.GetCol() );
+    wxControl* control = editor->GetControl();
+
+    if( control && control->GetValidator() && !control->GetValidator()->Validate( control ) )
+    {
+        event.Veto();
+
+        m_delayedFocusGrid = m_grid;
+        m_delayedFocusRow = event.GetRow();
+        m_delayedFocusColumn = event.GetCol();
+        m_delayedFocusPage = 0;
+    }
+    else if( event.GetCol() == FDC_NAME )
+    {
+        wxString newName = event.GetString();
+
+        for( int i = 0; i < m_grid->GetNumberRows(); ++i )
+        {
+            if( i == event.GetRow() )
+                continue;
+
+            if( FieldNamesAreDuplicates( newName, m_grid->GetCellValue( i, FDC_NAME ) ) )
+            {
+                DisplayErrorMessage( this, wxString::Format( _( "The name '%s' is already in use." ), newName ) );
+                event.Veto();
+                m_delayedFocusRow = event.GetRow();
+                m_delayedFocusColumn = event.GetCol();
+            }
+        }
+    }
+
+    editor->DecRef();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnGridCellChanged( wxGridEvent& event )
+{
+    m_grid->ForceRefresh();
+    OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnSymbolNameText( wxCommandEvent& event )
+{
+    OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnSymbolNameKillFocus( wxFocusEvent& event )
+{
+    if( !m_delayedFocusCtrl )
+    {
+        // If the validation fails and we throw up a dialog then GTK will give us another
+        // KillFocus event and we end up in infinite recursion.  So we use m_delayedFocusCtrl
+        // as a re-entrancy block and then clear it again if validation passes.
+        m_delayedFocusCtrl = m_SymbolNameCtrl;
+        m_delayedFocusPage = 0;
+
+        if( m_SymbolNameCtrl->GetValidator()->Validate( m_SymbolNameCtrl ) )
+        {
+            m_delayedFocusCtrl = nullptr;
+            m_delayedFocusPage = -1;
+        }
+    }
+
+    event.Skip();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnAddField( wxCommandEvent& event )
+{
+    m_grid->OnAddRow(
+            [&]() -> std::pair<int, int>
+            {
+                SYMBOL_EDITOR_SETTINGS* settings = m_Parent->GetSettings();
+                SCH_FIELD newField( m_libEntry, FIELD_T::USER, GetUserFieldName( m_fields->size(), TRANSLATED ) );
+
+                newField.SetTextSize( VECTOR2I( schIUScale.MilsToIU( settings->m_Defaults.text_size ),
+                                                schIUScale.MilsToIU( settings->m_Defaults.text_size ) ) );
+                newField.SetVisible( false );
+
+                m_fields->push_back( newField );
+
+                // notify the grid
+                wxGridTableMessage msg( m_fields, wxGRIDTABLE_NOTIFY_ROWS_APPENDED, 1 );
+                m_grid->ProcessTableMessage( msg );
+                OnModify();
+
+                return { m_fields->size() - 1, FDC_NAME };
+            } );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnDeleteField( wxCommandEvent& event )
+{
+    m_grid->OnDeleteRows(
+            [&]( int row )
+            {
+                if( row < m_fields->GetMandatoryRowCount() )
+                {
+                    DisplayErrorMessage( this, wxString::Format( _( "The first %d fields are mandatory." ),
+                                                                 m_fields->GetMandatoryRowCount() ) );
+                    return false;
+                }
+
+                return true;
+            },
+            [&]( int row )
+            {
+                if( !m_fields->EraseRow( row ) )
+                    return;
+
+                // notify the grid
+                wxGridTableMessage msg( m_fields, wxGRIDTABLE_NOTIFY_ROWS_DELETED, row, 1 );
+                m_grid->ProcessTableMessage( msg );
+            } );
+
+    OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnMoveUp( wxCommandEvent& event )
+{
+    m_grid->OnMoveRowUp(
+            [&]( int row )
+            {
+                return row > m_fields->GetMandatoryRowCount();
+            },
+            [&]( int row )
+            {
+                m_fields->SwapRows( row, row - 1 );
+                m_grid->ForceRefresh();
+                OnModify();
+            } );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnMoveDown( wxCommandEvent& event )
+{
+    m_grid->OnMoveRowDown(
+            [&]( int row )
+            {
+                return row >= m_fields->GetMandatoryRowCount();
+            },
+            [&]( int row )
+            {
+                m_fields->SwapRows( row, row + 1 );
+                m_grid->ForceRefresh();
+                OnModify();
+            } );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnAddBodyStyle( wxCommandEvent& event )
+{
+    m_bodyStyleNamesGrid->OnAddRow(
+            [&]() -> std::pair<int, int>
+            {
+                m_bodyStyleNamesGrid->AppendRows( 1 );
+                OnModify();
+
+                return { m_bodyStyleNamesGrid->GetNumberRows() - 1, 0 };
+            } );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnDeleteBodyStyle( wxCommandEvent& event )
+{
+    m_bodyStyleNamesGrid->OnDeleteRows(
+            [&]( int row )
+            {
+                m_bodyStyleNamesGrid->DeleteRows( row );
+            } );
+
+    OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnBodyStyleMoveUp( wxCommandEvent& event )
+{
+    m_bodyStyleNamesGrid->OnMoveRowUp(
+            [&]( int row )
+            {
+                m_bodyStyleNamesGrid->SwapRows( row, row - 1 );
+                OnModify();
+            } );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnBodyStyleMoveDown( wxCommandEvent& event )
+{
+    m_bodyStyleNamesGrid->OnMoveRowDown(
+            [&]( int row )
+            {
+                m_bodyStyleNamesGrid->SwapRows( row, row + 1 );
+                OnModify();
+            } );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnEditSpiceModel( wxCommandEvent& event )
+{
+    if( !m_grid->CommitPendingChanges() )
+        return;
+
+    m_grid->ClearSelection();
+
+    std::vector<SCH_FIELD> fields;
+
+    for( const SCH_FIELD& field : *m_fields )
+        fields.emplace_back( field );
+
+    DIALOG_SIM_MODEL dialog( this, m_parentFrame, *m_libEntry, fields );
+
+    if( dialog.ShowModal() != wxID_OK )
+        return;
+
+    // Add in any new fields
+    for( const SCH_FIELD& editedField : fields )
+    {
+        bool found = false;
+
+        for( SCH_FIELD& existingField : *m_fields )
+        {
+            if( existingField.GetName() == editedField.GetName() )
+            {
+                found = true;
+                existingField.SetText( editedField.GetText() );
+                break;
+            }
+        }
+
+        if( !found )
+        {
+            m_fields->emplace_back( editedField );
+            wxGridTableMessage msg( m_fields, wxGRIDTABLE_NOTIFY_ROWS_APPENDED, 1 );
+            m_grid->ProcessTableMessage( msg );
+        }
+    }
+
+    // Remove any deleted fields
+    for( int ii = (int) m_fields->size() - 1; ii >= 0; --ii )
+    {
+        SCH_FIELD& existingField = m_fields->at( ii );
+        bool       found = false;
+
+        for( SCH_FIELD& editedField : fields )
+        {
+            if( editedField.GetName() == existingField.GetName() )
+            {
+                found = true;
+                break;
+            }
+        }
+
+        if( !found )
+        {
+            m_grid->ClearSelection();
+
+            // An inherited row resets to the ancestor's value instead of disappearing
+            if( !m_fields->EraseRow( ii ) )
+                continue;
+
+            wxGridTableMessage msg( m_fields, wxGRIDTABLE_NOTIFY_ROWS_DELETED, ii, 1 );
+            m_grid->ProcessTableMessage( msg );
+        }
+    }
+
+    OnModify();
+    m_grid->ForceRefresh();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnCancelButtonClick( wxCommandEvent& event )
+{
+    // Running the Footprint Browser gums up the works and causes the automatic cancel
+    // stuff to no longer work.  So we do it here ourselves.
+    EndDialogShim( wxID_CANCEL );
+}
+
+
+bool DIALOG_LIB_SYMBOL_PROPERTIES::canAssignFootprintToField()
+{
+    int row = m_fields->GetFieldRow( FIELD_T::FOOTPRINT );
+
+    // The footprint field is read-only for a power symbol, which has no footprint.
+    return row != -1 && !m_grid->IsReadOnly( row, FDC_VALUE );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::assignFootprintToField( const wxString& aFootprintName )
+{
+    int row = m_fields->GetFieldRow( FIELD_T::FOOTPRINT );
+
+    if( row == -1 )
+        return;
+
+    m_grid->SetCellValue( row, FDC_VALUE, aFootprintName );
+    m_grid->ForceRefresh();
+    OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnUpdateUI( wxUpdateUIEvent& event )
+{
+    m_OptionPartsInterchangeable->Enable( !m_libEntry->IsDerived() && m_unitSpinCtrl->GetValue() > 1 );
+    m_pinNameOffset.Enable( m_PinsNameInsideButt->GetValue() );
+
+    // Handle shown columns changes
+    std::bitset<64> shownColumns = m_grid->GetShownColumns();
+
+    if( shownColumns != m_shownColumns )
+    {
+        m_shownColumns = shownColumns;
+
+        if( !m_grid->IsCellEditControlShown() )
+            m_grid->SetGridWidthsDirty();
+    }
+
+    // Handle a delayed focus.  The delay allows us to:
+    // a) change focus when the error was triggered from within a killFocus handler
+    // b) show the correct notebook page in the background before the error dialog comes up
+    //    when triggered from an OK or a notebook page change
+
+    if( m_delayedFocusPage >= 0 && m_NoteBook->GetSelection() != m_delayedFocusPage )
+    {
+        m_NoteBook->ChangeSelection( (unsigned) m_delayedFocusPage );
+        m_delayedFocusPage = -1;
+    }
+
+    if( !m_delayedErrorMessage.IsEmpty() )
+    {
+        // We will re-enter this routine when the error dialog is displayed, so make
+        // sure we don't keep putting up more dialogs.
+        wxString msg = m_delayedErrorMessage;
+        m_delayedErrorMessage = wxEmptyString;
+
+        // Do not use DisplayErrorMessage(); it screws up window order on Mac
+        DisplayError( nullptr, msg );
+    }
+
+    if( m_delayedFocusCtrl )
+    {
+        m_delayedFocusCtrl->SetFocus();
+
+        if( wxTextEntry* textEntry = dynamic_cast<wxTextEntry*>( m_delayedFocusCtrl ) )
+            textEntry->SelectAll();
+
+        m_delayedFocusCtrl = nullptr;
+    }
+    else if( m_delayedFocusGrid )
+    {
+        m_delayedFocusGrid->SetFocus();
+        m_delayedFocusGrid->MakeCellVisible( m_delayedFocusRow, m_delayedFocusColumn );
+        m_delayedFocusGrid->SetGridCursor( m_delayedFocusRow, m_delayedFocusColumn );
+
+        m_delayedFocusGrid->EnableCellEditControl( true );
+        m_delayedFocusGrid->ShowCellEditControl();
+
+        m_delayedFocusGrid = nullptr;
+        m_delayedFocusRow = -1;
+        m_delayedFocusColumn = -1;
+    }
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::syncControlStates( bool aIsAlias )
+{
+    bSizerLowerBasicPanel->Show( !aIsAlias );
+    m_inheritanceSelectCombo->Enable( aIsAlias );
+    m_inheritsStaticText->Enable( aIsAlias );
+
+    // The drawings a derived symbol inherits carry the units and body styles with them
+    m_unitSpinCtrl->Enable( !aIsAlias );
+    m_unitNamesGrid->Enable( !aIsAlias );
+
+    syncBodyStyleControls();
+
+    m_grid->ForceRefresh();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::syncBodyStyleControls()
+{
+    bool editable = !m_libEntry->IsDerived();
+    bool custom = editable && m_radioCustom->GetValue();
+
+    m_radioSingle->Enable( editable );
+    m_radioDeMorgan->Enable( editable );
+    m_radioCustom->Enable( editable );
+
+    m_bodyStyleNamesGrid->Enable( custom );
+    m_bpAddBodyStyle->Enable( custom );
+    m_bpMoveUpBodyStyle->Enable( custom );
+    m_bpMoveDownBodyStyle->Enable( custom );
+    m_bpDeleteBodyStyle->Enable( custom );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::onPowerCheckBox( wxCommandEvent& aEvent )
+{
+    if( m_OptionPower->IsChecked() )
+    {
+        m_excludeFromSimCheckBox->SetValue( true );
+        m_excludeFromBomCheckBox->SetValue( true );
+        m_excludeFromBoardCheckBox->SetValue( true );
+        m_excludeFromPosFilesCheckBox->SetValue( true );
+        m_excludeFromBomCheckBox->Enable( false );
+        m_excludeFromBoardCheckBox->Enable( false );
+        m_excludeFromSimCheckBox->Enable( false );
+        m_excludeFromPosFilesCheckBox->Enable( false );
+        m_spiceFieldsButton->Show( false );
+        m_OptionLocalPower->Enable( true );
+    }
+    else
+    {
+        m_excludeFromBomCheckBox->Enable( true );
+        m_excludeFromBoardCheckBox->Enable( true );
+        m_excludeFromSimCheckBox->Enable( true );
+        m_excludeFromPosFilesCheckBox->Enable( true );
+        m_spiceFieldsButton->Show( true );
+        m_OptionLocalPower->Enable( false );
+    }
+
+    OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::syncKeywordsToolTip()
+{
+    if( !m_keywordsSource.IsEmpty() && m_KeywordCtrl->IsEmpty() )
+        m_KeywordCtrl->SetToolTip( wxString::Format( _( "This field is inherited from '%s'." ), m_keywordsSource ) );
+    else
+        m_KeywordCtrl->UnsetToolTip();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnText( wxCommandEvent& event )
+{
+    if( event.GetEventObject() == m_KeywordCtrl )
+        syncKeywordsToolTip();
+
+    OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnCombobox( wxCommandEvent& event )
+{
+    OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnCheckBox( wxCommandEvent& event )
+{
+    OnModify();
+}
+
+
+bool DIALOG_LIB_SYMBOL_PROPERTIES::updateUnitCount()
+{
+    m_unitNamesGrid->CommitPendingChanges( true /* aQuietMode */ );
+
+    int extra = m_unitNamesGrid->GetNumberRows() - m_unitSpinCtrl->GetValue();
+    int needed = m_unitSpinCtrl->GetValue() - m_unitNamesGrid->GetNumberRows();
+
+    if( extra > 0 )
+    {
+        m_unitNamesGrid->DeleteRows( m_unitNamesGrid->GetNumberRows() - extra, extra );
+        return true;
+    }
+
+    if( needed > 0 )
+    {
+        m_unitNamesGrid->AppendRows( needed );
+
+        for( int row = m_unitNamesGrid->GetNumberRows() - needed; row < m_unitNamesGrid->GetNumberRows(); ++row )
+            m_unitNamesGrid->SetCellValue( row, 0, LIB_SYMBOL::LetterSubReference( row + 1, 'A' ) );
+
+        return true;
+    }
+
+    return false;
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnUnitSpinCtrl( wxSpinEvent& event )
+{
+    if( updateUnitCount() )
+        OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnUnitSpinCtrlText( wxCommandEvent& event )
+{
+    // wait for kill focus to update unit count
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnUnitSpinCtrlEnter( wxCommandEvent& event )
+{
+    if( updateUnitCount() )
+        OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnUnitSpinCtrlKillFocus( wxFocusEvent& event )
+{
+    if( updateUnitCount() )
+        OnModify();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnPageChanging( wxBookCtrlEvent& aEvent )
+{
+    if( !m_grid->CommitPendingChanges() )
+        aEvent.Veto();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnAddJumperGroup( wxCommandEvent& event )
+{
+    m_jumperGroupsGrid->OnAddRow(
+            [&]() -> std::pair<int, int>
+            {
+                m_jumperGroupsGrid->AppendRows( 1 );
+                OnModify();
+
+                return { m_jumperGroupsGrid->GetNumberRows() - 1, 0 };
+            } );
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::OnRemoveJumperGroup( wxCommandEvent& event )
+{
+    m_jumperGroupsGrid->OnDeleteRows(
+            [&]( int row )
+            {
+                m_jumperGroupsGrid->DeleteRows( row, 1 );
+            } );
+
+    OnModify();
+}

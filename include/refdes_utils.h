@@ -1,0 +1,74 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.TXT for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
+ * @file
+ * Collection of utility functions for component reference designators (refdes)
+ */
+
+#ifndef REFDES_UTILS__H
+#define REFDES_UTILS__H
+
+#include <vector>
+
+#include <wx/string.h>
+
+namespace UTIL
+{
+
+/**
+ * Get the (non-numeric) prefix from a refdes - e.g.
+ *      R1    -> R
+ *      IC34  -> IC
+ *      U?    -> U
+ * @param  aRefDes full refdes
+ * @return         the prefix, or empty string if nothing found
+ */
+wxString GetRefDesPrefix( const wxString& aRefDes );
+
+/**
+ * Return an unannotated refdes from either a prefix or an existing refdes.
+ *      R    -> R?
+ *      IC34 -> IC?
+ *      U?   -> U?
+ * @param aRefDes
+ * @return
+ */
+wxString GetRefDesUnannotated( const wxString& aRefDes );
+
+/**
+ * Get the numeric suffix from a refdes - e.g.
+ *      R1    -> 1
+ *      IC34  -> 34
+ *      R?    -> -1
+ * @param  aRefDes full refdes
+ * @return         the suffix, or -1 if nothing found
+ */
+int GetRefDesNumber( const wxString& aRefDes );
+
+/**
+ * Format a sorted list of reference designators, shortening consecutive sequences of three or
+ * more references into ranges.
+ */
+wxString FormatRefDesRanges( const std::vector<wxString>& aReferences, const wxString& aRefDelimiter,
+                             const wxString& aRefRangeDelimiter );
+
+} // namespace UTIL
+
+#endif // REFDES_UTILS__H

@@ -1,0 +1,120 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+#include <wx/buffer.h>
+#include <wx/bitmap.h>
+#include <wx/image.h>
+#include <wx/string.h>
+
+class wxDataObjectComposite;
+
+struct CLIPBOARD_MIME_DATA
+{
+    wxString       m_mimeType;
+    wxMemoryBuffer m_data;
+
+    /// Optional bitmap image to add to clipboard via wxBitmapDataObject.
+    /// When set, SaveClipboard() adds this using the platform-native format
+    /// (PNG on GTK, CF_DIB on Windows, TIFF on macOS).
+    std::optional<wxBitmap> m_image;
+};
+
+/**
+ * Store information to the system clipboard.
+ *
+ * @param aTextUTF8 is the information to be stored, expected UTF8 encoding.  The text will be
+ *                  stored as Unicode string (not stored as UTF8 string).
+ * @return False if error occurred.
+ */
+bool SaveClipboard( const std::string& aTextUTF8 );
+
+/**
+ * Store information to the system clipboard with additional MIME types.
+ *
+ * Creates a composite clipboard object with text as the primary format and additional
+ * custom MIME type data.  When aMimeData is empty, falls back to SaveClipboard(aTextUTF8).
+ *
+ * @param aTextUTF8 is the text to store, expected UTF8 encoding.  Stored as primary text format.
+ * @param aMimeData is additional data to store by MIME type (e.g., image/svg+xml, image/png).
+ * @return False if error occurred.
+ */
+bool SaveClipboard( const std::string& aTextUTF8, const std::vector<CLIPBOARD_MIME_DATA>& aMimeData );
+
+/**
+ * Store tabular data to the system clipboard.
+ */
+bool SaveTabularDataToClipboard( const std::vector<std::vector<wxString>>& aData );
+
+/**
+ * Attempt to get tabular data from the clipboard.
+ */
+bool GetTabularDataFromClipboard( std::vector<std::vector<wxString>>& aData );
+
+/**
+ * Return the information currently stored in the system clipboard.
+ *
+ * If data stored in the clipboard is in non-text format, empty string is returned.
+ *
+ * @note The clipboard is expected containing Unicode chars, not only ASCII7 chars.
+ *       The returned string is UTF8 encoded
+ */
+std::string GetClipboardUTF8();
+
+/**
+ * Get image data from the clipboard, if there is any.
+ *
+ * If there's a filename there, and it can be loaded as an image, do that.
+ */
+std::unique_ptr<wxBitmap> GetImageFromClipboard();
+
+/**
+ * Encode an image to PNG format with fast compression settings optimized for clipboard use.
+ *
+ * @param aImage Source image to encode
+ * @param aOutput Buffer to receive PNG data
+ * @return true on success
+ */
+bool EncodeImageToPng( const wxImage& aImage, wxMemoryBuffer& aOutput );
+
+/**
+ * Adds pre-encoded PNG data to clipboard in a platform-specific way.
+ *
+ * On Windows: Adds the "PNG" format entry first, then CF_DIB flattened onto white from aFallbackImage if given
+ * On GTK: Adds as wxDF_BITMAP (which maps to image/png)
+ * On macOS: Falls back to wxBitmapDataObject with the provided image
+ *
+ * @param aData Clipboard composite to add PNG to
+ * @param aPngData Pre-encoded PNG bytes
+ * @param aFallbackImage Image for the CF_DIB entry on Windows (optional) and macOS fallback (required on macOS)
+ * @return true on success
+ */
+bool AddPngToClipboardData( wxDataObjectComposite* aData, const wxMemoryBuffer& aPngData,
+                            const wxImage* aFallbackImage = nullptr );
+
+/**
+ * Adds an image to clipboard data in a platform-specific way such that transparency is supported.
+ * Convenience function that encodes PNG internally.
+ */
+bool AddTransparentImageToClipboardData( wxDataObjectComposite* aData, wxImage aImage );

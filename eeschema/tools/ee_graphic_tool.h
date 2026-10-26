@@ -1,0 +1,118 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <optional>
+#include <vector>
+
+#include <tool/arc_tangent_seed.h>
+#include <tool/shape_draw_behavior.h>
+#include <tools/sch_tool_base.h>
+#include <sch_base_frame.h>
+#include <sch_shape.h>
+
+class SCH_EDIT_FRAME;
+class SYMBOL_EDIT_FRAME;
+
+
+/**
+ * Tool responsible for drawing graphical shapes (rectangles, circles, arcs,
+ * beziers, text boxes, etc.) in both the schematic and symbol editors.
+ */
+class EE_GRAPHIC_TOOL : public SCH_TOOL_BASE<SCH_BASE_FRAME>
+{
+public:
+    enum class MODE
+    {
+        NONE,
+        ARC,
+        BEZIER,
+        ELLIPSE_ARC,
+    };
+
+    EE_GRAPHIC_TOOL();
+
+    bool Init() override;
+
+    int DrawShape( const TOOL_EVENT& aEvent );
+    int DrawArc( const TOOL_EVENT& aEvent );
+    int DrawBezier( const TOOL_EVENT& aEvent );
+    int DrawEllipseArc( const TOOL_EVENT& aEvent );
+    int ImportGraphics( const TOOL_EVENT& aEvent );
+
+private:
+    void setTransitions() override;
+
+    /// The layer to use for new shapes in the current editor.
+    SCH_LAYER_ID getShapeLayer() const;
+
+    /// Commit a completed item.
+    void commitItem( SCH_COMMIT& aCommit, std::unique_ptr<SCH_ITEM> aItem, const wxString& aDescription );
+
+    /// Return the default text size (in IU) for the active editor.
+    int getDefaultTextSize() const;
+
+    /**
+     * When in the symbol editor, apply unit and body-style restrictions to @a aItem
+     * according to the current draw-specific flags on the frame.
+     */
+    void applySymbolEditorFlags( SCH_ITEM& aItem ) const;
+
+    /**
+     * Snap a tool event's position the way a click is snapped.
+     *
+     * A hotkey start carries the raw mouse position, which becomes the first point of a managed shape.
+     */
+    VECTOR2I snapEventPosition( const TOOL_EVENT& aEvent );
+
+    /**
+     * Run the interactive drawing event loop for any shape driven by a
+     * @ref SHAPE_DRAW_BEHAVIOR (arcs, ellipse arcs, etc.).
+     *
+     * @param aTangentSeed  start point and direction that begin a tangent arc, applied to the behavior before
+     *                      any initial point.  A seeded draw counts as started.
+     * @param aLastClick  if not null, receives the position of the last click taken by the loop.
+     * @return the outcome of the drawing loop, handle appropriately (commit,
+     *         start another, or stop).
+     */
+    SHAPE_DRAW_RESULT drawManagedShape( const TOOL_EVENT& aTool, std::unique_ptr<SCH_SHAPE>& aShape,
+                                        SHAPE_DRAW_BEHAVIOR& aBehavior, const std::vector<VECTOR2D>& aInitialPts,
+                                        const std::optional<ARC_TANGENT_SEED>& aTangentSeed = std::nullopt,
+                                        VECTOR2I* aLastClick = nullptr );
+
+    FILL_T        m_lastFillStyle;
+    COLOR4D       m_lastFillColor;
+    STROKE_PARAMS m_lastStroke;
+
+    FILL_T        m_lastTextboxFillStyle;
+    COLOR4D       m_lastTextboxFillColor;
+    STROKE_PARAMS m_lastTextboxStroke;
+
+    bool              m_lastTextBold;
+    bool              m_lastTextItalic;
+    EDA_ANGLE         m_lastTextboxAngle;
+    GR_TEXT_H_ALIGN_T m_lastTextboxHJustify;
+    GR_TEXT_V_ALIGN_T m_lastTextboxVJustify;
+
+    MODE m_mode;
+
+    // Re-entrancy guards
+    bool m_inDrawingTool;
+};

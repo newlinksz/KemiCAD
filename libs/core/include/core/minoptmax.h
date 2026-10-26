@@ -1,0 +1,65 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <limits>
+#include <algorithm>
+
+template<class T=int>
+class MINOPTMAX
+{
+public:
+    T Min() const { return m_hasMin ? m_min : 0; };
+    T Max() const { return m_hasMax ? m_max : std::numeric_limits<T>::max(); };
+    T Opt() const { return m_hasOpt ? m_opt : Min(); };
+    T PinnedOpt() const { return std::max<T>( Min(), std::min<T>( Max(), Opt() ) ) ; }
+
+    /// Like PinnedOpt(), but preferring \a aDefault when there is no opt value.
+    T PinnedOpt( T aDefault ) const { return std::max<T>( Min(), std::min<T>( Max(), m_hasOpt ? m_opt : aDefault ) ); }
+
+    bool HasMin() const { return m_hasMin; }
+    bool HasMax() const { return m_hasMax; }
+    bool HasOpt() const { return m_hasOpt; }
+
+    void SetMin( T v ) { m_isNull = false; m_min = v; m_hasMin = true; }
+    void SetMax( T v ) { m_isNull = false; m_max = v; m_hasMax = true; }
+    void SetOpt( T v ) { m_isNull = false; m_opt = v; m_hasOpt = true; }
+
+    bool IsNull() const { return m_isNull; }
+
+    bool Matches( const T v ) const
+    {
+        if( m_hasMin && v < m_min )
+            return false;
+        if( m_hasMax && v > m_max )
+            return false;
+
+        return true;
+    }
+
+private:
+    bool m_isNull = true;
+    T    m_min{};
+    T    m_opt{};
+    T    m_max{};
+    bool m_hasMin = false;
+    bool m_hasOpt = false;
+    bool m_hasMax = false;
+};

@@ -1,0 +1,32 @@
+Project: Scanning Tunneling Microscope OpenSTM
+
+Files:
+ProProject_Scanning Tunneling Microscope OpenSTM_2023-09-02.zip
+Scanning Tunneling Microscope OpenSTM ControlBoard.zip
+
+License: MIT
+Link: https://oshwlab.com/oshwlab/Scanning-Tunneling-Microscope-Op
+---------------------------------------------------------------------
+
+
+Project: Yuzuki Chameleon 基于H616的卡片电脑
+
+Files:
+ProProject_Yuzuki Chameleon_2023-09-02.epro
+ProProject_Yuzuki_Chameleon_2022-08-21.zip
+
+License: CERN Open Hardware Licence Version 2 - Strongly Reciprocal
+Links:
+https://oshwhub.com/gloomyghost/yuzukih616
+https://github.com/YuzukiHD/YuzukiChameleon
+---------------------------------------------------------------------
+
+
+Project: LS2K0300Core (EasyEDA Pro v3 sample)
+
+Files:
+ProProject_LS2K0300Core_2025-11-14.epro2
+LS2K0300_Footprint_2025-11-14.elibz2
+
+License: Provided by contributor for QA import compatibility testing
+Link: Internal test sample provided with the EasyEDA Pro v3 importer contribution

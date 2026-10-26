@@ -1,0 +1,150 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2023 Mark Roszko <mark.roszko@gmail.com>
+ * Copyright (C) 1992-2023 KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <app_monitor.h>
+#include <pgm_base.h>
+#include <settings/common_settings.h>
+#include <settings/kicad_settings.h>
+
+#include <startwizard/startwizard_provider_privacy.h>
+#include <dialogs/panel_startwizard_privacy_base.h>
+#include <settings/settings_manager.h>
+
+
+class PANEL_STARTWIZARD_PRIVACY : public PANEL_STARTWIZARD_PRIVACY_BASE
+{
+public:
+    PANEL_STARTWIZARD_PRIVACY( std::shared_ptr<STARTWIZARD_PROVIDER_PRIVACY_MODEL> aModel,
+                               wxWindow* aParent ) :
+            PANEL_STARTWIZARD_PRIVACY_BASE( aParent ),
+            m_model( aModel )
+    {
+#ifndef KICAD_UPDATE_CHECK
+        m_cbAutoUpdateKiCad->Hide();
+        m_model->m_autoUpdateKiCad = false;
+        m_stIntro->SetLabel( _( "Allow connections to the Internet to check for updates to packages "
+                               "installed through the KemiCAD Plugin and Content Manager?" ) );
+        m_stIntro->Wrap( 550 );
+#endif
+
+#ifndef KICAD_USE_SENTRY
+        m_sizerDataCollection->Show( false );
+#endif
+    };
+
+    bool TransferDataFromWindow() override
+    {
+#ifdef KICAD_UPDATE_CHECK
+        m_model->m_autoUpdateKiCad = m_cbAutoUpdateKiCad->GetValue();
+#else
+        m_model->m_autoUpdateKiCad = false;
+#endif
+        m_model->m_autoUpdatePCM   = m_cbAutoUpdatePCM->GetValue();
+        m_model->m_enableApi       = m_cbApi->GetValue();
+
+#ifdef KICAD_USE_SENTRY
+        m_model->m_enableSentry    = m_cbDataCollection->GetValue();
+#else
+        m_model->m_enableSentry    = false;
+#endif
+
+        return true;
+    }
+
+    bool TransferDataToWindow() override
+    {
+        m_cbAutoUpdateKiCad->SetValue( m_model->m_autoUpdateKiCad );
+        m_cbAutoUpdatePCM->SetValue( m_model->m_autoUpdatePCM );
+        m_cbApi->SetValue( m_model->m_enableApi );
+
+#ifdef KICAD_USE_SENTRY
+        m_cbDataCollection->SetValue( m_model->m_enableSentry );
+#endif
+
+        return true;
+    }
+
+private:
+    std::shared_ptr<STARTWIZARD_PROVIDER_PRIVACY_MODEL> m_model;
+};
+
+
+STARTWIZARD_PROVIDER_PRIVACY::STARTWIZARD_PROVIDER_PRIVACY() :
+        STARTWIZARD_PROVIDER( _( "Updates && Privacy" ) )
+{
+}
+
+
+bool STARTWIZARD_PROVIDER_PRIVACY::NeedsUserInput() const
+{
+    COMMON_SETTINGS* commonSettings = Pgm().GetCommonSettings();
+
+    return !commonSettings->m_DoNotShowAgain.update_check_prompt
+           || !commonSettings->m_DoNotShowAgain.data_collection_prompt;
+}
+
+
+wxPanel* STARTWIZARD_PROVIDER_PRIVACY::GetWizardPanel( wxWindow* aParent, STARTWIZARD* aWizard )
+{
+    m_model = std::make_shared<STARTWIZARD_PROVIDER_PRIVACY_MODEL>();
+    return new PANEL_STARTWIZARD_PRIVACY( m_model, aParent );
+}
+
+
+void STARTWIZARD_PROVIDER_PRIVACY::Finish()
+{
+    COMMON_SETTINGS* commonSettings = Pgm().GetCommonSettings();
+    KICAD_SETTINGS* settings = Pgm().GetSettingsManager().GetAppSettings<KICAD_SETTINGS>( "kicad" );
+
+#ifdef KICAD_UPDATE_CHECK
+    settings->m_KiCadUpdateCheck = m_model->m_autoUpdateKiCad;
+#else
+    settings->m_KiCadUpdateCheck = false;
+#endif
+    settings->m_PcmUpdateCheck   = m_model->m_autoUpdatePCM;
+    commonSettings->m_DoNotShowAgain.update_check_prompt = true;
+    commonSettings->m_Api.enable_server = m_model->m_enableApi;
+
+    APP_MONITOR::SENTRY::Instance()->SetSentryOptIn( m_model->m_enableSentry );
+    commonSettings->m_DoNotShowAgain.data_collection_prompt = true;
+
+    Pgm().GetSettingsManager().Save();
+}
+
+
+void STARTWIZARD_PROVIDER_PRIVACY::ApplyDefaults()
+{
+    COMMON_SETTINGS* commonSettings = Pgm().GetCommonSettings();
+    KICAD_SETTINGS* settings = Pgm().GetSettingsManager().GetAppSettings<KICAD_SETTINGS>( "kicad" );
+
+#ifdef KICAD_UPDATE_CHECK
+    settings->m_KiCadUpdateCheck = true;
+#else
+    settings->m_KiCadUpdateCheck = false;
+#endif
+    settings->m_PcmUpdateCheck   = true;
+    APP_MONITOR::SENTRY::Instance()->SetSentryOptIn( false );
+
+    commonSettings->m_DoNotShowAgain.update_check_prompt = true;
+    commonSettings->m_DoNotShowAgain.data_collection_prompt = true;
+    commonSettings->m_Api.enable_server = true;
+
+    Pgm().SaveCommonSettings();
+}

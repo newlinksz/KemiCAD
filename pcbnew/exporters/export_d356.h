@@ -1,0 +1,99 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2020 Jon Evans <jon@craftyjon.com>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <vector>
+
+#include <wx/string.h>
+
+class BOARD;
+struct FAB_TEST_POINT;
+class wxWindow;
+
+
+/* Structure for holding the D-356 record fields.
+ * Useful because 356A must be sorted by net before outputting it */
+struct D356_RECORD
+{
+    bool       smd = false;
+    bool       hole = false;
+    wxString   netname;
+    wxString   refdes;
+    wxString   pin;
+    bool       midpoint = false;
+    int        drill = 0;
+    bool       mechanical = false;
+    int        access = 0;      // Access 0 is 'both sides'
+    int        soldermask = 0;
+    // Physical copper layers (1-based) spanned by a blind/buried via, 0 otherwise
+    int        start_layer = 0;
+    int        end_layer = 0;
+    // All these in PCB units, will be output in decimils
+    int        x_location = 0;
+    int        y_location = 0;
+    int        x_size = 0;
+    int        y_size = 0;
+    int        rotation = 0;
+};
+
+
+/**
+ * Wrapper to expose an API for writing IPC-D356 files
+ */
+class IPC356D_WRITER
+{
+public:
+    /**
+     * Constructs an IPC-356D file writer
+     * @param aPcb is the board to extract a netlist from
+     */
+    IPC356D_WRITER( BOARD* aPcb ) :
+            m_pcb( aPcb ),
+            m_doNotExportUnconnectedPads( false )
+    {}
+
+    virtual ~IPC356D_WRITER() {}
+
+    /**
+     * Generates and writes the netlist to a given path
+     * @param aFilename is the full path and name of the output file
+     * @return true on success
+     */
+    bool Write( const wxString& aFilename );
+
+    /**
+     * Sets whether unconnected pads should be exported
+     * @param aDoNotExportUnconnectedPads if true, unconnected pads will not be exported
+     */
+    void SetDoNotExportUnconnectedPads( bool aDoNotExportUnconnectedPads )
+    {
+        m_doNotExportUnconnectedPads = aDoNotExportUnconnectedPads;
+    }
+
+private:
+    BOARD* m_pcb;
+
+    /// Writes a list of records to the given output stream
+    void write_D356_records( std::vector<D356_RECORD> &aRecords, FILE* aFile );
+
+    void appendPadRecords( BOARD* aPcb, const std::vector<FAB_TEST_POINT>& aPoints,
+                           std::vector<D356_RECORD>& aRecords );
+
+    bool m_doNotExportUnconnectedPads;
+};

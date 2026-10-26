@@ -1,0 +1,105 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 3
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <widgets/wx_bitmap_combobox.h>
+#include <wx/odcombo.h>
+#include <wx/textctrl.h>
+
+WX_BITMAP_COMBOBOX::WX_BITMAP_COMBOBOX( wxWindow* parent, wxWindowID id, const wxString& value,
+                                        const wxPoint& pos, const wxSize& size, int n,
+                                        const wxString choices[], long style,
+                                        const wxValidator& validator, const wxString& name ) :
+        wxBitmapComboBox( parent, id, value, pos, size, n, choices, style, validator, name )
+{
+}
+
+
+#ifdef __WXMAC__
+void WX_BITMAP_COMBOBOX::DoShowPopup( const wxRect& aRect, int aFlags )
+{
+    wxBitmapComboBox::DoShowPopup( aRect, aFlags );
+    holdPopupMouseCapture();
+}
+
+
+void WX_BITMAP_COMBOBOX::holdPopupMouseCapture()
+{
+    wxComboPopup* popup = GetPopupControl();
+    wxWindow*     list = popup ? popup->GetControl() : nullptr;
+    wxWindow*     popupWindow = GetPopupWindow();
+
+    if( !list || !popupWindow || popupWindow == m_hookedPopupWindow )
+        return;
+
+    m_hookedPopupWindow = popupWindow;
+
+    // Deliberately not skipped, so that wxPopupTransientWindow's own idle handler never runs
+    popupWindow->Bind( wxEVT_IDLE,
+                       [list]( wxIdleEvent& )
+                       {
+                           // CaptureMouse() asserts on anything already in the capture stack, so
+                           // test the stack rather than just the top of it
+                           if( list->IsShownOnScreen() && !wxWindow::GetCapture() )
+                               list->CaptureMouse();
+                       } );
+}
+#endif
+
+
+wxSize WX_BITMAP_COMBOBOX::DoGetBestSize() const
+{
+    wxSize size = wxBitmapComboBox::DoGetBestSize();
+
+#ifdef __WXGTK__
+    wxSize bmpSize = GetBitmapSize();
+
+    if( bmpSize.y > 0 )
+    {
+        // wxBitmapComboBox::DoGetBestSize on GTK only adjusts the height when the bitmap is
+        // taller than the text (GetCharHeight). When the text is taller, it skips the bitmap
+        // adjustment entirely. But on some GTK themes (Plasma/Breeze), the cell renderer
+        // padding around the bitmap means the combo still needs extra height beyond what the
+        // text-only calculation provides. Ensure the combo is at least tall enough for the
+        // bitmap plus the non-content overhead (borders, frame, focus ring).
+        int overhead = size.y - GetCharHeight();
+        size.y = std::max( size.y, bmpSize.y + overhead + 4 );
+    }
+
+    if( bmpSize.x > 0 )
+    {
+        // The width calculation in wxBitmapComboBox::DoGetBestSize on GTK is derived from the
+        // text-only wxComboBox best size and does not account for the pixbuf cell renderer.
+        // Add the bitmap width plus padding to prevent horizontal clipping.
+        size.x += bmpSize.x + 4;
+    }
+
+#if !wxCHECK_VERSION( 3, 2, 9 )
+    // wxWidgets had a bug on GTK where the wxBitmapComboBox doesn't scale correctly with fontsize.
+    // Fixed upstream in wxWidgets 3.2.9: https://github.com/wxWidgets/wxWidgets/issues/25468
+    wxTextCtrl dummyCtrl( m_parent, wxID_ANY );
+    int        dummyWidth = 100;
+
+    size.y = std::max( size.y, dummyCtrl.GetBestHeight( dummyWidth ) + 4 );
+#endif
+#endif
+
+    return size;
+}
+
+

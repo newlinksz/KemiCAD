@@ -1,0 +1,16 @@
+
+# Sources for the pcbnew PLUGIN called IPC2581_PLUGIN
+
+include_directories( ${CMAKE_CURRENT_SOURCE_DIR} )
+
+
+set( IPC2581_SRCS
+    ipc2581_avl_order.cpp
+    ipc2581_export_job.cpp
+    ipc2581_function_mode.cpp
+    pcb_io_ipc2581.cpp
+    )
+
+add_library( ipc2581 STATIC ${IPC2581_SRCS} )
+
+target_link_libraries( ipc2581 pcbcommon )

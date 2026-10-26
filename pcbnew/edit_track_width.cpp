@@ -1,0 +1,263 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2007-2016 Jean-Pierre Charras, jp.charras at wanadoo.fr
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <board_design_settings.h>
+#include <netclass.h>
+#include <pcb_edit_frame.h>
+#include <pcbnew_id.h>
+#include <pcb_track.h>
+#include <tools/pcb_actions.h>
+#include <tool/tool_manager.h>
+#include <wx/choice.h>
+
+void PCB_EDIT_FRAME::SetTrackSegmentWidth( PCB_TRACK* aItem, PICKED_ITEMS_LIST* aItemsListPicker,
+                                           bool aUseDesignRules )
+{
+    PCB_VIA* via = dynamic_cast<PCB_VIA*>( aItem );
+    int      current_width = via ? via->GetWidth( PADSTACK::ALL_LAYERS ) : aItem->GetWidth();
+    int      new_width = -1;
+    int      new_drill = -1;
+
+    if( aUseDesignRules )
+    {
+        MINOPTMAX<int> constraint = aItem->GetWidthConstraint();
+
+        if( constraint.HasOpt() )
+            new_width = constraint.PinnedOpt();
+        else if( constraint.Min() > 0 )
+            new_width = constraint.Min();
+
+        if( via )
+        {
+            constraint = via->GetDrillConstraint();
+
+            if( constraint.HasOpt() )
+                new_drill = constraint.PinnedOpt();
+            else if( constraint.Min() > 0 )
+                new_drill = constraint.Min();
+        }
+    }
+    else if( via && via->GetViaType() == VIATYPE::MICROVIA )
+    {
+        NETCLASS* netClass = via->GetEffectiveNetClass();
+        PCB_VIA   original( *via );
+
+        // Resolve on the live via, since rules such as fromTo() match board items only
+        via->SetSizeFromRules( netClass->GetuViaDiameter(), netClass->GetuViaDrill() );
+        new_width = via->GetWidth( PADSTACK::ALL_LAYERS );
+        new_drill = via->GetDrillValue();
+        via->CopyFrom( &original );
+    }
+    else if( via )
+    {
+        new_width = GetDesignSettings().GetCurrentViaSize();
+        new_drill = GetDesignSettings().GetCurrentViaDrill();
+    }
+    else
+    {
+        new_width = GetDesignSettings().GetCurrentTrackWidth();
+    }
+
+    if( new_width <= 0 )
+        new_width = current_width;
+
+    if( via && new_drill <= 0 )
+        new_drill = via->GetDrillValue();
+
+    if( current_width != new_width || ( via && via->GetDrillValue() != new_drill ) )
+    {
+        ITEM_PICKER picker( nullptr, aItem, UNDO_REDO::CHANGED );
+        picker.SetLink( aItem->Clone() );
+        aItemsListPicker->PushItem( picker );
+
+        if( via )
+            via->SetWidth( PADSTACK::ALL_LAYERS, new_width );
+        else
+            aItem->SetWidth( new_width );
+
+        if( via && new_drill > 0 )
+            via->SetDrill( new_drill );
+    }
+}
+
+
+void PCB_EDIT_FRAME::SelectViaStack_Event( wxCommandEvent& event )
+{
+    int nPresets = (int) GetDesignSettings().m_ViaStackPresets.size();
+    int sel = m_SelViaStackBox->GetSelection();
+
+    if( sel == int( m_SelViaStackBox->GetCount() - 2 ) )
+    {
+        // the "---" separator
+        m_SelViaStackBox->SetSelection( GetDesignSettings().GetViaStackIndex() );
+    }
+    else if( sel == int( m_SelViaStackBox->GetCount() - 1 ) )
+    {
+        // "Edit Via Stacks..."
+        m_SelViaStackBox->SetSelection( GetDesignSettings().GetViaStackIndex() );
+
+        // See the matching comment in Tracks_and_Vias_Size_Event: defer so the GTK
+        // EVT_CHOICE signal unwinds before the toolbar is rebuilt.
+        CallAfter(
+                [this]()
+                {
+                    ShowBoardSetupDialog( _( "Microvia Stacks" ) );
+                } );
+    }
+    else if( sel >= 0 && sel < nPresets )
+    {
+        GetDesignSettings().SetViaStackIndex( sel );
+    }
+
+    GetCanvas()->SetFocus();
+}
+
+
+void PCB_EDIT_FRAME::Tracks_and_Vias_Size_Event( wxCommandEvent& event )
+{
+    int ii;
+    int id = event.GetId();
+
+    switch( id )
+    {
+    case ID_POPUP_PCB_SELECT_USE_NETCLASS_VALUES:
+        GetDesignSettings().m_UseConnectedTrackWidth = false;
+        GetDesignSettings().SetTrackWidthIndex( 0 );
+        GetDesignSettings().SetViaSizeIndex( 0 );
+        break;
+
+    case ID_POPUP_PCB_SELECT_AUTO_WIDTH:
+        GetDesignSettings().m_UseConnectedTrackWidth = true;
+        break;
+
+    case ID_POPUP_PCB_SELECT_WIDTH1:      // this is the default Netclass selection
+    case ID_POPUP_PCB_SELECT_WIDTH2:      // this is a custom value selection
+    case ID_POPUP_PCB_SELECT_WIDTH3:
+    case ID_POPUP_PCB_SELECT_WIDTH4:
+    case ID_POPUP_PCB_SELECT_WIDTH5:
+    case ID_POPUP_PCB_SELECT_WIDTH6:
+    case ID_POPUP_PCB_SELECT_WIDTH7:
+    case ID_POPUP_PCB_SELECT_WIDTH8:
+    case ID_POPUP_PCB_SELECT_WIDTH9:
+    case ID_POPUP_PCB_SELECT_WIDTH10:
+    case ID_POPUP_PCB_SELECT_WIDTH11:
+    case ID_POPUP_PCB_SELECT_WIDTH12:
+    case ID_POPUP_PCB_SELECT_WIDTH13:
+    case ID_POPUP_PCB_SELECT_WIDTH14:
+    case ID_POPUP_PCB_SELECT_WIDTH15:
+    case ID_POPUP_PCB_SELECT_WIDTH16:
+        GetDesignSettings().m_UseConnectedTrackWidth = false;
+        ii = id - ID_POPUP_PCB_SELECT_WIDTH1;
+        GetDesignSettings().SetTrackWidthIndex( ii );
+        break;
+
+    case ID_POPUP_PCB_SELECT_VIASIZE1:   // this is the default Netclass selection
+    case ID_POPUP_PCB_SELECT_VIASIZE2:   // this is a custom value selection
+    case ID_POPUP_PCB_SELECT_VIASIZE3:
+    case ID_POPUP_PCB_SELECT_VIASIZE4:
+    case ID_POPUP_PCB_SELECT_VIASIZE5:
+    case ID_POPUP_PCB_SELECT_VIASIZE6:
+    case ID_POPUP_PCB_SELECT_VIASIZE7:
+    case ID_POPUP_PCB_SELECT_VIASIZE8:
+    case ID_POPUP_PCB_SELECT_VIASIZE9:
+    case ID_POPUP_PCB_SELECT_VIASIZE10:
+    case ID_POPUP_PCB_SELECT_VIASIZE11:
+    case ID_POPUP_PCB_SELECT_VIASIZE12:
+    case ID_POPUP_PCB_SELECT_VIASIZE13:
+    case ID_POPUP_PCB_SELECT_VIASIZE14:
+    case ID_POPUP_PCB_SELECT_VIASIZE15:
+    case ID_POPUP_PCB_SELECT_VIASIZE16:
+        // select the new current value for via size (via diameter)
+        ii = id - ID_POPUP_PCB_SELECT_VIASIZE1;
+        GetDesignSettings().SetViaSizeIndex( ii );
+        break;
+
+    case ID_AUX_TOOLBAR_PCB_TRACK_WIDTH:
+        ii = m_SelTrackWidthBox->GetSelection();
+
+        if( ii == int( m_SelTrackWidthBox->GetCount() - 2 ) )
+        {
+            // this is the separator
+            m_SelTrackWidthBox->SetSelection( GetDesignSettings().GetTrackWidthIndex() );
+        }
+        else if( ii == int( m_SelTrackWidthBox->GetCount() - 1 ) )
+        {
+            m_SelTrackWidthBox->SetSelection( GetDesignSettings().GetTrackWidthIndex() );
+
+            // Best-guess fix for issue #23708 (crash on dialog OK reported on
+            // Flatpak/FreeBSD, not reproduced locally). Suspected cause is that
+            // ReCreateAuxiliaryToolbar(), run on dialog OK, destroys this very
+            // wxChoice while its EVT_CHOICE handler is still on the GTK signal
+            // stack. Defer the dialog so the handler unwinds first.
+            CallAfter( [this]()
+                       {
+                           ShowBoardSetupDialog( _( "Pre-defined Sizes" ) );
+                       } );
+        }
+        else
+        {
+            GetDesignSettings().SetTrackWidthIndex( ii );
+            GetDesignSettings().m_TempOverrideTrackWidth = true;
+        }
+
+        // Needed on Windows because the canvas loses focus after clicking on m_SelTrackWidthBox:
+        GetCanvas()->SetFocus();
+
+        break;
+
+    case ID_AUX_TOOLBAR_PCB_VIA_SIZE:
+        ii = m_SelViaSizeBox->GetSelection();
+
+        if( ii == int( m_SelViaSizeBox->GetCount() - 2 ) )
+        {
+            // this is the separator
+            m_SelViaSizeBox->SetSelection( GetDesignSettings().GetViaSizeIndex() );
+        }
+        else if( ii == int( m_SelViaSizeBox->GetCount() - 1 ) )
+        {
+            m_SelViaSizeBox->SetSelection( GetDesignSettings().GetViaSizeIndex() );
+
+            // See the matching comment in the track-width case above.
+            CallAfter( [this]()
+                       {
+                           ShowBoardSetupDialog( _( "Pre-defined Sizes" ) );
+                       } );
+        }
+        else
+        {
+            GetDesignSettings().SetViaSizeIndex( ii );
+        }
+
+        // Needed on Windows because the canvas loses focus after clicking on m_SelViaSizeBox:
+        GetCanvas()->SetFocus();
+
+        break;
+
+    default:
+        break;
+    }
+
+    // trackViaSizeChanged triggers ReCreateAuxiliaryToolbar(), which destroys m_SelTrackWidthBox /
+    // m_SelViaSizeBox.  When this handler runs from the wxChoice EVT_CHOICE it is still on the GTK
+    // gtk_combo_box_set_active_iter signal stack for that very combo, so rebuilding the toolbar
+    // synchronously frees the combo mid-signal and crashes on the trailing g_object_notify (#23970).
+    // Defer the action so the GTK signal unwinds first, matching the deferred dialog above.
+    CallAfter( [this]() { m_toolManager->RunAction( PCB_ACTIONS::trackViaSizeChanged ); } );
+}

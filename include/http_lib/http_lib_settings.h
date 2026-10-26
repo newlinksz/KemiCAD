@@ -1,0 +1,127 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2023 Andre F. K. Iwers <iwers11@gmail.com>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <settings/json_settings.h>
+#include <pin_map.h>
+#include <unordered_map>
+#include <vector>
+#include <wx/string.h>
+#include <ctime>
+
+
+enum class HTTP_LIB_SOURCE_TYPE
+{
+    REST_API,
+    INVALID
+};
+
+
+/**
+ * Connection parameters for one HTTP library.
+ *
+ * HTTP_LIB_CONNECTION copies the whole struct, so every field has to be meaningful even on a
+ * source assembled in code rather than loaded from a .kicad_httplib.  type stays INVALID until
+ * SCH_IO_HTTP_LIB resolves it, and the timeouts mirror the PARAM defaults in HTTP_LIB_SETTINGS
+ * so an unloaded source does not cache with a zero interval.
+ */
+struct HTTP_LIB_SOURCE
+{
+    HTTP_LIB_SOURCE_TYPE type = HTTP_LIB_SOURCE_TYPE::INVALID;
+    std::string          root_url;
+    std::string          api_version;
+    std::string          token;
+    int                  timeout_parts = 30;
+    int                  timeout_categories = 600;
+};
+
+
+struct HTTP_LIB_PART
+{
+    std::string id;
+    std::string name;
+    std::string symbolIdStr;
+
+    bool        exclude_from_bom = false;
+    bool        exclude_from_board = false;
+    bool        exclude_from_sim = false;
+
+    std::time_t lastCached = 0;
+
+    bool        detailsLoaded = false;
+
+    std::string              desc;
+    std::string              keywords;
+    std::vector<std::string> fp_filters;
+
+    /// Field content keyed by name, holding the text value and its schematic visibility.
+    using field_type = std::tuple<std::string, bool>;
+
+    std::vector<std::pair<std::string, field_type>> fields;
+
+    /// Legacy flat MR !2540 pin assignment table (read for one release; issue #2282).
+    std::unordered_map<wxString, std::vector<wxString>> pin_map;
+
+    /// Spec-form named pin maps and their footprint associations (issue #2282).
+    PIN_MAP_SET                       named_pin_maps;
+    std::vector<ASSOCIATED_FOOTPRINT> associated_footprints;
+};
+
+
+struct HTTP_LIB_CATEGORY
+{
+    std::string id;          ///< id of category
+    std::string name;        ///< name of category
+    std::string description; ///< description of category
+
+    std::time_t lastCached = 0;
+
+    std::vector<HTTP_LIB_PART> cachedParts;
+};
+
+
+class HTTP_LIB_SETTINGS : public JSON_SETTINGS
+{
+public:
+    HTTP_LIB_SETTINGS( const std::string& aFilename );
+    ~HTTP_LIB_SETTINGS() override = default;
+
+    HTTP_LIB_SOURCE_TYPE get_HTTP_LIB_SOURCE_TYPE()
+    {
+        if( m_sourceType == "REST_API" )
+            return HTTP_LIB_SOURCE_TYPE::REST_API;
+
+        return HTTP_LIB_SOURCE_TYPE::INVALID;
+    }
+
+    std::string getSupportedAPIVersion() { return m_api_version; }
+
+protected:
+    wxString getFileExt() const override;
+
+public:
+    HTTP_LIB_SOURCE m_Source;
+
+private:
+    std::string     m_sourceType;
+    std::string     m_api_version = "v1";
+};
+

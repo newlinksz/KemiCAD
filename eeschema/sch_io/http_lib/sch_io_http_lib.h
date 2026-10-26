@@ -1,0 +1,186 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2023 Andre F. K. Iwers <iwers11@gmail.com>
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <functional>
+#include <map>
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
+#include "http_lib/http_lib_settings.h"
+#include <http_lib/http_lib_connection.h>
+
+#include <sch_io/sch_io.h>
+#include <sch_io/sch_io_mgr.h>
+#include <wildcards_and_files_ext.h>
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <shared_mutex>
+#include <thread>
+#include <unordered_set>
+
+class LIBRARY_MANAGER_ADAPTER;
+
+/**
+ * A KiCad HTTP library provides both symbol and footprint metadata, so there are "shim" plugins
+ * on both the symbol and footprint side of things that expose the database contents to the
+ * schematic and board editors.  The architecture of these is slightly different from the other
+ * plugins because the backing file is just a configuration file rather than something that
+ * contains symbol or footprint data.
+ */
+class SCH_IO_HTTP_LIB : public SCH_IO
+{
+public:
+    SCH_IO_HTTP_LIB();
+    ~SCH_IO_HTTP_LIB() override { stopBackgroundRefresh(); }
+
+    const IO_BASE::IO_FILE_DESC GetLibraryDesc() const override
+    {
+        return IO_BASE::IO_FILE_DESC( _HKI( "KemiCAD HTTP library files" ), { FILEEXT::HTTPLibraryFileExtension } );
+    }
+
+    int GetModifyHash() const override { return m_modifyHash; }
+
+    void EnumerateSymbolLib( wxArrayString& aSymbolNameList, const wxString& aLibraryPath,
+                             const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+
+    void EnumerateSymbolLib( std::vector<LIB_SYMBOL*>& aSymbolList, const wxString& aLibraryPath,
+                             const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+
+    void CheckLibrary( const wxString& aLibraryPath,
+                       const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+
+    LIB_SYMBOL* LoadSymbol( const wxString& aLibraryPath, const wxString& aAliasName,
+                            const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+
+    bool SupportsSubLibraries() const override { return true; }
+
+    void GetSubLibraryNames( std::vector<wxString>& aNames ) override;
+
+    wxString GetSubLibraryDescription( const wxString& aName ) override;
+
+    void GetAvailableSymbolFields( std::vector<wxString>& aNames ) override;
+
+    void GetDefaultSymbolFields( std::vector<wxString>& aNames ) override;
+
+    bool IsLibraryWritable( const wxString& aLibraryPath ) override { return false; }
+
+    void SetLibraryManagerAdapter( SYMBOL_LIBRARY_ADAPTER* aAdapter ) override
+    {
+        m_adapter = aAdapter;
+    }
+
+    HTTP_LIB_SETTINGS* Settings() const { return m_settings.get(); }
+
+    using CONNECTION_BUILDER = std::function<std::unique_ptr<HTTP_LIB_CONNECTION>( const HTTP_LIB_SOURCE& )>;
+
+    void SetConnectionBuilder( CONNECTION_BUILDER aFactory )
+    {
+        m_connectionFactory = std::move( aFactory );
+    }
+
+    using SOURCE_PATCHER = std::function<void( HTTP_LIB_SOURCE& )>;
+
+    /// Allows updating a source after initial load; used for QA testing
+    void SetSourcePatcher( SOURCE_PATCHER aOverride )
+    {
+        m_sourcePatcher = std::move( aOverride );
+    }
+
+    void SaveSymbol( const wxString& aLibraryPath, std::unique_ptr<LIB_SYMBOL> aSymbol,
+                     const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+
+    const wxString& GetError() const override { return m_lastError; }
+
+private:
+    void ensureSettings( const wxString& aSettingsPath );
+
+    void ensureConnection();
+
+    void connect();
+
+    LIB_SYMBOL* loadSymbolFromPart( const wxString& aLibraryPath, const wxString& aSymbolName,
+                                    const HTTP_LIB_CATEGORY& aCategory, const HTTP_LIB_PART& aPart,
+                                    std::set<wxString>& aCustomFields );
+
+    void cacheLib( const wxString& aLibraryPath );
+
+    size_t computeSignature( const std::map<std::string, HTTP_LIB_CATEGORY>& aCategoryData ) const;
+
+    void materializeCache( const wxString& aLibraryPath,
+                           const std::map<std::string, HTTP_LIB_CATEGORY>& aCategoryData );
+
+    void startBackgroundRefresh();
+    void stopBackgroundRefresh();
+    void backgroundRefreshWorker();
+
+private:
+    SYMBOL_LIBRARY_ADAPTER*              m_adapter;
+
+    /// Allows replacing actual HTTP connection for QA tests
+    CONNECTION_BUILDER                   m_connectionFactory;
+
+    SOURCE_PATCHER                       m_sourcePatcher;
+
+    /// Generally will be null if no valid connection is established
+    std::unique_ptr<HTTP_LIB_CONNECTION> m_conn;
+    std::unique_ptr<HTTP_LIB_SETTINGS>   m_settings;
+    std::set<wxString>                   m_customFields;
+    std::set<wxString>                   m_defaultShownFields;
+    wxString                             m_lastError;
+    wxString                             m_libraryPath;
+
+    wxString symbol_field = "symbol";
+    wxString footprint_field = "footprint";
+    wxString description_field = "description";
+    wxString keywords_field = "keywords";
+    wxString value_field = "value";
+    wxString datasheet_field = "datasheet";
+    wxString reference_field = "reference";
+
+    std::map<wxString, std::unique_ptr<LIB_SYMBOL>> m_symbolCache;
+
+    /// Symbol name -> (part id, category id); used for the SelectOne fallback in LoadSymbol.
+    std::map<wxString, std::pair<std::string, std::string>> m_partIdMap;
+
+    std::atomic<bool> m_cachePopulated{ false };
+    size_t m_cacheSignature = 0;
+    int m_modifyHash = 0;
+
+    /// Protects m_symbolCache, m_partIdMap, and m_customFields.
+    std::shared_mutex m_cacheMutex;
+
+    /// Serializes loadSymbolFromPart calls
+    std::mutex m_symbolLoadMutex;
+
+    std::thread             m_refreshThread;
+    std::atomic<bool>       m_refreshRunning{ false };
+    std::condition_variable m_refreshCV;
+    std::mutex              m_refreshMutex;
+
+    bool m_inCacheLib = false;
+
+    std::unordered_set<wxString> m_inProgressLoads;
+};

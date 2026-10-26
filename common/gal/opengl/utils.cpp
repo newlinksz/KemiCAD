@@ -1,0 +1,261 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2016-2017 CERN
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * @author Maciej Suminski <maciej.suminski@cern.ch>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <confirm.h> // DisplayError
+
+#include <kicad_gl/kiglad.h> // Must be included first
+
+#include <gal/opengl/utils.h>
+
+#include <algorithm>
+#include <cstring>
+#include <stdexcept>
+#include <wx/log.h> // wxLogTrace
+
+
+/**
+ * Flag to enable debug output of the GAL OpenGL error checking.
+ *
+ * Use "KICAD_GAL_OPENGL_ERROR" to enable GAL OpenGL error tracing.
+ *
+ * @ingroup trace_env_vars
+ */
+static const wxChar* const traceGalOpenGlError = wxT( "KICAD_GAL_OPENGL_ERROR" );
+
+
+int checkGlError( const std::string& aInfo, const char* aFile, int aLine, bool aThrow )
+{
+    int      result = glGetError();
+    wxString errorMsg;
+
+    switch( result )
+    {
+    case GL_NO_ERROR:
+        // all good
+        break;
+
+    case GL_INVALID_ENUM:
+        errorMsg = wxString::Format( "Error: %s: invalid enum", aInfo );
+        break;
+
+    case GL_INVALID_VALUE:
+        errorMsg = wxString::Format( "Error: %s: invalid value", aInfo );
+        break;
+
+    case GL_INVALID_OPERATION:
+        errorMsg = wxString::Format( "Error: %s: invalid operation", aInfo );
+        break;
+
+    case GL_INVALID_FRAMEBUFFER_OPERATION:
+    {
+        GLenum status = glCheckFramebufferStatus( GL_FRAMEBUFFER );
+
+        if( status != GL_FRAMEBUFFER_COMPLETE )
+        {
+            switch( status )
+            {
+            case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
+                errorMsg = "The framebuffer attachment points are incomplete.";
+                break;
+
+            case GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
+                errorMsg = "No images attached to the framebuffer.";
+                break;
+
+            case GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER:
+                errorMsg = "The framebuffer does not have at least one image attached to it.";
+                break;
+
+            case GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER:
+                errorMsg = "The framebuffer read buffer is incomplete.";
+                break;
+
+            case GL_FRAMEBUFFER_UNSUPPORTED:
+                errorMsg = "The combination of internal formats of the attached images violates "
+                           "an implementation dependent set of restrictions.";
+                break;
+
+            case GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE:
+                errorMsg = "GL_RENDERBUFFER_SAMPLES is not the same for all attached render "
+                           "buffers.";
+                break;
+
+            case GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS:
+                errorMsg = "Framebuffer incomplete layer targets errors.";
+                break;
+
+            case GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS_EXT:
+                errorMsg = "Framebuffer attachments have different dimensions";
+                break;
+
+            default:
+                errorMsg.Printf( "Unknown incomplete framebuffer error id %X", status );
+            }
+        }
+        else
+        {
+            errorMsg = wxString::Format( "Error: %s: invalid framebuffer operation", aInfo );
+        }
+    }
+    break;
+
+    case GL_OUT_OF_MEMORY:
+        errorMsg = wxString::Format( "Error: %s: out of memory", aInfo );
+        break;
+
+    case GL_STACK_UNDERFLOW:
+        errorMsg = wxString::Format( "Error: %s: stack underflow", aInfo );
+        break;
+
+    case GL_STACK_OVERFLOW:
+        errorMsg = wxString::Format( "Error: %s: stack overflow", aInfo );
+        break;
+
+    default:
+        errorMsg = wxString::Format( "Error: %s: unknown error", aInfo );
+        break;
+    }
+
+    if( result != GL_NO_ERROR )
+    {
+        if( aThrow )
+        {
+            wxLogTrace( traceGalOpenGlError, wxT( "Throwing exception for glGetError() '%s' "
+                                                  "in file '%s' on line %d." ),
+                        errorMsg,
+                        aFile,
+                        aLine );
+
+            throw std::runtime_error( (const char*) errorMsg.char_str() );
+        }
+        else
+        {
+            wxString msg = wxString::Format( wxT( "glGetError() '%s' in file '%s' on line %d." ),
+                                             errorMsg,
+                                             aFile,
+                                             aLine );
+
+            DisplayErrorMessage( nullptr, "OpenGL Error", msg );
+        }
+    }
+
+    return result;
+}
+
+
+// debugMsgCallback is a callback function for glDebugMessageCallback.
+// It must have the right type ( GLAPIENTRY )
+static void GLAPIENTRY debugMsgCallback( GLenum aSource, GLenum aType, GLuint aId, GLenum aSeverity,
+                                         GLsizei aLength, const GLchar* aMessage,
+                                         const void* aUserParam )
+{
+    switch( aSeverity )
+    {
+    case GL_DEBUG_SEVERITY_HIGH:
+        wxLogTrace( traceGalOpenGlError, wxS( "OpenGL ERROR: %s" ), aMessage );
+        break;
+    case GL_DEBUG_SEVERITY_MEDIUM:
+        wxLogTrace( traceGalOpenGlError, wxS( "OpenGL WARNING: %s" ), aMessage );
+        break;
+    case GL_DEBUG_SEVERITY_LOW:
+        wxLogTrace( traceGalOpenGlError, wxS( "OpenGL INFO: %s" ), aMessage );
+        break;
+    case GL_DEBUG_SEVERITY_NOTIFICATION:
+        return;
+    }
+}
+
+
+void enableGlDebug( bool aEnable )
+{
+    if( aEnable )
+    {
+        glEnable( GL_DEBUG_OUTPUT );
+        glDebugMessageCallback( (GLDEBUGPROC) debugMsgCallback, nullptr );
+    }
+    else
+    {
+        glDisable( GL_DEBUG_OUTPUT );
+    }
+}
+
+
+namespace KIGFX
+{
+
+size_t queryFreeVideoMemoryBytes()
+{
+    GLint nvxAvailableKiB = 0;
+    GLint atiVboFreeKiB[4] = { 0, 0, 0, 0 };
+
+    if( GLAD_GL_NVX_gpu_memory_info )
+        glGetIntegerv( GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &nvxAvailableKiB );
+
+    if( GLAD_GL_ATI_meminfo )
+        glGetIntegerv( GL_VBO_FREE_MEMORY_ATI, atiVboFreeKiB );
+
+    // Swallow any error a driver that advertises but mishandles the query may raise, so it
+    // does not leak into the next checkGlError().
+    glGetError();
+
+    auto bytes = []( GLint aKiB ) -> size_t
+    {
+        return static_cast<size_t>( std::max( aKiB, 0 ) ) * 1024;
+    };
+
+    const char* version = reinterpret_cast<const char*>( glGetString( GL_VERSION ) );
+
+    // Mesa's NVX value is free VRAM only, e.g. an APU's small carve-out, but Mesa spills buffers
+    // to GTT/system memory, which GL_ATI_meminfo reports as the auxiliary pool
+    if( GLAD_GL_ATI_meminfo && version && strstr( version, " Mesa " ) )
+        return bytes( atiVboFreeKiB[0] ) + bytes( atiVboFreeKiB[2] );
+
+    if( GLAD_GL_NVX_gpu_memory_info )
+        return bytes( nvxAvailableKiB );
+
+    if( GLAD_GL_ATI_meminfo )
+        return bytes( atiVboFreeKiB[0] );
+
+    return 0;
+}
+
+
+VRAM_RESIZE_STRATEGY chooseResizeStrategy( size_t aFreeVRAM, size_t aOldBytes, size_t aNewBytes,
+                                           double aMarginFrac )
+{
+    // With no driver information, keep the historical fast path so non-NVIDIA/AMD GPUs are
+    // unaffected.
+    if( aFreeVRAM == 0 )
+        return VRAM_RESIZE_STRATEGY::GPU_COPY;
+
+    const double margin = 1.0 + std::max( 0.0, aMarginFrac );
+
+    if( static_cast<double>( aFreeVRAM ) >= static_cast<double>( aOldBytes + aNewBytes ) * margin )
+        return VRAM_RESIZE_STRATEGY::GPU_COPY;
+
+    if( static_cast<double>( aFreeVRAM ) >= static_cast<double>( aNewBytes ) * margin )
+        return VRAM_RESIZE_STRATEGY::RAM_STAGE;
+
+    return VRAM_RESIZE_STRATEGY::REFUSE;
+}
+
+} // namespace KIGFX

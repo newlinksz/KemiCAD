@@ -1,0 +1,669 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2018 Jean-Pierre Charras, jp.charras at wandadoo.fr
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <map>
+
+#include <core/mirror.h>
+#include <eda_item.h>
+#include <geometry/approximation.h>
+#include <layer_ids.h>
+#include <properties/property.h>
+#include <lseq.h>
+#include <lset.h>
+#include <stroke_params.h>
+#include <geometry/eda_angle.h>
+#include <macros.h>
+#include <drc/drc_constraint_types.h>
+
+
+class BOARD;
+class BOARD_DESIGN_SETTINGS;
+class BOARD_ITEM_CONTAINER;
+class BOARD_ITEM_INDEX;
+class BOARD_COMMIT;
+class SHAPE_POLY_SET;
+class SHAPE_SEGMENT;
+class PCB_BASE_FRAME;
+class SHAPE;
+class PCB_GROUP;
+class FOOTPRINT;
+namespace KIGFX
+{
+    class RENDER_SETTINGS;
+};
+
+namespace KIFONT
+{
+class METRICS;
+}
+
+
+/**
+ * Conditionally flashed vias and pads that interact with zones of different priority can be
+ * very squirrelly.
+ *
+ * In particular, when filling a higher-priority zone that does -not- connect to a via/pad, we
+ * don't know whether or not a lower-priority zone will subsequently connect -- so we can't
+ * determine clearance because we don't know what the final flashing state will be.
+ *
+ * We therefore force the flashing state if the highest-priority zone with the same net -can-
+ * connect (whether or not it does in the end), and otherwise force the zone-connection state
+ * to no-connection (even though a lower priority zone -might- have otherwise connected to it.
+ */
+enum ZONE_LAYER_OVERRIDE
+{
+    ZLO_NONE,
+    ZLO_FORCE_FLASHED,
+    ZLO_FORCE_NO_ZONE_CONNECTION
+};
+
+/**
+ * A base class for any item which can be embedded within the #BOARD container class, and
+ * therefore instances of derived classes should only be found in Pcbnew or other programs
+ * that use class #BOARD and its contents.
+ */
+class BOARD_ITEM : public EDA_ITEM
+{
+public:
+    BOARD_ITEM( BOARD_ITEM* aParent, KICAD_T idtype, PCB_LAYER_ID aLayer = F_Cu ) :
+            EDA_ITEM( aParent, idtype, false, true ),
+            m_layer( aLayer ),
+            m_isKnockout( false ),
+            m_isLocked( false )
+    {
+    }
+
+    BOARD_ITEM( const BOARD_ITEM& aOther ) :
+            EDA_ITEM( aOther ),
+            m_layer( aOther.m_layer ),
+            m_isKnockout( aOther.m_isKnockout ),
+            m_isLocked( aOther.m_isLocked )
+    {
+        // Cache membership is owned by BOARD: clones start detached from any board index
+    }
+
+    BOARD_ITEM& operator=( const BOARD_ITEM& aOther )
+    {
+        if( this == &aOther )
+            return *this;
+
+        EDA_ITEM::operator=( aOther );
+        m_layer = aOther.m_layer;
+        m_isKnockout = aOther.m_isKnockout;
+        m_isLocked = aOther.m_isLocked;
+        // Owner stays with the target, do not copy it
+        return *this;
+    }
+
+    // A default move would copy the owner. Do not move it.
+    BOARD_ITEM( BOARD_ITEM&& aOther ) :
+            BOARD_ITEM( static_cast<const BOARD_ITEM&>( aOther ) )
+    {
+    }
+
+    BOARD_ITEM& operator=( BOARD_ITEM&& aOther )
+    {
+        return operator=( static_cast<const BOARD_ITEM&>( aOther ) );
+    }
+
+    ~BOARD_ITEM() override;
+
+    virtual void CopyFrom( const BOARD_ITEM* aOther );
+
+    bool IsGroupableType() const;
+
+    int GetX() const
+    {
+        VECTOR2I p = GetPosition();
+        return p.x;
+    }
+
+    int GetY() const
+    {
+        VECTOR2I p = GetPosition();
+        return p.y;
+    }
+
+    /**
+     * This defaults to the center of the bounding box if not overridden.
+     *
+     * @return center point of the item
+     */
+    virtual VECTOR2I GetCenter() const
+    {
+        return GetBoundingBox().GetCenter();
+    }
+
+    void SetX( int aX )
+    {
+        VECTOR2I p( aX, GetY() );
+        SetPosition( p );
+    }
+
+    void SetY( int aY )
+    {
+        VECTOR2I p( GetX(), aY );
+        SetPosition( p );
+    }
+
+    /**
+     * Returns information if the object is derived from BOARD_CONNECTED_ITEM.
+     *
+     * @return True if the object is of BOARD_CONNECTED_ITEM type, false otherwise.
+     */
+    virtual bool IsConnected() const
+    {
+        return false;
+    }
+
+    /**
+     * Return a measure of how likely the other object is to represent the same
+     * object.  The scale runs from 0.0 (definitely different objects) to 1.0 (same)
+     *
+     * This is a pure virtual function.  Derived classes must implement this.
+     */
+    virtual double Similarity( const BOARD_ITEM& aItem ) const = 0;
+    virtual bool operator==( const BOARD_ITEM& aItem ) const = 0;
+
+    /**
+     * @return true if the object is on any copper layer, false otherwise.
+     */
+    virtual bool IsOnCopperLayer() const
+    {
+        if( IsSingleLayerType( Type() ) )
+        {
+            return IsCopperLayer( GetLayer() );
+        }
+        else
+        {
+            for( PCB_LAYER_ID layer : GetLayerSet() )
+            {
+                if( IsCopperLayer( layer ) )
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
+    virtual bool HasHole() const
+    {
+        return false;
+    }
+
+    virtual bool HasDrilledHole() const
+    {
+        return false;
+    }
+
+    /**
+     * Checks if the given object is tented (its copper shape is covered by solder mask) on a given
+     * side of the board.
+     * @param aLayer is the layer to check tenting mode for: F_Cu and F_Mask are treated identically
+     *               as are B_Cu and B_Mask
+     * @return true if the object is tented on the given side
+     */
+    virtual bool IsTented( PCB_LAYER_ID aLayer ) const
+    {
+        return false;
+    }
+
+    /**
+     * A value of wxPoint(0,0) which can be passed to the Draw() functions.
+     */
+    static VECTOR2I ZeroOffset;
+
+    /**
+     * Some pad shapes can be complex (rounded/chamfered rectangle), even without considering
+     * custom shapes.  This routine returns a COMPOUND shape (set of simple shapes which make
+     * up the pad for use with routing, collision determination, etc).
+     *
+     * @note This list can contain a SHAPE_SIMPLE (a simple single-outline non-intersecting
+     * polygon), but should never contain a SHAPE_POLY_SET (a complex polygon consisting of
+     * multiple outlines and/or holes).
+     *
+     * @param aLayer in case of items spanning multiple layers, only the shapes belonging to aLayer
+     *               will be returned. Pass UNDEFINED_LAYER to return shapes for all layers.
+     * @param aFlash optional parameter allowing a caller to force the pad to be flashed (or not
+     *               flashed) on the current layer (default is to honour the pad's setting and
+     *               the current connections for the given layer).
+     * @param aUsage optional parameter specifying the query type.  This can, for instance, allow
+     *               backdrilling, countersinking, etc. to affect the shape used for resolving the
+     *               physical_clearance.
+     */
+    virtual std::shared_ptr<SHAPE> GetEffectiveShape( PCB_LAYER_ID aLayer = UNDEFINED_LAYER,
+                                                      FLASHING aFlash = FLASHING::DEFAULT,
+                                                      DRC_CONSTRAINT_T aUsage = NULL_CONSTRAINT ) const;
+
+    virtual std::shared_ptr<SHAPE_SEGMENT> GetEffectiveHoleShape( PCB_LAYER_ID aLayer = UNDEFINED_LAYER,
+                                                                  DRC_CONSTRAINT_T aUsage = NULL_CONSTRAINT ) const;
+
+    /**
+     * Invoke a function on all children.
+     *
+     * @note This function should not add or remove items to the parent.
+     */
+    virtual void RunOnChildren( const std::function<void( BOARD_ITEM* )>& aFunction, RECURSE_MODE aMode ) const {}
+
+    BOARD_ITEM_CONTAINER* GetParent() const { return (BOARD_ITEM_CONTAINER*) m_parent; }
+
+    FOOTPRINT* GetParentFootprint() const;
+
+    /**
+     * Raw UUID assignment.  No board index maintenance.
+     *
+     * Use for detached/load-time items only.  Prefer SetUuid() for normal callers.
+     */
+    void SetUuidDirect( const KIID& aUuid );
+
+    void ResetUuidDirect() { SetUuidDirect( KIID() ); }
+
+    void SetUuid( const KIID& aUuid );
+    void ResetUuid() { SetUuid( KIID() ); }
+
+    /**
+     * Remap KIIDs this item stores to reference other items (e.g. constraint members) through
+     * @p aIdMap (old -> new), after a paste/duplicate has re-UUIDed the referenced items.  KIIDs
+     * absent from the map are left unchanged.  The default does nothing.
+     */
+    virtual void RemapKIIDs( const std::map<KIID, KIID>& aIdMap ) {}
+
+    VECTOR2I GetFPRelativePosition() const;
+    void SetFPRelativePosition( const VECTOR2I& aPos );
+
+    /**
+     * Check if this item has line stoke properties.
+     *
+     * @see #STROKE_PARAMS
+     */
+    virtual bool HasLineStroke() const { return false; }
+
+    /**
+     * Check if this item's layer set must not be confined to a board's enabled layers.
+     *
+     * A container's layer set is its members', and those are confined individually; a footprint's
+     * children come from a library that knows no board's layers and must survive those layers being
+     * re-enabled; a geometric constraint has no layer at all.  Masking any of them would corrupt
+     * the item.  Whether the board accepts it at all is #FitsEnabledLayers.
+     */
+    virtual bool IsLayerAgnostic() const { return false; }
+
+    /**
+     * Check if a board offering \a aEnabledLayers can hold this item.
+     *
+     * A layer-agnostic item always fits; anything else needs at least one of its own layers
+     * enabled.  \a aCopperLayerCount is passed rather than read from the item because the item may
+     * still belong to the board it is being copied from.
+     */
+    virtual bool FitsEnabledLayers( const LSET& aEnabledLayers, int aCopperLayerCount ) const;
+
+    virtual STROKE_PARAMS GetStroke() const;
+    virtual void SetStroke( const STROKE_PARAMS& aStroke );
+
+    const KIFONT::METRICS& GetFontMetrics() const;
+
+    /**
+     * Return the primary layer this item is on.
+     */
+    virtual PCB_LAYER_ID GetLayer() const;
+
+    /**
+     * Return the layer paired with \a aLayer on the opposite side of the board.
+     *
+     * Uses the parent board's layer mapping when available.  Library items and other detached
+     * items use the standard front/back layer pairs.
+     */
+    PCB_LAYER_ID GetFlippedLayer( PCB_LAYER_ID aLayer ) const;
+
+    /**
+     * Return the total number of layers for the board that this item resides on.
+     */
+    virtual int BoardLayerCount() const;
+
+    /**
+     * Return the total number of copper layers for the board that this item resides on.
+     */
+    virtual int BoardCopperLayerCount() const;
+
+    /**
+     * Return the LSET for the board that this item resides on.
+     */
+    virtual LSET BoardLayerSet() const;
+
+    /**
+     * Return a std::bitset of all layers on which the item physically resides.
+     */
+    virtual LSET GetLayerSet() const
+    {
+        if( m_layer == UNDEFINED_LAYER )
+            return LSET();
+        else
+            return LSET( { m_layer } );
+    }
+
+    virtual void SetLayerSet( const LSET& aLayers )
+    {
+        if( aLayers.count() == 1 )
+        {
+            SetLayer( aLayers.Seq()[0] );
+            return;
+        }
+
+        UNIMPLEMENTED_FOR( GetClass() );
+
+        // Derived classes which support multiple layers must implement this
+    }
+
+    bool IsSideSpecific() const;
+
+    /**
+     * Set the layer this item is on.
+     *
+     * @param aLayer The layer number.
+     */
+    virtual void SetLayer( PCB_LAYER_ID aLayer )
+    {
+        m_layer = aLayer;
+    }
+
+    /**
+     * Create a copy of this #BOARD_ITEM.
+     *
+     * @param addToParentGroup Indicates whether or not the new item is added to the group
+     *                         containing the old item.  If true, aCommit must be provided.
+     * @param aCommit is the commit object for undo/redo.
+     */
+    virtual BOARD_ITEM* Duplicate( bool addToParentGroup, BOARD_COMMIT* aCommit = nullptr ) const;
+
+    /**
+     * Swap data between \a aItem and \a aImage.
+     *
+     * \a aItem and \a aImage should have the same type.
+     *
+     * Used in undo and redo commands to swap values between an item and its copy.
+     * Only values like layer, size .. which are modified by editing are swapped.
+     *
+     * @param aImage the item image which contains data to swap.
+     */
+    void SwapItemData( BOARD_ITEM* aImage );
+
+    /**
+     * Test to see if this object is on the given layer.
+     *
+     * Virtual so objects like #PAD, which reside on multiple layers can do their own form
+     * of testing.
+     *
+     * @param aLayer The layer to test for.
+     * @return true if on given layer, else false.
+     */
+    virtual bool IsOnLayer( PCB_LAYER_ID aLayer  ) const
+    {
+        return m_layer == aLayer;
+    }
+
+    virtual bool IsKnockout() const { return m_isKnockout; }
+    virtual void SetIsKnockout( bool aKnockout ) { m_isKnockout = aKnockout; }
+
+    bool IsLocked() const override;
+    void SetLocked( bool aLocked ) override { m_isLocked = aLocked; }
+
+    bool IsIndexedInBoard() const { return m_owningIndex != nullptr; }
+
+    int GetMaxError() const;
+
+    virtual void StyleFromSettings( const BOARD_DESIGN_SETTINGS& settings, bool aCheckSide ) { }
+
+    /**
+     * Delete this object after removing from its parent if it has one.
+     */
+    void DeleteStructure();
+
+    /**
+     * Move this object.
+     *
+     * @param aMoveVector the move vector for this object.
+     */
+    virtual void Move( const VECTOR2I& aMoveVector )
+    {
+        wxFAIL_MSG( wxT( "virtual BOARD_ITEM::Move called for " ) + GetClass() );
+    }
+
+    /**
+     * Rotate this object.
+     *
+     * @param aRotCentre the rotation center point.
+     * @param aAngle the amount to rotation around the center point.
+     */
+    virtual void Rotate( const VECTOR2I& aRotCentre, const EDA_ANGLE& aAngle );
+
+    /**
+     * Apply a parent footprint scale to this item. Default is a no-op. Items
+     * with sizable geometry (PAD, PCB_SHAPE, PCB_TEXT, ZONE) override.
+     *
+     * @param aRatioX        new Sx / old Sx (multiply X-axis-aligned values by this).
+     * @param aRatioY        same for Y.
+     * @param aLinearFactor  weighted factor for stroke / thickness.
+     * @param aAnchor        scale anchor (the parent footprint's translate).
+     * @param aParentRotate  current parent rotation. Needed by POLY / BEZIER
+     *                       to unrotate before scaling and rotate back.
+     */
+    virtual void OnFootprintRescaled( double aRatioX, double aRatioY, double aLinearFactor, const VECTOR2I& aAnchor,
+                                      const EDA_ANGLE& aParentRotate )
+    {}
+
+    /**
+     * Hook for items inside a footprint to refresh after the FP transform
+     * changes (translate, rotate, flip). Scaling uses OnFootprintRescaled.
+     */
+    virtual void OnFootprintTransformed() {}
+
+    /**
+     * Flip this object, i.e. change the board side for this object.
+     *
+     * @param aCentre the rotation point.
+     * @param aFlipDirection the flip direction
+     */
+    virtual void Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection );
+
+    /**
+     * Mirror this object relative to a given horizontal axis the layer is not changed.
+     *
+     * @param aCentre the mirror point.
+     * @param aFlipDirection mirror across X axis instead of Y (the default).
+     */
+    virtual void Mirror( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection );
+
+    /**
+     * Perform any normalization required after a user rotate and/or flip.
+     */
+    virtual void Normalize() {}
+
+    /**
+     * Perform any normalization required to compare 2 graphics, especially
+     * if the can be rotated and/or flipped.
+     * Similar to Normalize(), but more changes can be made
+     */
+    virtual void NormalizeForCompare() { Normalize(); }
+
+    /**
+     * Return the #BOARD in which this #BOARD_ITEM resides, or NULL if none.
+     */
+    virtual const BOARD* GetBoard() const;
+    virtual BOARD* GetBoard();
+
+    /**
+     * For "parent" property.
+     * @return the parent footprint's ref or the parent item's UUID.
+     */
+    wxString GetParentAsString() const;
+
+    /**
+     * Return the name of the PCB layer on which the item resides.
+     *
+     * @return the layer name associated with this item.
+     */
+    wxString GetLayerName() const;
+
+    /**
+     * Return the name of a PCB layer using the owning board's layer names when available.
+     */
+    wxString GetLayerName( PCB_LAYER_ID aLayer ) const;
+
+    virtual std::vector<int> ViewGetLayers() const override;
+
+    /**
+     * Convert the item shape to a closed polygon. Circles and arcs are approximated by segments.
+     *
+     * @param aBuffer a buffer to store the polygon.
+     * @param aLayer is the layer of the shape to transform.
+     * @param aClearance the clearance around the polygonal shape (inflated polygon).
+     * @param aError the maximum deviation from true circle.
+     * @param aErrorLoc should the approximation error be placed outside or inside the polygon?
+     * @param ignoreLineWidth used for edge cut items where the line width is only
+     *                        for visualization.
+     */
+    virtual void TransformShapeToPolygon( SHAPE_POLY_SET& aBuffer, PCB_LAYER_ID aLayer,
+                                          int aClearance, int aError, ERROR_LOC aErrorLoc,
+                                          bool ignoreLineWidth = false ) const;
+
+    /**
+     * Convert the item shape to a polyset. Circles and arcs are approximated by segments; hatched
+     * fills and details (if any) will be included.
+     *
+     * @param aBuffer a buffer to store the polygon.
+     * @param aLayer is the layer of the shape to transform.
+     * @param aClearance the clearance around the pad.
+     * @param aError the maximum deviation from true circle.
+     * @param aErrorLoc should the approximation error be placed outside or inside the polygon?
+     * @param aRenderSettings used to plot outlines with not solid segments like dashed lines.
+     * So it is not used by all BOARD_ITEMS. If null lines like dashed will be converted as SOLID
+     */
+    virtual void TransformShapeToPolySet( SHAPE_POLY_SET& aBuffer, PCB_LAYER_ID aLayer,
+                                          int aClearance, int aError, ERROR_LOC aErrorLoc,
+                                          KIGFX::RENDER_SETTINGS* aRenderSettings = nullptr ) const
+    {
+        TransformShapeToPolygon( aBuffer, aLayer, aClearance, aError, aErrorLoc );
+    }
+
+    /**
+     * Return the board area this item covers, used to rank candidates under the cursor so a
+     * click on a small item inside a large one selects the small one.
+     *
+     * @param aTextMargin the margin added around text, normally the hit-test accuracy.
+     */
+    virtual double GetCoverageArea( int aTextMargin ) const;
+
+    const std::vector<wxString>* GetEmbeddedFonts() override;
+
+    /**
+     * Return a string (to be shown to the user) describing a layer mask.
+     */
+    virtual wxString LayerMaskDescribe() const;
+
+    enum COMPARE_FLAGS : int
+    {
+        DRC                  = 0x01,
+        INSTANCE_TO_INSTANCE = 0x02
+    };
+
+    struct ptr_cmp
+    {
+        bool operator() ( const BOARD_ITEM* a, const BOARD_ITEM* b ) const;
+    };
+
+protected:
+    virtual void swapData( BOARD_ITEM* aImage );
+
+    /// Area of \a aPolySet with every contour closed first, holes subtracted.
+    static double polygonArea( SHAPE_POLY_SET& aPolySet );
+
+protected:
+    PCB_LAYER_ID    m_layer;
+    bool            m_isKnockout;
+    bool            m_isLocked;
+
+    /**
+     * Board index that indexes this item, or nullptr. Set only by the board's BOARD_ITEM_INDEX.
+     * Clones start detached.
+     */
+    mutable BOARD_ITEM_INDEX* m_owningIndex = nullptr;
+
+    friend class BOARD_ITEM_INDEX;
+};
+
+DECLARE_ENUM_TO_WXANY( PCB_LAYER_ID );
+
+/**
+ * A singleton item of this class is returned for a weak reference that no longer exists.
+ *
+ * Its sole purpose is to flag the item as having been deleted.
+ */
+class DELETED_BOARD_ITEM : public BOARD_ITEM
+{
+public:
+    DELETED_BOARD_ITEM() :
+        BOARD_ITEM( nullptr, NOT_USED )
+    {}
+
+    wxString GetItemDescription( UNITS_PROVIDER* aUnitsProvider, bool aFull ) const override
+    {
+        return _( "(Deleted Item)" );
+    }
+
+    wxString GetClass() const override
+    {
+        return wxT( "DELETED_BOARD_ITEM" );
+    }
+
+    // pure virtuals:
+    void     SetPosition( const VECTOR2I& ) override {}
+    VECTOR2I GetPosition() const override { return VECTOR2I( 0, 0 ); }
+
+    static DELETED_BOARD_ITEM* GetInstance()
+    {
+        static DELETED_BOARD_ITEM* item = nullptr;
+
+        if( !item )
+            item = new DELETED_BOARD_ITEM();
+
+        return item;
+    }
+
+    double Similarity( const BOARD_ITEM& aItem ) const override
+    {
+        return ( this == &aItem ) ? 1.0 : 0.0;
+    }
+
+    bool operator==( const BOARD_ITEM& aBoardItem ) const override
+    {
+        return ( this == &aBoardItem );
+    }
+
+    bool operator==( const DELETED_BOARD_ITEM& aOther ) const
+    {
+        return ( this == &aOther );
+    }
+
+#if defined(DEBUG)
+    void Show( int , std::ostream& ) const override {}
+#endif
+};

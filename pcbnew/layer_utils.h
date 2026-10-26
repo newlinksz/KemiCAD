@@ -1,0 +1,93 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <wx/string.h>
+
+#include <board.h>
+#include <footprint.h>
+#include <lseq.h>
+#include <lset.h>
+
+
+/**
+ * Utility functions for dealing with layers in the context of a PCB board.s
+ *
+ * This includes functions that need access to the board to get layer names,
+ * and other more complex, but reusable operations that either shouldn't be in LSET/LSEQ's
+ * interface or need access to Pcbnew types.
+ */
+namespace LAYER_UTILS
+{
+
+/**
+ * Accumulate layer names from a layer set into a comma separated string.
+ *
+ * @param aLayers is the list of layers to accumulate.
+ * @param aBoard is the board to get layer names from, if null the default names
+ *               are used.
+ */
+wxString AccumulateNames( const LSEQ& aLayers, const BOARD* aBoard );
+
+/**
+ * Accumulate layer names from a layer set into a comma separated string,
+ * in UI order.
+ */
+inline wxString AccumulateNames( const LSET& aLayers, const BOARD* aBoard )
+{
+    return AccumulateNames( aLayers.UIOrder(), aBoard );
+}
+
+/**
+ * Return the union of layers referenced by every item inside the footprint (including
+ * graphic items, pads, zones, fields, and nested groups).
+ */
+LSET GetAllFootprintLayers( const FOOTPRINT& aFootprint );
+
+/**
+ * Return the layers the footprint's items actually occupy.
+ *
+ * Unlike GetAllFootprintLayers(), a through-hole pad stored as the "*.Cu" wildcard
+ * contributes only the copper layers its padstack explicitly defines, because it adapts
+ * to whatever copper stackup it is placed on.
+ */
+LSET GetUsedFootprintLayers( const FOOTPRINT& aFootprint );
+
+/**
+ * Return the smallest even copper layer count whose stackup contains every copper layer in
+ * aLayers.
+ */
+int MinimalCopperLayerCount( const LSET& aLayers );
+
+/**
+ * Compute the set of footprint-used layers that would be orphaned if the footprint's
+ * allowed layer set is restricted to aCustomUserLayers (plus the tech and user masks).
+ *
+ * A through-hole pad is stored as the "*.Cu" wildcard, naming no individual copper layer,
+ * so it can never be orphaned by a copper layer being removed.
+ *
+ * The Rescue pseudo-layer is intentionally excluded. It is an internal fallback for
+ * items referencing unknown layer names at load time and is not surfaced in any
+ * layer-selection UI. Orphans on Rescue must be addressed through the library-parity
+ * DRC, not by blocking edits in the Footprint Properties dialog.
+ */
+LSET GetOrphanedFootprintLayers( const FOOTPRINT& aFootprint, const LSET& aCustomUserLayers );
+
+} // namespace LAYER_UTILS

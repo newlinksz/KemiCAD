@@ -1,0 +1,121 @@
+/*
+* This program source code file is part of KiCad, a free EDA CAD application.
+*
+* Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+*
+* This program is free software; you can redistribute it and/or
+* modify it under the terms of the GNU General Public License
+* as published by the Free Software Foundation; either version 2
+* of the License, or (at your option) any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
+#include "io_utils.h"
+
+#include <wx/log.h>
+#include <wx/wfstream.h>
+#include <wx/txtstrm.h>
+
+#include <mmh3_hash.h>
+
+namespace IO_UTILS
+{
+    const std::vector<uint8_t> COMPOUND_FILE_HEADER = { 0xD0, 0xCF, 0x11, 0xE0,
+                                                        0xA1, 0xB1, 0x1A, 0xE1 };
+
+bool fileStartsWithPrefix( const wxString& aFilePath, const wxString& aPrefix,
+                           bool aIgnoreWhitespace )
+{
+    // A probe answers false for a missing or unreadable file rather than logging an error
+    wxLogNull          noLog;
+    wxFFileInputStream input( aFilePath );
+
+    if( input.IsOk() && !input.Eof() )
+    {
+        // Find first non-empty line
+        wxTextInputStream text( input );
+        wxString          line = text.ReadLine();
+
+        if( aIgnoreWhitespace )
+        {
+            while( !input.Eof() && line.IsEmpty() )
+                line = text.ReadLine().Trim( false /*trim from left*/ );
+        }
+
+        if( line.StartsWith( aPrefix ) )
+            return true;
+    }
+
+    return false;
+}
+
+
+bool fileHasBinaryHeader( const wxString& aFilePath, const std::vector<uint8_t>& aHeader,
+    size_t aOffset )
+{
+    // A probe answers false for a missing or unreadable file rather than logging an error
+    wxLogNull          noLog;
+    wxFFileInputStream input( aFilePath );
+
+    if( input.IsOk() && !input.Eof() )
+    {
+        if( static_cast<size_t>( input.GetLength() ) < aOffset + aHeader.size() )
+            return false;
+
+        // Move the stream to the offset
+        if( aOffset )
+        {
+            if( !input.SeekI( aOffset, wxFromStart ) )
+                return false;
+        }
+
+        std::vector<uint8_t> parsedHeader( aHeader.size() );
+
+        if( !input.ReadAll( parsedHeader.data(), parsedHeader.size() ) )
+            return false;
+
+        return parsedHeader == aHeader;
+    }
+
+    return false;
+}
+
+
+std::optional<wxString> fileHashMMH3( const wxString& aFilePath )
+{
+    constexpr size_t c_BufSize = 1024;
+    wxFFileInputStream input( aFilePath );
+    MMH3_HASH hash( 0x68AF835D ); // Arbitrary seed
+
+    if( input.IsOk() )
+    {
+        uint8_t buf[ c_BufSize ];
+        while ( !input.Eof() )
+        {
+            input.Read( buf, c_BufSize);
+            size_t byteCount = input.LastRead();
+            if( byteCount > 0 )
+            {
+                hash.addData( buf, byteCount );
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        return hash.digest().ToString();
+    }
+
+    return std::optional<wxString>();
+}
+
+
+}

@@ -1,0 +1,315 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 3
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <history_lock.h>
+#include <git/kicad_git_common.h>
+#include <lockfile.h>
+#include <advanced_config.h>
+#include <pgm_base.h>
+#include <settings/settings_manager.h>
+#include <wx/filename.h>
+#include <wx/filefn.h>
+#include <wx/ffile.h>
+#include <wx/log.h>
+#include <wx/datetime.h>
+
+#include <git2.h>
+
+#define HISTORY_LOCK_TRACE wxT( "KICAD_HISTORY_LOCK" )
+
+
+static wxString historyPath( const wxString& aProjectPath )
+{
+    return Pgm().GetSettingsManager().GetLocalHistoryDirForPath( aProjectPath );
+}
+
+
+static wxString historyLockPath( const wxString& aProjectPath )
+{
+    // The lock must survive replacement of the history directory during trimming.
+    return historyPath( aProjectPath ) + wxS( ".repo" );
+}
+
+
+HISTORY_LOCK_MANAGER::HISTORY_LOCK_MANAGER( const wxString& aProjectPath, int aStaleTimeoutSec ) :
+        HISTORY_LOCK_MANAGER( aProjectPath, historyPath( aProjectPath ), aStaleTimeoutSec )
+{
+}
+
+
+HISTORY_LOCK_MANAGER::HISTORY_LOCK_MANAGER( const wxString& aProjectPath, const wxString& aHistoryPath,
+                                            int aStaleTimeoutSec ) :
+        m_projectPath( aProjectPath ),
+        m_historyPath( aHistoryPath ),
+        m_repo( nullptr ),
+        m_index( nullptr ),
+        m_repoOwned( false ),
+        m_indexOwned( false ),
+        m_staleTimeoutSec( aStaleTimeoutSec <= 0 ? ADVANCED_CFG::GetCfg().m_HistoryLockStaleTimeout : aStaleTimeoutSec )
+{
+    wxLogTrace( HISTORY_LOCK_TRACE, "Attempting to acquire lock for project: %s (timeout: %d sec)",
+               aProjectPath, m_staleTimeoutSec );
+
+    // Layer 1: Acquire file-based lock to prevent cross-instance conflicts
+    if( !acquireFileLock() )
+    {
+        wxLogTrace( HISTORY_LOCK_TRACE, "Failed to acquire file lock: %s", m_lockError );
+        return;
+    }
+
+    // Layer 2: Open git repository
+    if( !openRepository() )
+    {
+        wxLogTrace( HISTORY_LOCK_TRACE, "Failed to open repository: %s", m_lockError );
+        return;
+    }
+
+    // Layer 3: Acquire git index lock for fine-grained operation safety
+    if( !acquireIndexLock() )
+    {
+        wxLogTrace( HISTORY_LOCK_TRACE, "Failed to acquire index lock: %s", m_lockError );
+        return;
+    }
+
+    wxLogTrace( HISTORY_LOCK_TRACE, "Successfully acquired all locks for project: %s", aProjectPath );
+}
+
+
+HISTORY_LOCK_MANAGER::~HISTORY_LOCK_MANAGER()
+{
+    wxLogTrace( HISTORY_LOCK_TRACE, "Releasing locks for project: %s", m_projectPath );
+
+    // Release in reverse order of acquisition
+    if( m_indexOwned && m_index )
+    {
+        git_index_free( m_index );
+        m_index = nullptr;
+    }
+
+    if( m_repoOwned && m_repo )
+    {
+        git_repository_free( m_repo );
+        m_repo = nullptr;
+    }
+
+    // m_fileLock automatically releases via RAII destructor
+}
+
+
+bool HISTORY_LOCK_MANAGER::IsLocked() const
+{
+    return m_fileLock && m_fileLock->Locked() && m_repo && m_index;
+}
+
+
+wxString HISTORY_LOCK_MANAGER::GetLockError() const
+{
+    return m_lockError;
+}
+
+
+wxString HISTORY_LOCK_MANAGER::GetLockHolder() const
+{
+    if( m_fileLock && !m_fileLock->Locked() )
+    {
+        return wxString::Format( wxS( "%s@%s" ),
+                                m_fileLock->GetUsername(),
+                                m_fileLock->GetHostname() );
+    }
+    return wxEmptyString;
+}
+
+
+bool HISTORY_LOCK_MANAGER::acquireFileLock()
+{
+    // Ensure history directory exists
+    if( !wxDirExists( m_historyPath ) )
+    {
+        wxLogNull suppressSysErrorPopups;
+
+        if( !wxFileName::Mkdir( m_historyPath, 0777, wxPATH_MKDIR_FULL ) )
+        {
+            m_lockError = wxString::Format(
+                _( "Cannot create history directory: %s" ), m_historyPath );
+            return false;
+        }
+    }
+
+    m_fileLock = std::make_unique<LOCKFILE>( m_historyPath + wxS( ".repo" ), true );
+
+    if( !m_fileLock->Locked() )
+    {
+        m_lockError = wxString::Format(
+            _( "History repository is locked by %s@%s" ),
+            m_fileLock->GetUsername(),
+            m_fileLock->GetHostname() );
+        return false;
+    }
+
+    LOCKFILE legacyLock = LOCKFILE::Inspect( wxFileName( m_historyPath, wxS( ".repo" ) ).GetFullPath() );
+
+    if( !legacyLock.Valid() )
+    {
+        m_lockError = _( "History repository is locked by an older KemiCAD instance." );
+        return false;
+    }
+
+    return true;
+}
+
+
+bool HISTORY_LOCK_MANAGER::openRepository()
+{
+    if( !wxDirExists( m_historyPath ) )
+    {
+        m_lockError = wxString::Format(
+            _( "History directory does not exist: %s" ), m_historyPath );
+        return false;
+    }
+
+    // Attempt to open existing repository
+    int rc = git_repository_open( &m_repo, m_historyPath.mb_str().data() );
+
+    if( rc != 0 )
+    {
+        m_lockError = wxString::Format( _( "Failed to open git repository: %s" ), KIGIT_COMMON::GetLastGitError() );
+        return false;
+    }
+
+    // Attempt to set workdir
+    rc = git_repository_set_workdir( m_repo, m_projectPath.mb_str().data(), false );
+
+    if( rc != 0 )
+    {
+        m_lockError = wxString::Format( _( "Failed to set git repository workdir to %s: %s" ), m_projectPath,
+                                        KIGIT_COMMON::GetLastGitError() );
+        return false;
+    }
+
+    // libgit2 will not read .history/.gitignore on its own (it sits outside the workdir).
+    // Inject its rules so users can edit that file and have them honoured.
+    wxFileName ignoreFile( m_historyPath, wxS( ".gitignore" ) );
+
+    if( ignoreFile.FileExists() )
+    {
+        wxFFile  f( ignoreFile.GetFullPath(), wxT( "rb" ) );
+        wxString content;
+
+        if( f.IsOpened() && f.ReadAll( &content ) )
+            git_ignore_add_rule( m_repo, content.utf8_str() );
+    }
+
+    m_repoOwned = true;
+    return true;
+}
+
+
+bool HISTORY_LOCK_MANAGER::acquireIndexLock()
+{
+    if( !m_repo )
+    {
+        m_lockError = _( "Cannot acquire index lock: repository not open" );
+        return false;
+    }
+
+    // git_repository_index will fail if another process has .git/index.lock
+    int rc = git_repository_index( &m_index, m_repo );
+
+    if( rc != 0 )
+    {
+        m_lockError = wxString::Format( _( "Failed to acquire git index lock (another operation in progress?): %s" ),
+                                        KIGIT_COMMON::GetLastGitError() );
+        return false;
+    }
+
+    m_indexOwned = true;
+    return true;
+}
+
+
+bool HISTORY_LOCK_MANAGER::IsLockStale( const wxString& aProjectPath, int aStaleTimeoutSec )
+{
+    // Use config value if not explicitly specified
+    if( aStaleTimeoutSec <= 0 )
+        aStaleTimeoutSec = ADVANCED_CFG::GetCfg().m_HistoryLockStaleTimeout;
+
+    wxFileName lockPath( LOCKFILE::LockPathFor( historyLockPath( aProjectPath ) ) );
+
+    if( !lockPath.FileExists() )
+        return false; // No lock file exists
+
+    wxDateTime modTime;
+    if( !lockPath.GetTimes( nullptr, &modTime, nullptr ) )
+        return false; // Can't determine age
+
+    wxDateTime now = wxDateTime::Now();
+    wxTimeSpan age = now - modTime;
+
+    wxLogTrace( HISTORY_LOCK_TRACE, "Lock file age: %d seconds (stale threshold: %d)",
+               (int)age.GetSeconds().ToLong(), aStaleTimeoutSec );
+
+    return age.GetSeconds().ToLong() > aStaleTimeoutSec
+           && LOCKFILE::Inspect( historyLockPath( aProjectPath ) ).Valid();
+}
+
+
+bool HISTORY_LOCK_MANAGER::BreakStaleLock( const wxString& aProjectPath )
+{
+    // Claim the abandoned lock before removing it, so a concurrent owner cannot be unlinked.
+    LOCKFILE lock( historyLockPath( aProjectPath ), true );
+    return lock.Locked();
+}
+
+
+void HISTORY_LOCK_MANAGER::ReleaseRepository()
+{
+    if( m_indexOwned && m_index )
+    {
+        git_index_free( m_index );
+        m_index = nullptr;
+        m_indexOwned = false;
+    }
+
+    if( m_repoOwned && m_repo )
+    {
+        git_repository_free( m_repo );
+        m_repo = nullptr;
+        m_repoOwned = false;
+    }
+}
+
+
+git_repository* HISTORY_LOCK_MANAGER::ReopenRepository()
+{
+    if( m_repo && m_index )
+        return m_repo;
+
+    ReleaseRepository();
+
+    if( !m_fileLock || !m_fileLock->Locked() )
+    {
+        m_lockError = _( "Cannot re-open history repository without the file lock" );
+        return nullptr;
+    }
+
+    if( !openRepository() || !acquireIndexLock() )
+        return nullptr;
+
+    return m_repo;
+}

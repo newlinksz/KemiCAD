@@ -1,0 +1,725 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <qa_utils/wx_utils/unit_test_utils.h>
+#include <pcbnew_utils/board_test_utils.h>
+
+#include <board.h>
+#include <footprint.h>
+#include <geometry/shape_arc.h>
+#include <geometry/shape_line_chain.h>
+#include <geometry/shape_poly_set.h>
+#include <geometry/shape_utils.h>
+#include <netinfo.h>
+#include <pad.h>
+#include <padstack.h>
+#include <pcb_painter.h>
+#include <pcb_track.h>
+#include <tool/tool_manager.h>
+#include <tools/zone_create_helper.h>
+#include <view/view.h>
+#include <zone.h>
+#include <zone_utils.h>
+
+
+struct ZONE_TEST_FIXTURE
+{
+    BOARD m_board;
+};
+
+
+static std::unique_ptr<ZONE> CreateSquareZone( BOARD_ITEM_CONTAINER& aParent, PCB_LAYER_ID aLayer,
+                                               const VECTOR2I& aOrigin, const VECTOR2I& aSize )
+{
+    std::unique_ptr<ZONE> zone = std::make_unique<ZONE>( &aParent );
+    zone->SetLayer( aLayer );
+
+    std::unique_ptr<SHAPE_POLY_SET> outline = std::make_unique<SHAPE_POLY_SET>();
+    outline->AddOutline( KIGEOM::BoxToLineChain( BOX2I( aOrigin, aSize ) ) );
+
+    zone->SetOutline( outline.release() );
+
+    return zone;
+}
+
+
+/**
+ * Create a similar zone (same outline) on a different layer
+ */
+static std::unique_ptr<ZONE> CreateSimilarZone( BOARD_ITEM_CONTAINER& aParent, PCB_LAYER_ID aLayer, const ZONE& aOther )
+{
+    auto zone = std::make_unique<ZONE>( &aParent );
+    zone->SetLayer( aLayer );
+
+    std::unique_ptr<SHAPE_POLY_SET> outline = std::make_unique<SHAPE_POLY_SET>( *aOther.Outline() );
+    zone->SetOutline( outline.release() );
+
+    return zone;
+}
+
+
+static FOOTPRINT* MakeFootprintWithRuleArea( BOARD& aBoard, const std::vector<BOX2I>& aCutouts )
+{
+    FOOTPRINT* fp = new FOOTPRINT( &aBoard );
+    aBoard.Add( fp );
+
+    ZONE* zone = new ZONE( fp );
+    zone->SetIsRuleArea( true );
+    zone->SetLayer( F_Cu );
+    zone->Outline()->AddOutline( KIGEOM::BoxToLineChain(
+            BOX2I( VECTOR2I( 0, 0 ), VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ) ) ) );
+
+    for( const BOX2I& cutout : aCutouts )
+        zone->Outline()->AddHole( KIGEOM::BoxToLineChain( cutout ) );
+
+    fp->Add( zone );
+    return fp;
+}
+
+
+BOOST_FIXTURE_TEST_SUITE( Zone, ZONE_TEST_FIXTURE )
+
+BOOST_AUTO_TEST_CASE( SingleLayer )
+{
+    ZONE zone( &m_board );
+
+    zone.SetLayer( F_Cu );
+
+    BOOST_TEST( zone.GetLayer() == F_Cu );
+    BOOST_TEST( zone.GetLayer() == zone.GetFirstLayer() );
+
+    BOOST_TEST( zone.IsOnCopperLayer() == true );
+}
+
+BOOST_AUTO_TEST_CASE( MultipleLayers )
+{
+    ZONE zone( &m_board );
+
+    zone.SetLayerSet( { F_Cu, B_Cu } );
+
+    // There is no "the" layer in a multi-layer zone
+    BOOST_TEST( zone.GetLayer() == UNDEFINED_LAYER );
+    // ... but there is a first layer
+    BOOST_TEST( zone.GetFirstLayer() == F_Cu );
+
+    BOOST_TEST( zone.IsOnCopperLayer() == true );
+}
+
+/**
+ * During zone loading, the layer is set to Rescue if the layer is not found.
+ * This is not a UI-visible layer, so make sure it can still be retreived.
+ *
+ * https://gitlab.com/kicad/code/kicad/-/issues/18553
+ */
+BOOST_AUTO_TEST_CASE( RescuedLayers )
+{
+    ZONE zone( &m_board );
+
+    zone.SetLayer( Rescue );
+
+    BOOST_TEST( zone.GetLayer() == Rescue );
+    BOOST_TEST( zone.GetLayer() == zone.GetFirstLayer() );
+
+    BOOST_TEST( zone.IsOnCopperLayer() == false );
+}
+
+/**
+ * Zones created by converting a circle shape carry arc metadata in their outline.
+ * Clipper2 cannot preserve arcs across boolean operations once either operand has
+ * a hole or the clip operand has outlines (see SHAPE_POLY_SET::booleanOp's assertion).
+ * Historically the "Add a Zone Cutout" tool fed arc-bearing outlines straight into
+ * BooleanSubtract, which produced point/arc metadata that disagreed after serialization
+ * and rendered as corrupt zones on reload.
+ *
+ * Regression test for https://gitlab.com/kicad/code/kicad/-/issues/24053
+ */
+BOOST_AUTO_TEST_CASE( CircleZoneCutoutRoundTrip )
+{
+    // Build a circular zone outline the same way convert_tool.cpp does for CIRCLE shapes
+    VECTOR2I  center( 0, 0 );
+    int       radius = pcbIUScale.mmToIU( 10.0 );
+    SHAPE_ARC fullCircle( center - VECTOR2I( radius, 0 ), center + VECTOR2I( radius, 0 ),
+                          center - VECTOR2I( radius, 0 ), 0 );
+
+    SHAPE_POLY_SET sourceOutline;
+    sourceOutline.NewOutline();
+    sourceOutline.Append( fullCircle );
+
+    BOOST_TEST_REQUIRE( sourceOutline.ArcCount() > 0 );
+    double sourceArea = sourceOutline.Area();
+    BOOST_TEST_REQUIRE( sourceArea > 0.0 );
+
+    // Draw a small rectangular cutout well inside the circle
+    SHAPE_POLY_SET cutoutOutline;
+    cutoutOutline.NewOutline();
+    int cutoutHalf = pcbIUScale.mmToIU( 1.0 );
+    cutoutOutline.Append( VECTOR2I( -cutoutHalf, -cutoutHalf ) );
+    cutoutOutline.Append( VECTOR2I( cutoutHalf, -cutoutHalf ) );
+    cutoutOutline.Append( VECTOR2I( cutoutHalf, cutoutHalf ) );
+    cutoutOutline.Append( VECTOR2I( -cutoutHalf, cutoutHalf ) );
+
+    // Mirror the fix applied in ZONE_CREATE_HELPER::performZoneCutout: drop arcs before
+    // the boolean so the saved outline cannot reference stale arc endpoints.
+    SHAPE_POLY_SET working( sourceOutline );
+    working.ClearArcs();
+
+    SHAPE_POLY_SET cutout( cutoutOutline );
+    cutout.ClearArcs();
+
+    working.BooleanSubtract( cutout );
+
+    BOOST_TEST( working.ArcCount() == 0 );
+    BOOST_TEST_REQUIRE( working.OutlineCount() == 1 );
+    BOOST_TEST_REQUIRE( working.HoleCount( 0 ) == 1 );
+
+    double expectedArea = sourceArea - cutoutOutline.Area();
+    BOOST_CHECK_CLOSE( working.Area(), expectedArea, 0.1 );
+
+    // Outline must be a simple closed curve with reasonable point count
+    const SHAPE_LINE_CHAIN& outerChain = working.COutline( 0 );
+    BOOST_TEST( outerChain.IsClosed() );
+    BOOST_TEST( outerChain.PointCount() >= 8 );
+    BOOST_TEST( outerChain.SelfIntersecting().has_value() == false );
+
+    const SHAPE_LINE_CHAIN& holeChain = working.CHole( 0, 0 );
+    BOOST_TEST( holeChain.IsClosed() );
+    BOOST_TEST( holeChain.PointCount() == 4 );
+}
+
+/**
+ * Verify that GetPosition() on a zone with no outline vertices does not
+ * throw or crash. Empty zones can be created by importers.
+ *
+ * Regression test for https://gitlab.com/kicad/code/kicad/-/issues/23125
+ */
+BOOST_AUTO_TEST_CASE( EmptyZoneGetPosition )
+{
+    ZONE zone( &m_board );
+    zone.SetLayer( F_Cu );
+
+    BOOST_TEST( zone.GetNumCorners() == 0 );
+    BOOST_CHECK_NO_THROW( zone.GetPosition() );
+    BOOST_TEST( zone.GetPosition() == VECTOR2I( 0, 0 ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( ZoneMergeNull )
+{
+    std::vector<std::unique_ptr<ZONE>> zones;
+
+    zones.emplace_back( std::make_unique<ZONE>( &m_board ) );
+    zones.back()->SetLayer( F_Cu );
+
+    zones.emplace_back( std::make_unique<ZONE>( &m_board ) );
+    zones.back()->SetLayer( F_Cu );
+
+    std::vector<std::unique_ptr<ZONE>> merged = MergeZonesWithSameOutline( std::move( zones ) );
+
+    // They are the same, so they do merge
+    BOOST_TEST( merged.size() == 1 );
+}
+
+
+BOOST_AUTO_TEST_CASE( ZoneMergeNonNullNoMerge )
+{
+    std::vector<std::unique_ptr<ZONE>> zones;
+
+    zones.emplace_back( CreateSquareZone( m_board, F_Cu, VECTOR2I( 0, 0 ), VECTOR2I( 100, 100 ) ) );
+    zones.emplace_back( CreateSquareZone( m_board, B_Cu, VECTOR2I( 200, 200 ), VECTOR2I( 300, 300 ) ) );
+
+    std::vector<std::unique_ptr<ZONE>> merged = MergeZonesWithSameOutline( std::move( zones ) );
+
+    // They are different, so they don't merge
+    BOOST_TEST( merged.size() == 2 );
+}
+
+
+BOOST_AUTO_TEST_CASE( ZoneMergeNonNullMerge )
+{
+    std::vector<std::unique_ptr<ZONE>> zones;
+
+    zones.emplace_back( CreateSquareZone( m_board, F_Cu, VECTOR2I( 0, 0 ), VECTOR2I( 100, 100 ) ) );
+    zones.emplace_back( CreateSimilarZone( m_board, B_Cu, *zones.back() ) );
+
+    std::vector<std::unique_ptr<ZONE>> merged = MergeZonesWithSameOutline( std::move( zones ) );
+
+    // They are the same, so they do merge
+    BOOST_REQUIRE( merged.size() == 1 );
+
+    BOOST_TEST( merged[0]->GetLayerSet() == ( LSET{ F_Cu, B_Cu } ) );
+    BOOST_TEST( merged[0]->GetNumCorners() == 4 );
+}
+
+
+BOOST_AUTO_TEST_CASE( ZoneMergeMergeSameGeomDifferentOrder )
+{
+    std::vector<std::unique_ptr<ZONE>> zones;
+
+    zones.emplace_back( CreateSquareZone( m_board, F_Cu, VECTOR2I( 0, 0 ), VECTOR2I( 100, 100 ) ) );
+    zones.emplace_back( CreateSimilarZone( m_board, B_Cu, *zones.back() ) );
+
+    // Reverse the outline of one of them
+    // Don't go overboard here - detailed tests of CompareGeometry
+    // should be in the SHAPE_LINE_CHAIN tests.
+    auto newPolyB = std::make_unique<SHAPE_POLY_SET>( *zones.back()->Outline() );
+    newPolyB->Outline( 0 ).Reverse();
+    zones.back()->SetOutline( newPolyB.release() );
+
+    std::vector<std::unique_ptr<ZONE>> merged = MergeZonesWithSameOutline( std::move( zones ) );
+
+    // They are the same, so they do merge
+    BOOST_REQUIRE( merged.size() == 1 );
+
+    BOOST_TEST( merged[0]->GetLayerSet() == LSET( { F_Cu, B_Cu } ) );
+    BOOST_TEST( merged[0]->GetNumCorners() == 4 );
+}
+
+static PCB_VIA* AddVia( BOARD& aBoard, const VECTOR2I& aPos, int aNetCode,
+                        PCB_LAYER_ID aTopLayer = F_Cu, PCB_LAYER_ID aBotLayer = B_Cu )
+{
+    PCB_VIA* via = new PCB_VIA( &aBoard );
+    via->SetPadstackMode( PADSTACK::MODE::NORMAL );
+    via->SetPosition( aPos );
+    via->SetLayerPair( aTopLayer, aBotLayer );
+    via->SetWidth( PADSTACK::ALL_LAYERS, pcbIUScale.mmToIU( 0.6 ) );
+    via->SetDrill( pcbIUScale.mmToIU( 0.3 ) );
+    via->SetNetCode( aNetCode );
+    aBoard.Add( via );
+    return via;
+}
+
+
+static PAD* AddPadToBoard( BOARD& aBoard, const VECTOR2I& aPos, int aNetCode, PCB_LAYER_ID aLayer = F_Cu )
+{
+    FOOTPRINT* fp = new FOOTPRINT( &aBoard );
+    fp->SetPosition( aPos );
+    aBoard.Add( fp );
+
+    PAD* pad = new PAD( fp );
+    pad->SetPadstackMode( PADSTACK::MODE::NORMAL );
+    pad->SetPosition( aPos );
+    pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( pcbIUScale.mmToIU( 1.0 ), pcbIUScale.mmToIU( 1.0 ) ) );
+    pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CIRCLE );
+    pad->SetLayerSet( LSET( { aLayer } ) );
+    pad->SetNetCode( aNetCode );
+    fp->Add( pad );
+    return pad;
+}
+
+
+BOOST_AUTO_TEST_CASE( AutoPriority_NonOverlapping )
+{
+    NETINFO_ITEM* netA = new NETINFO_ITEM( &m_board, wxT( "NetA" ) );
+    m_board.Add( netA );
+    NETINFO_ITEM* netB = new NETINFO_ITEM( &m_board, wxT( "NetB" ) );
+    m_board.Add( netB );
+
+    std::unique_ptr<ZONE> zoneA = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( 0, 0 ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ) );
+    zoneA->SetNetCode( netA->GetNetCode() );
+    zoneA->SetAssignedPriority( 5 );
+
+    std::unique_ptr<ZONE> zoneB = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( pcbIUScale.mmToIU( 20 ), 0 ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ) );
+    zoneB->SetNetCode( netB->GetNetCode() );
+    zoneB->SetAssignedPriority( 10 );
+
+    ZONE* ptrA = zoneA.get();
+    ZONE* ptrB = zoneB.get();
+    m_board.Add( zoneA.release() );
+    m_board.Add( zoneB.release() );
+
+    AutoAssignZonePriorities( &m_board );
+
+    BOOST_TEST( ptrA->GetAssignedPriority() <= ptrB->GetAssignedPriority() );
+}
+
+
+BOOST_AUTO_TEST_CASE( AutoPriority_ItemCountWins )
+{
+    NETINFO_ITEM* netA = new NETINFO_ITEM( &m_board, wxT( "NetA" ) );
+    m_board.Add( netA );
+    NETINFO_ITEM* netB = new NETINFO_ITEM( &m_board, wxT( "NetB" ) );
+    m_board.Add( netB );
+
+    std::unique_ptr<ZONE> zoneA = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( 0, 0 ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 20 ), pcbIUScale.mmToIU( 20 ) ) );
+    zoneA->SetNetCode( netA->GetNetCode() );
+
+    std::unique_ptr<ZONE> zoneB = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( pcbIUScale.mmToIU( 5 ), pcbIUScale.mmToIU( 5 ) ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ) );
+    zoneB->SetNetCode( netB->GetNetCode() );
+
+    ZONE* ptrA = zoneA.get();
+    ZONE* ptrB = zoneB.get();
+    m_board.Add( zoneA.release() );
+    m_board.Add( zoneB.release() );
+
+    for( int i = 0; i < 5; i++ )
+        AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 7 + i ), pcbIUScale.mmToIU( 10 ) ), netA->GetNetCode() );
+
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 7 ) ), netB->GetNetCode() );
+
+    AutoAssignZonePriorities( &m_board );
+
+    BOOST_TEST( ptrA->GetAssignedPriority() > ptrB->GetAssignedPriority() );
+}
+
+
+BOOST_AUTO_TEST_CASE( AutoPriority_SimilarCountsSmallerWins )
+{
+    NETINFO_ITEM* netA = new NETINFO_ITEM( &m_board, wxT( "NetA" ) );
+    m_board.Add( netA );
+    NETINFO_ITEM* netB = new NETINFO_ITEM( &m_board, wxT( "NetB" ) );
+    m_board.Add( netB );
+
+    std::unique_ptr<ZONE> zoneA = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( 0, 0 ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 30 ), pcbIUScale.mmToIU( 30 ) ) );
+    zoneA->SetNetCode( netA->GetNetCode() );
+
+    std::unique_ptr<ZONE> zoneB = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( pcbIUScale.mmToIU( 5 ), pcbIUScale.mmToIU( 5 ) ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ) );
+    zoneB->SetNetCode( netB->GetNetCode() );
+
+    ZONE* ptrA = zoneA.get();
+    ZONE* ptrB = zoneB.get();
+    m_board.Add( zoneA.release() );
+    m_board.Add( zoneB.release() );
+
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 8 ), pcbIUScale.mmToIU( 8 ) ), netA->GetNetCode() );
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 12 ), pcbIUScale.mmToIU( 8 ) ), netA->GetNetCode() );
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 8 ), pcbIUScale.mmToIU( 12 ) ), netB->GetNetCode() );
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 12 ), pcbIUScale.mmToIU( 12 ) ), netB->GetNetCode() );
+
+    AutoAssignZonePriorities( &m_board );
+
+    BOOST_TEST( ptrB->GetAssignedPriority() > ptrA->GetAssignedPriority() );
+}
+
+
+BOOST_AUTO_TEST_CASE( AutoPriority_MultiLayerAggregate )
+{
+    m_board.SetCopperLayerCount( 2 );
+
+    NETINFO_ITEM* netA = new NETINFO_ITEM( &m_board, wxT( "NetA" ) );
+    m_board.Add( netA );
+    NETINFO_ITEM* netB = new NETINFO_ITEM( &m_board, wxT( "NetB" ) );
+    m_board.Add( netB );
+
+    std::unique_ptr<ZONE> zoneA = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( 0, 0 ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 20 ), pcbIUScale.mmToIU( 20 ) ) );
+    zoneA->SetLayerSet( LSET( { F_Cu, B_Cu } ) );
+    zoneA->SetNetCode( netA->GetNetCode() );
+
+    std::unique_ptr<ZONE> zoneB = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( pcbIUScale.mmToIU( 5 ), pcbIUScale.mmToIU( 5 ) ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ) );
+    zoneB->SetLayerSet( LSET( { F_Cu, B_Cu } ) );
+    zoneB->SetNetCode( netB->GetNetCode() );
+
+    ZONE* ptrA = zoneA.get();
+    ZONE* ptrB = zoneB.get();
+    m_board.Add( zoneA.release() );
+    m_board.Add( zoneB.release() );
+
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 8 ), pcbIUScale.mmToIU( 8 ) ), netA->GetNetCode(), F_Cu, B_Cu );
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 12 ), pcbIUScale.mmToIU( 8 ) ), netA->GetNetCode(), F_Cu, B_Cu );
+
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 8 ), pcbIUScale.mmToIU( 12 ) ), netB->GetNetCode(), F_Cu, B_Cu );
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ), netB->GetNetCode(), F_Cu, B_Cu );
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 12 ), pcbIUScale.mmToIU( 12 ) ), netB->GetNetCode(), F_Cu, B_Cu );
+
+    AutoAssignZonePriorities( &m_board );
+
+    BOOST_TEST( ptrB->GetAssignedPriority() > ptrA->GetAssignedPriority() );
+}
+
+
+BOOST_AUTO_TEST_CASE( AutoPriority_SameNetEqualPriority )
+{
+    NETINFO_ITEM* net = new NETINFO_ITEM( &m_board, wxT( "SharedNet" ) );
+    m_board.Add( net );
+
+    std::unique_ptr<ZONE> zoneA = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( 0, 0 ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 30 ), pcbIUScale.mmToIU( 30 ) ) );
+    zoneA->SetNetCode( net->GetNetCode() );
+
+    std::unique_ptr<ZONE> zoneB = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( pcbIUScale.mmToIU( 5 ), pcbIUScale.mmToIU( 5 ) ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ) );
+    zoneB->SetNetCode( net->GetNetCode() );
+
+    ZONE* ptrA = zoneA.get();
+    ZONE* ptrB = zoneB.get();
+    m_board.Add( zoneA.release() );
+    m_board.Add( zoneB.release() );
+
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 8 ), pcbIUScale.mmToIU( 8 ) ), net->GetNetCode() );
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 12 ), pcbIUScale.mmToIU( 12 ) ), net->GetNetCode() );
+
+    AutoAssignZonePriorities( &m_board );
+
+    // Same-net overlapping zones are cooperative and must share equal priority
+    BOOST_TEST( ptrA->GetAssignedPriority() == ptrB->GetAssignedPriority() );
+}
+
+
+BOOST_AUTO_TEST_CASE( AutoPriority_EqualAreaNoChange )
+{
+    NETINFO_ITEM* netA = new NETINFO_ITEM( &m_board, wxT( "NetA" ) );
+    m_board.Add( netA );
+    NETINFO_ITEM* netB = new NETINFO_ITEM( &m_board, wxT( "NetB" ) );
+    m_board.Add( netB );
+
+    // Two identical-sized overlapping zones with no items in the overlap
+    std::unique_ptr<ZONE> zoneA = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( 0, 0 ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 20 ), pcbIUScale.mmToIU( 20 ) ) );
+    zoneA->SetNetCode( netA->GetNetCode() );
+    zoneA->SetAssignedPriority( 50 );
+
+    std::unique_ptr<ZONE> zoneB = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( 0, 0 ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 20 ), pcbIUScale.mmToIU( 20 ) ) );
+    zoneB->SetNetCode( netB->GetNetCode() );
+    zoneB->SetAssignedPriority( 50 );
+
+    ZONE* ptrA = zoneA.get();
+    ZONE* ptrB = zoneB.get();
+    m_board.Add( zoneA.release() );
+    m_board.Add( zoneB.release() );
+
+    bool changed = AutoAssignZonePriorities( &m_board );
+
+    // Equal areas, no items: no ordering evidence, priorities must not change
+    BOOST_TEST( changed == false );
+    BOOST_TEST( ptrA->GetAssignedPriority() == 50u );
+    BOOST_TEST( ptrB->GetAssignedPriority() == 50u );
+}
+
+
+BOOST_AUTO_TEST_CASE( AutoPriority_SameNetGroupInheritsEdge )
+{
+    NETINFO_ITEM* netGND = new NETINFO_ITEM( &m_board, wxT( "GND" ) );
+    m_board.Add( netGND );
+    NETINFO_ITEM* netVCC = new NETINFO_ITEM( &m_board, wxT( "VCC" ) );
+    m_board.Add( netVCC );
+
+    // Large GND zone (A) overlaps with small VCC zone (C).
+    // Small GND zone (B) overlaps with A but NOT with C.
+    // A should beat C (more items), and B should inherit A's priority.
+    std::unique_ptr<ZONE> zoneA = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( 0, 0 ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 40 ), pcbIUScale.mmToIU( 40 ) ) );
+    zoneA->SetNetCode( netGND->GetNetCode() );
+
+    std::unique_ptr<ZONE> zoneB = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( pcbIUScale.mmToIU( 25 ), pcbIUScale.mmToIU( 25 ) ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ) );
+    zoneB->SetNetCode( netGND->GetNetCode() );
+
+    std::unique_ptr<ZONE> zoneC = CreateSquareZone( m_board, F_Cu,
+                                                    VECTOR2I( pcbIUScale.mmToIU( 5 ), pcbIUScale.mmToIU( 5 ) ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ) );
+    zoneC->SetNetCode( netVCC->GetNetCode() );
+
+    ZONE* ptrA = zoneA.get();
+    ZONE* ptrB = zoneB.get();
+    ZONE* ptrC = zoneC.get();
+    m_board.Add( zoneA.release() );
+    m_board.Add( zoneB.release() );
+    m_board.Add( zoneC.release() );
+
+    // GND items in the A/C overlap region
+    for( int i = 0; i < 4; i++ )
+        AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 8 + i * 2 ), pcbIUScale.mmToIU( 10 ) ), netGND->GetNetCode() );
+
+    AddVia( m_board, VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 8 ) ), netVCC->GetNetCode() );
+
+    AutoAssignZonePriorities( &m_board );
+
+    // A beats C because GND has more items in the overlap
+    BOOST_TEST( ptrA->GetAssignedPriority() > ptrC->GetAssignedPriority() );
+
+    // B shares A's priority because they are same-net and overlap
+    BOOST_TEST( ptrA->GetAssignedPriority() == ptrB->GetAssignedPriority() );
+}
+
+
+/**
+ * A rule area has no filled polygons, so its coverage area must be derived from its outline.
+ * Otherwise it reports a zero area and wins selection precedence over every enclosed item.
+ *
+ * Regression test for https://gitlab.com/kicad/code/kicad/-/issues/24464
+ */
+BOOST_AUTO_TEST_CASE( RuleAreaCoverageAreaNotZero )
+{
+    std::unique_ptr<ZONE> ruleArea = CreateSquareZone( m_board, F_Cu,
+                                                       VECTOR2I( 0, 0 ),
+                                                       VECTOR2I( pcbIUScale.mmToIU( 20 ), pcbIUScale.mmToIU( 20 ) ) );
+    ruleArea->SetIsRuleArea( true );
+
+    double zoneArea = ruleArea->GetCoverageArea( 0 );
+
+    // The rule area covers a 20 mm x 20 mm region.  Its coverage area must reflect that, not 0.
+    BOOST_TEST( zoneArea > 0.0 );
+
+    double expected = (double) pcbIUScale.mmToIU( 20 ) * pcbIUScale.mmToIU( 20 );
+    BOOST_TEST( zoneArea == expected, boost::test_tools::tolerance( 0.001 ) );
+
+    // A small pad enclosed by the rule area must read as much smaller, so the disambiguation
+    // heuristic in GuessSelectionCandidates() will prefer it over the enclosing rule area.
+    PAD* pad = AddPadToBoard( m_board, VECTOR2I( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) ), 0, F_Cu );
+
+    double padArea = pad->GetCoverageArea( 0 );
+
+    BOOST_TEST( padArea > 0.0 );
+    BOOST_TEST( padArea < zoneArea );
+}
+
+
+/**
+ * A filled (non-rule-area) zone must continue to report its coverage area from its filled
+ * polygons, not its outline, so a sparsely-filled zone keeps its existing selection behaviour.
+ */
+BOOST_AUTO_TEST_CASE( FilledZoneCoverageUsesFilledPolygons )
+{
+    std::unique_ptr<ZONE> zone = CreateSquareZone( m_board, F_Cu,
+                                                   VECTOR2I( 0, 0 ),
+                                                   VECTOR2I( pcbIUScale.mmToIU( 20 ), pcbIUScale.mmToIU( 20 ) ) );
+
+    // Fill only a small 2 mm x 2 mm island, far smaller than the 20 mm x 20 mm outline.
+    SHAPE_POLY_SET fill;
+    fill.AddOutline( KIGEOM::BoxToLineChain( BOX2I( VECTOR2I( 0, 0 ),
+                                                    VECTOR2I( pcbIUScale.mmToIU( 2 ), pcbIUScale.mmToIU( 2 ) ) ) ) );
+    zone->SetFilledPolysList( F_Cu, fill );
+
+    double expected = (double) pcbIUScale.mmToIU( 2 ) * pcbIUScale.mmToIU( 2 );
+    BOOST_TEST( zone->GetCoverageArea( 0 ) == expected,
+                boost::test_tools::tolerance( 0.001 ) );
+}
+
+
+/**
+ * A rule area's outline must be drawn on the zone layer, which sorts above copper, so unrelated
+ * tracks and pads on the same copper layer cannot paint over it and leave a broken-looking border
+ * (issue 24688). A filled zone keeps its outline on the copper layer, beneath its own fill.
+ */
+BOOST_AUTO_TEST_CASE( RuleAreaOutlineDrawnAboveCopper )
+{
+    const int copperPass = F_Cu;
+    const int zonePass = ZONE_LAYER_FOR( F_Cu );
+
+    BOOST_TEST( KIGFX::ZoneOutlineDrawnOnLayer( true, zonePass ) );
+    BOOST_TEST( !KIGFX::ZoneOutlineDrawnOnLayer( true, copperPass ) );
+
+    BOOST_TEST( KIGFX::ZoneOutlineDrawnOnLayer( false, copperPass ) );
+    BOOST_TEST( !KIGFX::ZoneOutlineDrawnOnLayer( false, zonePass ) );
+}
+
+
+/**
+ * A cutout moved without changing its corner count must still report a library mismatch.
+ */
+BOOST_AUTO_TEST_CASE( LibraryParityDetectsMovedCutout )
+{
+    const VECTOR2I cutoutSize( pcbIUScale.mmToIU( 1 ), pcbIUScale.mmToIU( 1 ) );
+    const BOX2I    cutoutA( VECTOR2I( pcbIUScale.mmToIU( 2 ), pcbIUScale.mmToIU( 2 ) ), cutoutSize );
+    const BOX2I    cutoutB( VECTOR2I( pcbIUScale.mmToIU( 6 ), pcbIUScale.mmToIU( 6 ) ), cutoutSize );
+
+    FOOTPRINT* fp = MakeFootprintWithRuleArea( m_board, { cutoutA } );
+    FOOTPRINT* same = MakeFootprintWithRuleArea( m_board, { cutoutA } );
+    FOOTPRINT* moved = MakeFootprintWithRuleArea( m_board, { cutoutB } );
+
+    BOOST_CHECK_MESSAGE( !fp->FootprintNeedsUpdate( same, BOARD_ITEM::COMPARE_FLAGS::DRC ),
+                         "Identical rule areas must not report a mismatch" );
+
+    BOOST_CHECK_MESSAGE( fp->FootprintNeedsUpdate( moved, BOARD_ITEM::COMPARE_FLAGS::DRC ),
+                         "A moved cutout with the same corner count must report a mismatch" );
+}
+
+
+/**
+ * A changed cutout count must report a mismatch even when the vertex totals stay equal.
+ */
+BOOST_AUTO_TEST_CASE( LibraryParityDetectsCutoutCountChange )
+{
+    const VECTOR2I cutoutSize( pcbIUScale.mmToIU( 1 ), pcbIUScale.mmToIU( 1 ) );
+    const BOX2I    cutout1( VECTOR2I( pcbIUScale.mmToIU( 2 ), pcbIUScale.mmToIU( 2 ) ), cutoutSize );
+    const BOX2I    cutout2( VECTOR2I( pcbIUScale.mmToIU( 6 ), pcbIUScale.mmToIU( 6 ) ), cutoutSize );
+
+    FOOTPRINT* twoCutouts = MakeFootprintWithRuleArea( m_board, { cutout1, cutout2 } );
+    FOOTPRINT* oneCutout = MakeFootprintWithRuleArea( m_board, { cutout1 } );
+
+    // Match the vertex total of the two rectangles
+    ZONE*             zone = oneCutout->Zones()[0];
+    SHAPE_LINE_CHAIN& hole = zone->Outline()->Hole( 0, 0 );
+
+    const int mid = pcbIUScale.mmToIU( 2 ) + pcbIUScale.mmToIU( 1 ) / 2;
+    hole.Insert( 1, VECTOR2I( mid, pcbIUScale.mmToIU( 2 ) ) );
+    hole.Insert( 3, VECTOR2I( mid, pcbIUScale.mmToIU( 3 ) ) );
+    hole.Insert( 5, VECTOR2I( pcbIUScale.mmToIU( 2 ), mid ) );
+    hole.Insert( 7, VECTOR2I( pcbIUScale.mmToIU( 3 ), mid ) );
+
+    BOOST_REQUIRE_EQUAL( twoCutouts->Zones()[0]->Outline()->TotalVertices(),
+                         oneCutout->Zones()[0]->Outline()->TotalVertices() );
+
+    BOOST_CHECK_MESSAGE( twoCutouts->FootprintNeedsUpdate( oneCutout, BOARD_ITEM::COMPARE_FLAGS::DRC ),
+                         "A changed cutout count with equal total vertices must report a mismatch" );
+}
+
+
+/**
+ * Add a Similar Zone must not copy the source zone's name as is (AIR 945).
+ */
+BOOST_AUTO_TEST_CASE( SimilarZoneGetsUniqueName )
+{
+    KIGFX::VIEW   view;
+    TOOL_MANAGER  toolMgr;
+    DRAWING_TOOL* drawingTool = new DRAWING_TOOL();
+
+    toolMgr.SetEnvironment( &m_board, &view, nullptr, nullptr, nullptr );
+    toolMgr.RegisterTool( drawingTool );
+
+    const VECTOR2I size( pcbIUScale.mmToIU( 10 ), pcbIUScale.mmToIU( 10 ) );
+
+    ZONE* named = CreateSquareZone( m_board, F_Cu, VECTOR2I( 0, 0 ), size ).release();
+    named->SetZoneName( wxS( "GND_POUR" ) );
+    m_board.Add( named );
+
+    ZONE* unnamed = CreateSquareZone( m_board, F_Cu, VECTOR2I( 0, 0 ), size ).release();
+    m_board.Add( unnamed );
+
+    ZONE_CREATE_HELPER::PARAMS params{ false, false, F_Cu, ZONE_MODE::SIMILAR, named, LEADER_MODE::DIRECT };
+    ZONE_CREATE_HELPER         helper( *drawingTool, params );
+
+    BOOST_CHECK_EQUAL( helper.createZoneFromExisting( *named )->GetZoneName(), wxS( "GND_POUR_1" ) );
+    BOOST_CHECK( helper.createZoneFromExisting( *unnamed )->GetZoneName().IsEmpty() );
+}
+
+
+BOOST_AUTO_TEST_SUITE_END()

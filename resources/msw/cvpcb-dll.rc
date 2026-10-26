@@ -1,0 +1,7 @@
+#define BRAND_RESOURCE
+
+#define RC_VER_FILE_DESCRIPTION "KemiCAD Dynamic Link Library " BRAND_RC_VER_STR
+#define RC_VER_INTERNALNAME "_cvpcb"
+#define RC_VER_ORIGINALFILENAME "_cvpcb.dll"
+
+#include "kiwin32-dll.rc"

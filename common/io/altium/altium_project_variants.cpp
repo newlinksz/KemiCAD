@@ -1,0 +1,269 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <io/altium/altium_project_variants.h>
+
+#include <boost/uuid/name_generator_sha1.hpp>
+#include <boost/uuid/string_generator.hpp>
+#include <boost/uuid/uuid_io.hpp>
+
+#include <project.h>
+#include <set>
+#include <wx/fileconf.h>
+#include <wx/filename.h>
+#include <wx/log.h>
+
+
+/**
+ * wxFileConfig resolves a relative local filename against the user's home directory rather than
+ * the working directory, and reports nothing when the result does not exist, so a .PrjPcb named
+ * relatively on a command line would parse as an empty file.
+ */
+static wxString absoluteProjectPath( const wxString& aPrjPcbPath )
+{
+    wxFileName fn( aPrjPcbPath );
+    fn.MakeAbsolute();
+
+    return fn.GetFullPath();
+}
+
+
+KIID AltiumUniqueIdToKiid( const wxString& aUniqueId )
+{
+    // Fixed namespace so a given id always maps to the same KIID. Must never change or
+    // previously stamped footprint paths would stop matching.
+    static const boost::uuids::uuid s_namespace =
+            boost::uuids::string_generator()( "6f9619ff-8b86-d011-b42d-00cf4fc964ff" );
+
+    boost::uuids::name_generator_sha1 generator( s_namespace );
+    boost::uuids::uuid                uuid = generator( aUniqueId.utf8_string() );
+
+    return KIID( wxString::FromUTF8( boost::uuids::to_string( uuid ) ) );
+}
+
+
+ALTIUM_VARIANT_ENTRY ParseVariationString( const wxString& aValue )
+{
+    ALTIUM_VARIANT_ENTRY entry;
+
+    // AlternatePart is the last named field on the line; everything after it belongs to the
+    // alternate part definition rather than to the component itself
+    bool inAlternatePart = false;
+
+    // UniqueId targets are backslash-delimited paths, so wxSplit's default '\' escape would
+    // merge the field that follows one ending in a separator
+    for( const wxString& token : wxSplit( aValue, '|', '\0' ) )
+    {
+        int eqPos = token.Find( '=' );
+
+        if( eqPos == wxNOT_FOUND )
+            continue;
+
+        wxString key = token.Left( eqPos ).Trim().Trim( false );
+        wxString val = token.Mid( eqPos + 1 ).Trim().Trim( false );
+
+        if( key.CmpNoCase( wxS( "AlternatePart" ) ) == 0 )
+        {
+            inAlternatePart = true;
+
+            // Typically empty for Kind=1 and a library reference for Kind=0
+            if( !val.empty() )
+                entry.alternateFields[wxS( "LibReference" )] = val;
+        }
+        else if( inAlternatePart )
+        {
+            if( !val.empty() )
+                entry.alternateFields[key] = val;
+        }
+        else if( key.CmpNoCase( wxS( "Designator" ) ) == 0 )
+        {
+            entry.designator = val;
+        }
+        else if( key.CmpNoCase( wxS( "UniqueId" ) ) == 0 )
+        {
+            // The target is a backslash-delimited path; only the final segment is the
+            // component's own unique id, which is what symbol and footprint records store.
+            int sep = val.Find( '\\', true );
+
+            if( sep != wxNOT_FOUND )
+                entry.uniqueId = val.Mid( sep + 1 );
+            else
+                entry.uniqueId = val;
+        }
+        else if( key.CmpNoCase( wxS( "Kind" ) ) == 0 )
+        {
+            long k = 0;
+            val.ToLong( &k );
+            entry.kind = static_cast<int>( k );
+        }
+    }
+
+    return entry;
+}
+
+
+std::map<wxString, wxString> ParseAltiumProjectParameters( const wxString& aPrjPcbPath )
+{
+    std::map<wxString, wxString> parameters;
+
+    wxFileConfig config( wxEmptyString, wxEmptyString, wxEmptyString, absoluteProjectPath( aPrjPcbPath ),
+                         wxCONFIG_USE_NO_ESCAPE_CHARACTERS );
+
+    wxString groupname;
+    long     groupid;
+
+    for( bool more = config.GetFirstGroup( groupname, groupid ); more;
+         more = config.GetNextGroup( groupname, groupid ) )
+    {
+        if( !groupname.StartsWith( wxS( "Parameter" ) ) )
+            continue;
+
+        // Only numbered [ParameterN] sections hold the project parameters; reject look-alikes
+        // such as [ParameterEngine] by requiring a trailing integer.
+        wxString numStr = groupname.Mid( 9 );
+        long     num;
+
+        if( !numStr.ToLong( &num ) )
+            continue;
+
+        wxString name = config.Read( groupname + wxS( "/Name" ), wxEmptyString );
+
+        if( name.empty() )
+            continue;
+
+        wxString value = config.Read( groupname + wxS( "/Value" ), wxEmptyString );
+
+        // KiCad variable references are matched case-insensitively by resolving to upper case,
+        // which is what AltiumPcbSpecialStringsToKiCadStrings emits, so key on the upper-cased
+        // name to keep ${PCB_REVISION} and friends resolvable.
+        name.UpperCase();
+
+        parameters[name] = value;
+    }
+
+    return parameters;
+}
+
+
+bool AltiumPowerPortNamesTakePriority( const wxString& aPrjPcbPath )
+{
+    wxFileConfig config( wxEmptyString, wxEmptyString, wxEmptyString, absoluteProjectPath( aPrjPcbPath ),
+                         wxCONFIG_USE_NO_ESCAPE_CHARACTERS );
+
+    return config.ReadLong( wxS( "Design/PowerPortNamesTakePriority" ), 0 ) != 0;
+}
+
+
+void ApplyAltiumProjectParametersToProject( PROJECT* aProject,
+                                            const std::map<wxString, wxString>& aParameters )
+{
+    if( !aProject )
+        return;
+
+    // Names KiCad resolves contextually (board fields, title block, special strings). Importing
+    // them as project variables would shadow nothing useful and could surprise the user, so they
+    // are left to native resolution.
+    static const std::set<wxString> reserved = {
+        wxS( "LAYER" ),         wxS( "FILENAME" ),      wxS( "FILEPATH" ),
+        wxS( "PROJECTNAME" ),   wxS( "VARIANT" ),       wxS( "VARIANT_DESC" ),
+        wxS( "ISSUE_DATE" ),    wxS( "CURRENT_DATE" ),  wxS( "CURRENT_TIME_LOCALE" ),
+        wxS( "CURRENT_TIME_HH_MM_SS" ), wxS( "REVISION" ), wxS( "TITLE" ),
+        wxS( "COMPANY" ),       wxS( "COMMENT1" ),      wxS( "COMMENT2" ),
+        wxS( "COMMENT3" ),      wxS( "COMMENT4" ),      wxS( "COMMENT5" ),
+        wxS( "COMMENT6" ),      wxS( "COMMENT7" ),      wxS( "COMMENT8" ),
+        wxS( "COMMENT9" ),      wxS( "VCSHASH" ),       wxS( "VCSSHORTHASH" ),
+        wxS( "KICAD_VERSION" ), wxS( "PAPER" ),         wxS( "SHEETNAME" ),
+        wxS( "SHEETPATH" ),     wxS( "DRC_WARNING" ),   wxS( "DRC_ERROR" ),
+        wxS( "ERC_WARNING" ),   wxS( "ERC_ERROR" )
+    };
+
+    std::map<wxString, wxString>& textVars = aProject->GetTextVars();
+    bool                          added = false;
+
+    for( const auto& [name, value] : aParameters )
+    {
+        if( reserved.count( name ) )
+            continue;
+
+        // Don't clobber a variable the user (or a prior import step) already set.
+        if( textVars.count( name ) )
+            continue;
+
+        textVars[name] = value;
+        added = true;
+    }
+
+    if( added )
+        aProject->IncrementTextVarsTicker();
+}
+
+
+std::vector<ALTIUM_PROJECT_VARIANT> ParseAltiumProjectVariants( const wxString& aPrjPcbPath )
+{
+    std::vector<ALTIUM_PROJECT_VARIANT> variants;
+
+    wxFileConfig config( wxEmptyString, wxEmptyString, wxEmptyString, absoluteProjectPath( aPrjPcbPath ),
+                         wxCONFIG_USE_NO_ESCAPE_CHARACTERS );
+
+    wxString groupname;
+    long     groupid;
+
+    for( bool more = config.GetFirstGroup( groupname, groupid ); more;
+         more = config.GetNextGroup( groupname, groupid ) )
+    {
+        if( !groupname.StartsWith( wxS( "ProjectVariant" ) ) )
+            continue;
+
+        wxString numStr = groupname.Mid( 14 );
+        long     num;
+
+        if( !numStr.ToLong( &num ) )
+            continue;
+
+        ALTIUM_PROJECT_VARIANT pv;
+
+        pv.description = config.Read( groupname + wxS( "/Description" ), wxEmptyString );
+        pv.name = pv.description;
+
+        if( pv.name.empty() )
+            pv.name = groupname;
+
+        long variationCount = 0;
+        config.Read( groupname + wxS( "/VariationCount" ), &variationCount, 0 );
+
+        for( long vi = 1; vi <= variationCount; ++vi )
+        {
+            wxString key = wxString::Format( wxS( "%s/Variation%ld" ), groupname, vi );
+            wxString value = config.Read( key, wxEmptyString );
+
+            if( value.empty() )
+                continue;
+
+            ALTIUM_VARIANT_ENTRY entry = ParseVariationString( value );
+
+            if( !entry.designator.empty() )
+                pv.variations.push_back( std::move( entry ) );
+        }
+
+        if( !pv.variations.empty() )
+            variants.push_back( std::move( pv ) );
+    }
+
+    return variants;
+}

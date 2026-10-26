@@ -1,0 +1,139 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <eda_item.h>
+#include <eda_units.h>
+#include <math/vector2d.h>
+#include <tool/arc_draw_mode.h>
+
+class EDA_SHAPE;
+
+
+/**
+ * Outcome of an interactive shape drawing loop, telling the caller how to continue.
+ */
+enum class SHAPE_DRAW_RESULT
+{
+    CANCELLED,   ///< The user cancelled; nothing to commit, stop drawing.
+    NEXT_SHAPE,  ///< Commit the shape, if any, and start drawing another.
+    FINISHED     ///< The user finished; commit the shape, if any, and stop drawing.
+};
+
+
+/**
+ * Abstract interface for interactive shape-drawing behaviours.
+ *
+ * Concrete implementations wrap a geometry manager (for the construction
+ * state machine) and an assistant (for the visual overlay).
+ *
+ * Callers drive the behaviour through this class and finally must use
+ * ApplyToShape() to transfer the geometry to an EDA_SHAPE.
+ *
+ * The visual assistant (returned by @ref GetAssistant()) must be added to a
+ * KIGFX::VIEW by the caller.
+ */
+class SHAPE_DRAW_BEHAVIOR
+{
+public:
+    virtual ~SHAPE_DRAW_BEHAVIOR() = default;
+
+    //
+    // Non-geometric state interfaces
+    //
+
+    /// True when all points have been locked in.
+    virtual bool IsComplete() const = 0;
+
+    /// True if the geometry changed since the last call to @ref ClearGeometryChanged().
+    virtual bool HasGeometryChanged() const = 0;
+
+    /// Reset the geometry-changed flag (call after updating the preview).
+    virtual void ClearGeometryChanged() = 0;
+
+    /// Return the current construction step (0-based, shape-specific meaning).
+    virtual int GetStep() const = 0;
+
+    /// Reset the behaviour to its initial state for chained object creation loops.
+    virtual void Reset() = 0;
+
+    //
+    // Interactive operations called from a TOOL framework event loop
+    //
+
+    /// Lock in a point and advance the construction state.
+    virtual void AddPoint( const VECTOR2I& aPosition ) = 0;
+
+    /// Preview the cursor position without advancing state.
+    virtual void SetCursorPosition( const VECTOR2I& aPosition ) = 0;
+
+    /// Undo the last locked-in point.
+    virtual void RemoveLastPoint() = 0;
+
+    /// Flip arc direction (applies only when the shape has such a
+    /// concept of directionality, e.g. circular arcs).
+    virtual void ToggleClockwise() {}
+
+    /// Enable or disable angle snapping (circular arcs only; no-op for others).
+    virtual void SetAngleSnap( bool aSnap ) {}
+
+    /**
+     * Select the construction sequence (circular arcs only; no-op for others).
+     *
+     * Switching mid-draw keeps the first locked point when it is an arc start in both modes, which is
+     * every mode except CENTER_START_END; otherwise construction restarts.
+     */
+    virtual void SetArcDrawMode( ARC_DRAW_MODE aMode ) {}
+
+    /**
+     * Preload the start point and departure direction for ARC_DRAW_MODE::TANGENT.
+     *
+     * Reset() clears the seed, so call this after Reset() and before the first AddPoint(). Without a seed,
+     * TANGENT takes its start and direction from clicks exactly like START_DIR_END.
+     *
+     * @param aDirectionIsAxis false when @a aDirection is the signed departure direction (continuing from an
+     *                         endpoint); true when only the tangent line is known (starting inside an item), in
+     *                         which case the sign giving the smaller sweep to the cursor is used and
+     *                         ToggleClockwise() flips it.
+     */
+    virtual void SetTangentSeed( const VECTOR2I& aStart, const VECTOR2D& aDirection,
+                                 bool aDirectionIsAxis = false ) {}
+
+    /**
+     * Called when the user invokes the properties action mid-draw.
+     *
+     * @return true if the behavior handled the request (the event loop
+     *         should continue); false if the event should be passed on.
+     */
+    virtual bool OnProperties( EDA_SHAPE& aShape ) { return false; }
+
+    //
+    // Geometry access
+    //
+
+    /// Transfer the current geometry to an EDA_SHAPE.
+    virtual void ApplyToShape( EDA_SHAPE& aShape ) const = 0;
+
+    /// Return the visual assistant overlay item.
+    virtual EDA_ITEM& GetAssistant() = 0;
+
+    /// Forward a units change to the assistant overlay.
+    virtual void SetUnits( EDA_UNITS aUnits ) = 0;
+};

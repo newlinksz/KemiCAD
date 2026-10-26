@@ -1,0 +1,135 @@
+# This program source code file is part of KiCad, a free EDA CAD application.
+#
+# Copyright (C) 2020 KiCad Developers, see AUTHORS.TXT for contributors.
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+#
+# Unit tests for KiCad math routines.
+
+set( QA_KIMATH_SRCS
+    kimath_test_module.cpp
+
+    test_kimath.cpp
+
+    geometry/geom_test_utils.cpp
+    geometry/test_arc_chord_params.cpp
+    geometry/test_arc_construction.cpp
+    geometry/test_bezier.cpp
+    geometry/test_chamfer.cpp
+    geometry/test_circle.cpp
+    geometry/test_distribute.cpp
+    geometry/test_dogbone.cpp
+    geometry/test_eda_angle.cpp
+    geometry/test_ellipse_to_bezier.cpp
+    geometry/test_fillet.cpp
+    geometry/test_half_line.cpp
+    geometry/test_intersection.cpp
+    geometry/test_oval.cpp
+    geometry/test_poisson_disk.cpp
+    geometry/test_poly_triangulation.cpp
+    geometry/test_triangulation_benchmark.cpp
+    geometry/test_poly_ystripes_index.cpp
+    geometry/test_segment.cpp
+    geometry/test_segment_index.cpp
+    geometry/test_shape_compound_collision.cpp
+    geometry/test_shape_arc.cpp
+    geometry/test_shape_ellipse.cpp
+    geometry/test_shape_nearest_points.cpp
+    geometry/test_shape_poly_set.cpp
+    geometry/test_shape_poly_set_arcs.cpp
+    geometry/test_shape_poly_set_collision.cpp
+    geometry/test_shape_poly_set_distance.cpp
+    geometry/test_shape_poly_set_iterator.cpp
+    geometry/test_shape_poly_set_split_outlines.cpp
+    geometry/test_shape_poly_set_triangle_index.cpp
+    geometry/test_shape_line_chain.cpp
+    geometry/test_shape_line_chain_collision.cpp
+    geometry/test_transform_trs.cpp
+    geometry/test_vector_utils.cpp
+    geometry/test_shape_rect_corner.cpp
+    geometry/test_roundrect.cpp
+    geometry/test_packed_rtree.cpp
+    geometry/test_dynamic_rtree.cpp
+
+    math/test_box2.cpp
+    math/test_matrix3x3.cpp
+    math/test_vector2.cpp
+    math/test_vector3.cpp
+    math/test_util.cpp
+    math/test_wide_int.cpp
+)
+
+if( WIN32 )
+    # We want to declare a resource manifest on Windows to enable UTF8 mode
+    # Without UTF8 mode, some random IO tests may fail, we set the active code page on normal kicad to UTF8 as well
+    if( MINGW )
+        # QA_KIMATH_RESOURCES variable is set by the macro.
+        mingw_resource_compiler( qa_kimath )
+    else()
+        set( QA_KIMATH_RESOURCES ${CMAKE_SOURCE_DIR}/resources/msw/qa_kimath.rc )
+    endif()
+endif()
+
+add_executable( qa_kimath
+    ${QA_KIMATH_SRCS}
+    ${QA_KIMATH_RESOURCES}
+
+    # Mock Pgm needed for advanced_config
+    ${CMAKE_SOURCE_DIR}/qa/mocks/kicad/common_mocks.cpp
+)
+
+target_link_libraries( qa_kimath
+    qa_utils
+    kimath
+    rtree
+    nlohmann_json
+    Boost::headers
+    Boost::unit_test_framework
+    ${wxWidgets_LIBRARIES}
+)
+
+target_include_directories( qa_kimath PRIVATE
+    ${CMAKE_SOURCE_DIR}/qa/mocks/include
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+kicad_add_boost_test( qa_kimath qa_kimath )
+
+setup_qa_env( qa_kimath )
+
+
+# Spatial index benchmarks — opt-in, not part of the default QA gate.
+# Run manually: ./qa/tests/libs/kimath/bench_spatial_index
+add_executable( bench_spatial_index EXCLUDE_FROM_ALL
+    kimath_test_module.cpp
+    geometry/bench_spatial_index.cpp
+
+    ${CMAKE_SOURCE_DIR}/qa/mocks/kicad/common_mocks.cpp
+)
+
+target_link_libraries( bench_spatial_index
+    qa_utils
+    kimath
+    rtree
+    nlohmann_json
+    Boost::headers
+    Boost::unit_test_framework
+    ${wxWidgets_LIBRARIES}
+)
+
+target_include_directories( bench_spatial_index PRIVATE
+    ${CMAKE_SOURCE_DIR}/qa/mocks/include
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)

@@ -1,0 +1,1064 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2023 KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+#include <wx/string.h>
+#include <wx/debug.h>
+#include <wx/grid.h>
+#include <wx/settings.h>
+#include <wx/brush.h>
+#include <common.h>
+#include <widgets/wx_grid.h>
+#include <sch_reference_list.h>
+#include <schematic_settings.h>
+#include <template_fieldnames.h>
+#include "string_utils.h"
+#include <trace_helpers.h>
+#include <validators.h>
+
+#include "lib_fields_data_model.h"
+
+
+const wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::SYMBOL_NAME = wxS( "${SYMBOL_NAME}" );
+const wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::SYMBOL_PARENT = wxS( "${SYMBOL_PARENT}" );
+const wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::SYMBOL_ROOT = wxS( "${SYMBOL_ROOT}" );
+const wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::SYMBOL_KEYWORDS = wxS( "${SYMBOL_KEYWORDS}" );
+const wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::SYMBOL_IS_POWER = wxS( "${SYMBOL_IS_POWER}" );
+const wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::SYMBOL_IS_LOCAL_POWER = wxS( "${SYMBOL_IS_LOCAL_POWER}" );
+
+
+bool LIB_FIELDS_EDITOR_GRID_DATA_MODEL::getLiveFieldValue( LIB_SYMBOL* const& aSymbol,
+                                                           const wxString& aFieldName,
+                                                           wxString& aValue )
+{
+    int col = GetFieldNameCol( aFieldName );
+    aValue.clear();
+
+    if( col != -1 && ColIsAttribute( col ) )
+    {
+        aValue = getAttributeValue( aSymbol, aFieldName );
+        return true;
+    }
+    else if( const SCH_FIELD* field = aSymbol->GetField( aFieldName ) )
+    {
+        aValue = field->GetText();
+        return true;
+    }
+    else if( aFieldName == SYMBOL_KEYWORDS )
+    {
+        aValue = aSymbol->GetRawKeyWords();
+        return true;
+    }
+    else if( aFieldName == SYMBOL_NAME )
+    {
+        aValue = aSymbol->GetName();
+        return true;
+    }
+
+    return false;
+}
+
+
+void LIB_FIELDS_EDITOR_GRID_DATA_MODEL::getEffectiveFieldValue( LIB_SYMBOL* const& aSymbol,
+                                                               const wxString& aFieldName,
+                                                               wxString& aValue ) const
+{
+    getStoredFieldValue( aSymbol, aFieldName, aValue );
+
+    const SCH_FIELD* field = aSymbol->GetField( aFieldName );
+    const bool       keywords = aFieldName == SYMBOL_KEYWORDS;
+
+    // Flatten() inherits empty mandatory fields and keywords. Keep that distinction in the data store:
+    // displaying a parent's value must not create an override in the derived symbol.
+    if( !aValue.IsEmpty() || ( !keywords && ( !field || !field->IsMandatory() ) ) )
+        return;
+
+    std::set<const LIB_SYMBOL*> visited{ aSymbol };
+    std::shared_ptr<LIB_SYMBOL> parent = aSymbol->GetParent().lock();
+
+    while( parent && visited.insert( parent.get() ).second )
+    {
+        if( m_dataStore.contains( getDataStoreKey( parent.get() ) ) )
+            getStoredFieldValue( parent.get(), aFieldName, aValue );
+        else if( keywords )
+            aValue = parent->GetRawKeyWords();
+        else if( const SCH_FIELD* parentField = parent->GetField( aFieldName ) )
+            aValue = parentField->GetText();
+
+        if( !aValue.IsEmpty() )
+            return;
+
+        parent = parent->GetParent().lock();
+    }
+}
+
+
+std::vector<LIB_SYMBOL*> LIB_FIELDS_EDITOR_GRID_DATA_MODEL::getAllItems() const
+{
+    return m_symbolsList;
+}
+
+
+void LIB_FIELDS_EDITOR_GRID_DATA_MODEL::SetValue( int aRow, int aCol, const wxString& aValue )
+{
+    wxCHECK_RET( aRow >= 0 && aRow < (int) m_rows.size(), wxS( "Invalid row number" ) );
+    wxCHECK_RET( aCol >= 0 && aCol < (int) m_cols.size(), wxS( "Invalid column number" ) );
+
+    if( IsCellReadOnly( aRow, aCol ) )
+        return;
+
+    if( aValue == INDETERMINATE_STATE )
+        return;
+
+    LIB_FIELDS_TABLE_DATA_MODEL_ROW& rowGroup = m_rows[aRow];
+    const wxString&                  fieldName = m_cols[aCol].m_fieldName;
+
+    for( LIB_SYMBOL* symbol : rowGroup.GetCellItems() )
+    {
+        if( fieldName == SYMBOL_IS_POWER )
+        {
+            setStoredFieldValue( symbol, fieldName, aValue );
+
+            if( aValue == wxS( "1" ) )
+                setPowerSymbolDefaults( symbol );
+            else
+                setStoredFieldValue( symbol, SYMBOL_IS_LOCAL_POWER, wxS( "0" ) );
+        }
+        else if( fieldName == SYMBOL_IS_LOCAL_POWER )
+        {
+            // Local Power is disabled in the symbol properties dialog until Power is enabled.
+            if( getStoredPowerSymbolValue( symbol ) )
+            {
+                setStoredFieldValue( symbol, fieldName, aValue );
+                setPowerSymbolDefaults( symbol );
+            }
+        }
+        else if( getStoredPowerSymbolValue( symbol ) && isPowerSymbolControlledField( fieldName ) )
+        {
+            if( fieldName == GetDefaultFieldName( FIELD_T::VALUE, UNTRANSLATED ) )
+                setStoredFieldValue( symbol, fieldName, symbol->GetName() );
+            else
+                setStoredFieldValue( symbol, fieldName, wxS( "1" ) );
+        }
+        else
+        {
+            setStoredFieldValue( symbol, fieldName, aValue );
+        }
+
+        if( fieldName == SYMBOL_IS_POWER || fieldName == SYMBOL_IS_LOCAL_POWER )
+        {
+            const bool isPower = getStoredPowerSymbolValue( symbol );
+            wxString   localPower;
+            getStoredFieldValue( symbol, SYMBOL_IS_LOCAL_POWER, localPower );
+
+            // Show pending changes in descendants too, including those hidden by the filter.
+            for( LIB_SYMBOL* child : m_symbolsList )
+            {
+                if( !child->IsDerived() )
+                    continue;
+
+                std::shared_ptr<LIB_SYMBOL> root = child->GetRootSymbol();
+
+                // The root on the editing canvas can be a different object from the library copy.
+                if( !root || root->m_Uuid != symbol->m_Uuid )
+                    continue;
+
+                setStoredFieldValue( child, SYMBOL_IS_POWER, isPower ? wxS( "1" ) : wxS( "0" ) );
+                setStoredFieldValue( child, SYMBOL_IS_LOCAL_POWER,
+                                     isPower && localPower == wxS( "1" ) ? wxS( "1" ) : wxS( "0" ) );
+
+                if( isPower )
+                    setPowerSymbolDefaults( child );
+            }
+        }
+    }
+
+    m_edited = true;
+
+    if( GetView() )
+        GetView()->ForceRefresh();
+}
+
+
+bool LIB_FIELDS_EDITOR_GRID_DATA_MODEL::CanUseParentValue( int aRow, int aCol )
+{
+    wxCHECK( aRow >= 0 && aRow < static_cast<int>( m_rows.size() ), false );
+    wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
+
+    // Value must remain non-empty when applied to a library symbol.
+    if( IsCellReadOnly( aRow, aCol ) || ColIsValue( aCol ) )
+        return false;
+
+    const wxString& fieldName = m_cols[aCol].m_fieldName;
+    bool            hasOverride = false;
+
+    for( LIB_SYMBOL* symbol : m_rows[aRow].GetCellItems() )
+    {
+        // A grouped cell must not clear any root symbols along with the derived ones.
+        if( !symbol->IsDerived() )
+            return false;
+
+        const SCH_FIELD* field = symbol->GetField( fieldName );
+
+        if( fieldName != SYMBOL_KEYWORDS && ( !field || !field->IsMandatory() ) )
+            return false;
+
+        wxString value;
+        getStoredFieldValue( symbol, fieldName, value );
+        hasOverride |= !value.IsEmpty();
+    }
+
+    return hasOverride;
+}
+
+
+void LIB_FIELDS_EDITOR_GRID_DATA_MODEL::UseParentValue( int aRow, int aCol )
+{
+    if( CanUseParentValue( aRow, aCol ) )
+        SetValue( aRow, aCol, wxEmptyString );
+}
+
+
+bool LIB_FIELDS_EDITOR_GRID_DATA_MODEL::ColIsItemIdentifier( int aCol ) const
+{
+    wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
+    return m_cols[aCol].m_fieldName == LIB_FIELDS_EDITOR_GRID_DATA_MODEL::SYMBOL_NAME;
+}
+
+
+bool LIB_FIELDS_EDITOR_GRID_DATA_MODEL::fieldIsAttribute( const wxString& aFieldName ) const
+{
+    return FIELDS_TABLE_DATA_MODEL_BASE::fieldIsAttribute( aFieldName ) || aFieldName == SYMBOL_IS_POWER
+           || aFieldName == SYMBOL_IS_LOCAL_POWER;
+}
+
+
+bool LIB_FIELDS_EDITOR_GRID_DATA_MODEL::fieldIsItemProperty( const wxString& aFieldName ) const
+{
+    return aFieldName == SYMBOL_NAME || aFieldName == SYMBOL_KEYWORDS
+           || FIELDS_TABLE_DATA_MODEL_BASE::fieldIsItemProperty( aFieldName );
+}
+
+
+bool LIB_FIELDS_EDITOR_GRID_DATA_MODEL::IsCellReadOnly( int aRow, int aCol )
+{
+    if( FIELDS_TABLE_DATA_MODEL<LIB_SYMBOL*>::IsCellReadOnly( aRow, aCol ) )
+        return true;
+
+    if( m_cols[aCol].m_fieldName == SYMBOL_IS_POWER || m_cols[aCol].m_fieldName == SYMBOL_IS_LOCAL_POWER )
+    {
+        for( LIB_SYMBOL* symbol : m_rows[aRow].GetCellItems() )
+        {
+            if( symbol->IsDerived() )
+                return true;
+        }
+    }
+
+    if( m_cols[aCol].m_fieldName == SYMBOL_IS_LOCAL_POWER )
+    {
+        for( LIB_SYMBOL* symbol : m_rows[aRow].GetCellItems() )
+        {
+            if( getStoredPowerSymbolValue( symbol ) )
+                return false;
+        }
+
+        return true;
+    }
+
+    if( !isPowerSymbolControlledField( m_cols[aCol].m_fieldName ) )
+        return false;
+
+    for( LIB_SYMBOL* symbol : m_rows[aRow].GetCellItems() )
+    {
+        if( !getStoredPowerSymbolValue( symbol ) )
+            return false;
+    }
+
+    return true;
+}
+
+
+wxGridCellAttr* LIB_FIELDS_EDITOR_GRID_DATA_MODEL::GetAttr( int aRow, int aCol, wxGridCellAttr::wxAttrKind aKind )
+{
+    wxGridCellAttr* attr = wxGridTableBase::GetAttr( aRow, aCol, aKind );
+    bool            needsUrlEditor = cellUsesUrlEditor( aRow, aCol );
+    bool            needsResolvedTextRenderer = cellUsesResolvedTextRenderer( aRow, aCol );
+
+    for( LIB_SYMBOL* symbol : m_rows[aRow].GetCellItems() )
+    {
+        wxString storedValue;
+        wxString effectiveValue;
+        getStoredFieldValue( symbol, m_cols[aCol].m_fieldName, storedValue );
+        getEffectiveFieldValue( symbol, m_cols[aCol].m_fieldName, effectiveValue );
+
+        if( storedValue != effectiveValue )
+            needsResolvedTextRenderer = true;
+    }
+
+    wxGridCellAttr* modelAttr = nullptr;
+
+    if( needsUrlEditor )
+        modelAttr = cloneUrlEditorAttr();
+    else if( m_colAttrs.find( aCol ) != m_colAttrs.end() && m_colAttrs[aCol] )
+        modelAttr = m_colAttrs[aCol]->Clone();
+
+    if( modelAttr )
+    {
+        if( attr )
+        {
+            // Copy any existing attributes that aren't overridden
+            if( attr->HasBackgroundColour() && !modelAttr->HasBackgroundColour() )
+                modelAttr->SetBackgroundColour( attr->GetBackgroundColour() );
+            if( attr->HasTextColour() && !modelAttr->HasTextColour() )
+                modelAttr->SetTextColour( attr->GetTextColour() );
+            if( attr->HasFont() && !modelAttr->HasFont() )
+                modelAttr->SetFont( attr->GetFont() );
+
+            attr->DecRef();
+        }
+
+        attr = modelAttr;
+    }
+    else if( !attr )
+    {
+        attr = new wxGridCellAttr;
+    }
+
+    if( IsCellReadOnly( aRow, aCol ) )
+        attr->SetReadOnly();
+
+    bool rowModified = false;
+    bool cellModified = false;
+    bool cellEmpty = true;
+    bool blankModified = false;
+
+    const wxString& fieldName = m_cols[aCol].m_fieldName;
+
+    for( LIB_SYMBOL* symbol : m_rows[aRow].GetCellItems() )
+    {
+        wxString liveValue;
+        wxString storedValue;
+        bool     liveFieldPresent = getLiveFieldValue( symbol, fieldName, liveValue );
+        bool     storedFieldPresent = getStoredFieldValue( symbol, fieldName, storedValue );
+        bool     modified = liveFieldPresent != storedFieldPresent || liveValue != storedValue;
+
+        if( modified )
+            cellModified = true;
+
+        bool elementEmpty = !storedFieldPresent || ( !liveFieldPresent && !modified );
+
+        if( !elementEmpty )
+            cellEmpty = false;
+
+        if( storedValue.IsEmpty() && modified )
+            blankModified = true;
+
+        if( !rowModified )
+        {
+            for( const DATA_MODEL_COL& col : m_cols )
+            {
+                if( fieldIsModified( symbol, col.m_fieldName ) )
+                {
+                    rowModified = true;
+                    break;
+                }
+            }
+        }
+
+        if( cellModified && rowModified && !cellEmpty )
+            break;
+    }
+
+    if( cellEmpty && !ColIsAttribute( aCol ) )
+    {
+        attr->SetBackgroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW ) );
+
+        for( LIB_SYMBOL* symbol : m_rows[aRow].GetCellItems() )
+        {
+            wxString liveValue;
+            wxString storedValue;
+            bool     liveFieldPresent = getLiveFieldValue( symbol, fieldName, liveValue );
+            bool     storedFieldPresent = getStoredFieldValue( symbol, fieldName, storedValue );
+            bool     modified = liveFieldPresent != storedFieldPresent || liveValue != storedValue;
+
+            if( modified )
+            {
+                if( !storedFieldPresent )
+                {
+                    if( !liveFieldPresent )
+                    {
+                        attr->SetBackgroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW ) );
+                    }
+                    else if( liveValue.empty() )
+                    {
+                        attr->SetBackgroundColour( FIELDS_TABLE_COLOR::STRIPED_CLEARED_EMPTY_FIELD_LIGHT_GREEN );
+                    }
+                    else
+                    {
+                        attr->SetBackgroundColour( FIELDS_TABLE_COLOR::STRIPED_CLEARED_NONEMPTY_FIELD_LIGHT_RED );
+                    }
+                }
+                else if( storedValue.IsEmpty() )
+                {
+                    attr->SetBackgroundColour( FIELDS_TABLE_COLOR::STRIPED_EDITED_EMPTY_FIELD_MUTED_GREEN );
+                }
+                else
+                {
+                    attr->SetBackgroundColour( FIELDS_TABLE_COLOR::STRIPED_EDITED_NONEMPTY_FIELD_MUTED_RED );
+                }
+            }
+        }
+    }
+    else
+    {
+        if( rowModified )
+            attr->SetBackgroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOWFRAME ) );
+
+        if( blankModified )
+            attr->SetBackgroundColour( FIELDS_TABLE_COLOR::EDITED_EMPTY_FIELD_BRIGHT_GREEN );
+    }
+
+    if( needsResolvedTextRenderer )
+        applyResolvedTextRenderer( attr, !rowModified );
+
+    if( cellModified )
+    {
+        wxFont font;
+
+        if( attr->HasFont() )
+            font = attr->GetFont();
+        else if( GetView() )
+            font = GetView()->GetDefaultCellFont();
+        else
+            font = wxFont();
+
+        if( font.IsOk() )
+        {
+            font.MakeBold();
+            attr->SetFont( font );
+        }
+    }
+
+    return applyCellDecorations( attr, aRow, aCol );
+}
+
+
+void LIB_FIELDS_EDITOR_GRID_DATA_MODEL::CreateDerivedSymbolImmediate( int aRow, int aCol,
+                                                                      wxString& aNewSymbolName )
+{
+    wxCHECK_RET( aRow >= 0 && aRow < (int) m_rows.size(), "Invalid Row Number" );
+    wxCHECK_RET( aCol >= 0 && aCol < (int) m_cols.size(), "Invalid Column Number" );
+
+    const LIB_SYMBOL* parentSymbol = m_rows[aRow].m_items[0];
+
+    wxLogTrace( traceLibFieldTable, "CreateDerivedSymbolImmediate: Creating '%s' from parent '%s' immediately",
+                aNewSymbolName, parentSymbol->GetName() );
+
+    // Generate a fresh UUID for the new derived symbol
+    KIID newDerivedSymbolUuid;
+
+    // Create the symbol immediately
+    createActualDerivedSymbol( parentSymbol, aNewSymbolName, newDerivedSymbolUuid );
+
+    // Rebuild the grid to show the new symbol
+    RebuildRows();
+
+    m_edited = true;
+}
+
+void LIB_FIELDS_EDITOR_GRID_DATA_MODEL::createActualDerivedSymbol( const LIB_SYMBOL* aParentSymbol, const wxString& aNewSymbolName, const KIID& aNewSymbolUuid )
+{
+    wxLogTrace( traceLibFieldTable, "createActualDerivedSymbol: Creating '%s' from parent '%s', symbol list size before: %zu",
+                aNewSymbolName, aParentSymbol->GetName(), m_symbolsList.size() );
+
+    LIB_SYMBOL* newSymbol = nullptr;
+
+    for( LIB_SYMBOL* sym : m_symbolsList )
+    {
+        if( sym->m_Uuid == aNewSymbolUuid )
+        {
+            newSymbol = sym;
+            break;
+        }
+    }
+
+    if( !newSymbol )
+    {
+        newSymbol = new LIB_SYMBOL( *aParentSymbol );
+        newSymbol->SetName( aNewSymbolName );
+
+        // Also update the VALUE field to reflect the new name for derived symbols
+        newSymbol->GetValueField().SetText( aNewSymbolName );
+
+        newSymbol->SetParent( const_cast<LIB_SYMBOL*>( aParentSymbol ) );
+        // Note: SetLib() not called here - library association handled by dialog's library manager
+        const_cast<KIID&>( newSymbol->m_Uuid ) = aNewSymbolUuid;
+        m_symbolsList.push_back( newSymbol );
+
+        wxLogTrace( traceLibFieldTable, "createActualDerivedSymbol: Added new symbol to list, size now: %zu",
+                    m_symbolsList.size() );
+
+        // Initialize field data for the new symbol in the data store
+        initializeDataStoreItem( newSymbol );
+
+        wxLogTrace( traceLibFieldTable, "createActualDerivedSymbol: Initialized field data for new symbol" );
+    }
+
+    // Note: Not adding to symbolLibrary directly - this will be handled by the dialog's library manager integration
+    wxString libraryName = aParentSymbol->GetLibId().GetLibNickname();
+    m_createdDerivedSymbols.emplace_back( newSymbol, libraryName );
+
+    wxLogTrace( traceLibFieldTable, "Created derived symbol '%s' for library '%s', total tracked: %zu",
+                aNewSymbolName, libraryName, m_createdDerivedSymbols.size() );
+}
+
+wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::getAttributeValue( const LIB_SYMBOL* aSymbol,
+                                                               const wxString&   aAttributeName )
+{
+    if( aAttributeName == wxS( "${DNP}" ) )
+        return aSymbol->GetDNP() ? wxS( "1" ) : wxS( "0" );
+
+    if( aAttributeName == wxS( "${EXCLUDE_FROM_BOARD}" ) )
+        return aSymbol->GetExcludedFromBoard() ? wxS( "1" ) : wxS( "0" );
+
+    if( aAttributeName == wxS( "${EXCLUDE_FROM_BOM}" ) )
+        return aSymbol->GetExcludedFromBOM() ? wxS( "1" ) : wxS( "0" );
+
+    if( aAttributeName == wxS( "${EXCLUDE_FROM_SIM}" ) )
+        return aSymbol->GetExcludedFromSim() ? wxS( "1" ) : wxS( "0" );
+
+    if( aAttributeName == wxS( "${EXCLUDE_FROM_POS_FILES}" ) )
+        return aSymbol->GetExcludedFromPosFiles() ? wxS( "1" ) : wxS( "0" );
+
+    if( aAttributeName == SYMBOL_IS_POWER )
+        return aSymbol->IsPower() ? wxS( "1" ) : wxS( "0" );
+
+    if( aAttributeName == SYMBOL_IS_LOCAL_POWER )
+        return aSymbol->IsLocalPower() ? wxS( "1" ) : wxS( "0" );
+
+
+    return wxS( "0" );
+}
+
+void LIB_FIELDS_EDITOR_GRID_DATA_MODEL::setAttributeValue( LIB_SYMBOL* aSymbol,
+                                                           const wxString& aAttributeName,
+                                                           const wxString& aValue )
+{
+    if( aAttributeName == wxS( "${DNP}" ) )
+        aSymbol->SetDNP( aValue == wxS( "1" ) );
+    else if( aAttributeName == wxS( "${EXCLUDE_FROM_BOARD}" ) )
+        aSymbol->SetExcludedFromBoard( aValue == wxS( "1" ) );
+    else if( aAttributeName == wxS( "${EXCLUDE_FROM_BOM}" ) )
+        aSymbol->SetExcludedFromBOM( aValue == wxS( "1" ) );
+    else if( aAttributeName == wxS( "${EXCLUDE_FROM_SIM}" ) )
+        aSymbol->SetExcludedFromSim( aValue == wxS( "1" ) );
+    else if( aAttributeName == wxS( "${EXCLUDE_FROM_POS_FILES}" ) )
+        aSymbol->SetExcludedFromPosFiles( aValue == wxS( "1" ) );
+}
+
+
+bool LIB_FIELDS_EDITOR_GRID_DATA_MODEL::isPowerSymbolControlledField( const wxString& aFieldName ) const
+{
+    return aFieldName == GetDefaultFieldName( FIELD_T::VALUE, UNTRANSLATED )
+           || aFieldName == wxS( "${EXCLUDE_FROM_BOARD}" )
+           || aFieldName == wxS( "${EXCLUDE_FROM_BOM}" )
+           || aFieldName == wxS( "${EXCLUDE_FROM_POS_FILES}" )
+           || aFieldName == wxS( "${EXCLUDE_FROM_SIM}" );
+}
+
+
+bool LIB_FIELDS_EDITOR_GRID_DATA_MODEL::getStoredPowerSymbolValue( LIB_SYMBOL* aSymbol ) const
+{
+    wxString value;
+
+    if( getStoredFieldValue( aSymbol, SYMBOL_IS_POWER, value ) )
+        return value == wxS( "1" );
+
+    return GetFieldNameCol( SYMBOL_IS_POWER ) == -1 && aSymbol->IsPower();
+}
+
+
+void LIB_FIELDS_EDITOR_GRID_DATA_MODEL::setPowerSymbolDefaults( LIB_SYMBOL* aSymbol )
+{
+    setStoredFieldValue( aSymbol, GetDefaultFieldName( FIELD_T::VALUE, UNTRANSLATED ), aSymbol->GetName() );
+
+    static const std::vector<wxString> exclusionFields = {
+        wxS( "${EXCLUDE_FROM_BOARD}" ),
+        wxS( "${EXCLUDE_FROM_BOM}" ),
+        wxS( "${EXCLUDE_FROM_POS_FILES}" ),
+        wxS( "${EXCLUDE_FROM_SIM}" ),
+    };
+
+    for( const wxString& fieldName : exclusionFields )
+    {
+        if( GetFieldNameCol( fieldName ) != -1 )
+            setStoredFieldValue( aSymbol, fieldName, wxS( "1" ) );
+    }
+}
+
+
+wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::getAttributeResolvedValue( const wxString& aFieldName, bool aValue ) const
+{
+    if( !aValue )
+        return wxEmptyString;
+
+    if( aFieldName == SYMBOL_IS_POWER )
+        return wxS( "Power Symbol" );
+    else if( aFieldName == SYMBOL_IS_LOCAL_POWER )
+        return wxS( "Local Power Symbol" );
+
+    return FIELDS_TABLE_DATA_MODEL_BASE::getAttributeResolvedValue( aFieldName, aValue );
+}
+
+
+void LIB_FIELDS_EDITOR_GRID_DATA_MODEL::RebuildRows()
+{
+    if( !m_rebuildsEnabled )
+        return;
+
+    wxLogTrace( traceLibFieldTable, "RebuildRows: Starting rebuild with %zu symbols in list", m_symbolsList.size() );
+
+    if( GetView() )
+    {
+        // Commit any pending in-place edits before the row gets moved out from under
+        // the editor.
+        static_cast<WX_GRID*>( GetView() )->CommitPendingChanges( true );
+
+        wxGridTableMessage msg( this, wxGRIDTABLE_NOTIFY_ROWS_DELETED, 0, (int) m_rows.size() );
+        GetView()->ProcessTableMessage( msg );
+    }
+
+    m_rows.clear();
+
+    wxLogTrace( traceLibFieldTable, "RebuildRows: About to process %zu symbols", m_symbolsList.size() );
+
+    EDA_COMBINED_MATCHER matcher( m_filter.Lower(), CTX_SEARCH );
+    int                  parentCol = GetFieldNameCol( SYMBOL_PARENT );
+    bool                 groupByParent = parentCol >= 0 && GetGroupColumn( parentCol );
+    int                  rootCol = GetFieldNameCol( SYMBOL_ROOT );
+    bool                 groupByRootOnly = m_groupingEnabled && rootCol >= 0 && GetGroupColumn( rootCol );
+
+    for( const DATA_MODEL_COL& col : m_cols )
+    {
+        if( col.m_group && col.m_fieldName != SYMBOL_ROOT )
+            groupByRootOnly = false;
+    }
+
+    for( LIB_SYMBOL* symbol : m_symbolsList )
+    {
+        wxLogTrace( traceLibFieldTable, "RebuildRows: Processing symbol '%s' (UUID: %s)",
+                    symbol->GetName(), symbol->m_Uuid.AsString() );
+
+        if( m_scope == SCOPE::SCOPE_RELATED_SYMBOLS )
+        {
+            std::shared_ptr<LIB_SYMBOL> root = symbol->GetRootSymbol();
+
+            if( !root || root->GetName() != m_relatedSymbolRoot )
+                continue;
+        }
+
+        if( !MatchesFilter( symbol, symbol->GetName(), matcher ) )
+            continue;
+
+        if( m_excludeDNP && symbol->GetDNP() )
+            continue;
+
+        if( !m_includeExcluded && symbol->GetExcludedFromBOM() )
+            continue;
+
+        bool matchFound = false;
+
+        // Keep unrelated roots separate instead of grouping their empty parent values together.
+        // Also skip the N^2 grouping loop entirely when grouping is disabled.
+        if( !m_groupingEnabled || ( groupByParent && symbol->IsRoot() ) )
+        {
+            m_rows.emplace_back( LIB_FIELDS_TABLE_DATA_MODEL_ROW( symbol, ROW_STATE::NON_EXPANDABLE ) );
+            continue;
+        }
+
+        // See if we already have a row which this symbol fits into
+        for( LIB_FIELDS_TABLE_DATA_MODEL_ROW& row : m_rows )
+        {
+            // all group members must have identical refs so just use the first one
+            LIB_SYMBOL* rowSymbol = row.m_items[0];
+
+            if( groupMatch( symbol, rowSymbol ) )
+            {
+                matchFound = true;
+                row.m_items.push_back( symbol );
+                row.m_state = ROW_STATE::GROUP_COLLAPSED;
+                break;
+            }
+        }
+
+        if( !matchFound )
+            m_rows.emplace_back( LIB_FIELDS_TABLE_DATA_MODEL_ROW( symbol, ROW_STATE::NON_EXPANDABLE ) );
+    }
+
+    if( groupByRootOnly )
+    {
+        // We're going to break m_rows into potentially more rows, which we collect
+        // into this, then we'll swap it all out when we're done.
+        std::vector<LIB_FIELDS_TABLE_DATA_MODEL_ROW> families;
+
+        for( LIB_FIELDS_TABLE_DATA_MODEL_ROW& row : m_rows )
+        {
+            auto root = std::find_if( row.m_items.begin(), row.m_items.end(),
+                                      []( LIB_SYMBOL* aSymbol )
+                                      {
+                                          return aSymbol->IsRoot();
+                                      } );
+
+            if( root == row.m_items.end() )
+            {
+                // Do not reintroduce a root excluded by the filter or scope. Matching
+                // descendants remain individually editable instead of becoming an aggregate.
+                for( LIB_SYMBOL* symbol : row.m_items )
+                    families.emplace_back( symbol, ROW_STATE::NON_EXPANDABLE );
+
+                continue;
+            }
+
+            // Root must go first so when we find it, put it at the beginning
+            std::iter_swap( row.m_items.begin(), root );
+
+            if( row.m_items.size() > 1 )
+                row.m_state = ROW_STATE::PARENT_COLLAPSED;
+
+            families.push_back( row );
+        }
+
+        m_rows.swap( families );
+    }
+
+    if( GetView() )
+    {
+        wxGridTableMessage msg( this, wxGRIDTABLE_NOTIFY_ROWS_APPENDED, (int) m_rows.size() );
+        GetView()->ProcessTableMessage( msg );
+    }
+
+    wxLogTrace( traceLibFieldTable, "RebuildRows: Completed rebuild with %zu rows created", m_rows.size() );
+    Sort();
+}
+
+
+bool LIB_FIELDS_EDITOR_GRID_DATA_MODEL::unitMatch( LIB_SYMBOL* const& lhItem, LIB_SYMBOL* const& rhItem )
+{
+    return lhItem == rhItem;
+}
+
+
+wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::getFieldResolvedLiveValue( LIB_SYMBOL* const& aRef,
+                                                                       const wxString&    aFieldName )
+{
+    SCH_FIELD* field = aRef->GetField( aFieldName );
+
+    if( field )
+    {
+        if( field->IsPrivate() )
+            return wxEmptyString;
+        else
+            return field->GetShownText( nullptr, INTERNAL );
+    }
+
+    // Handle generated fields with variables as names (e.g. ${QUANTITY}) that are not present in
+    // the symbol by giving them the correct value by resolving against the symbol
+    if( IsGeneratedField( aFieldName ) )
+    {
+        int depth = 0;
+
+        std::function<bool( wxString* )> libSymbolResolver =
+                [&]( wxString* token ) -> bool
+                {
+                    return aRef->ResolveTextVar( token, depth + 1 );
+                };
+
+        return ResolveTextVars( aFieldName, &libSymbolResolver, depth );
+    }
+
+    return wxEmptyString;
+}
+
+
+wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::resolveTextVars( LIB_SYMBOL* const& aLibSymbol, const wxString& aText )
+{
+    int depth = 0;
+
+    std::function<bool( wxString* )> libSymbolResolver =
+            [&]( wxString* token ) -> bool
+            {
+                if( resolveStoredTextVar( aLibSymbol, token ) )
+                    return true;
+
+                return aLibSymbol->ResolveTextVar( token, depth );
+            };
+
+    return ResolveTextVars( aText, &libSymbolResolver, depth );
+}
+
+
+void LIB_FIELDS_EDITOR_GRID_DATA_MODEL::ApplyData( std::function<void( LIB_SYMBOL* )> symbolChangeHandler,
+                                                   std::function<void()> postApplyHandler )
+{
+    int powerCol = GetFieldNameCol( SYMBOL_IS_POWER );
+    int localPowerCol = GetFieldNameCol( SYMBOL_IS_LOCAL_POWER );
+    std::set<LIB_SYMBOL*> modifiedSymbols;
+
+    // Power state belongs to the root. Apply it before fields so derived symbols see
+    // the final inherited state regardless of their position in the table.
+    for( LIB_SYMBOL* symbol : m_symbolsList )
+    {
+        if( symbol->IsDerived() )
+            continue;
+
+        bool symbolIsPower = symbol->IsPower();
+        bool symbolIsLocalPower = symbol->IsLocalPower();
+        wxString value;
+
+        if( powerCol != -1 )
+            symbolIsPower = getStoredFieldValue( symbol, SYMBOL_IS_POWER, value ) && value == wxS( "1" );
+
+        if( localPowerCol != -1 )
+        {
+            symbolIsLocalPower = getStoredFieldValue( symbol, SYMBOL_IS_LOCAL_POWER, value )
+                                 && value == wxS( "1" );
+        }
+
+        // Local power is a subtype of power, so apply the two checkbox columns as one
+        // three-state property rather than allowing column order to determine the result.
+        if( powerCol != -1 && !symbolIsPower )
+            symbolIsLocalPower = false;
+        else if( symbolIsLocalPower )
+            symbolIsPower = true;
+
+        if( symbol->IsPower() != symbolIsPower || symbol->IsLocalPower() != symbolIsLocalPower )
+        {
+            if( symbolIsLocalPower )
+                symbol->SetLocalPower();
+            else if( symbolIsPower )
+                symbol->SetGlobalPower();
+            else
+                symbol->SetNormal();
+
+            modifiedSymbols.insert( symbol );
+        }
+    }
+
+    for( LIB_SYMBOL* symbol : m_symbolsList )
+    {
+        bool       symbolModified = modifiedSymbols.contains( symbol );
+        const bool symbolIsPower = symbol->IsPower();
+
+        for( size_t i = 0; i < m_cols.size(); ++i )
+        {
+            const DATA_MODEL_COL& col = m_cols[i];
+            const wxString&       srcName = col.m_fieldName;
+            wxString              srcValue;
+            bool                  currentlyPresent = getStoredFieldValue( symbol, srcName, srcValue );
+
+            if( srcName == SYMBOL_NAME )
+                continue;
+
+            if( srcName == SYMBOL_IS_POWER || srcName == SYMBOL_IS_LOCAL_POWER )
+                continue;
+
+            // Attributes bypass the field logic, so handle them first
+            if( ColIsAttribute( static_cast<int>( i ) ) )
+            {
+                wxString newValue = currentlyPresent ? srcValue : wxString( wxS( "0" ) );
+
+                if( getAttributeValue( symbol, srcName ) != newValue )
+                {
+                    setAttributeValue( symbol, srcName, newValue );
+                    symbolModified = true;
+                }
+
+                continue;
+            }
+
+            if( srcName == SYMBOL_KEYWORDS )
+            {
+                if( symbol->GetRawKeyWords() != srcValue )
+                {
+                    symbol->SetKeyWords( srcValue );
+                    symbolModified = true;
+                }
+
+                continue;
+            }
+
+            // Skip special fields with variables as names (e.g. ${QUANTITY}),
+            // they can't be edited
+            if( IsGeneratedField( srcName ) )
+                continue;
+
+            SCH_FIELD* destField = symbol->GetField( srcName );
+
+            if( !currentlyPresent && destField )
+            {
+                if( destField->IsMandatory() )
+                {
+                    // Value cannot be empty, but the other mandatory fields can be cleared.
+                    if( destField->GetId() != FIELD_T::VALUE && !destField->GetText().IsEmpty() )
+                    {
+                        destField->SetText( wxEmptyString );
+                        symbolModified = true;
+                    }
+                }
+                else if( !destField->IsPrivate() )
+                {
+                    symbol->RemoveField( destField );
+                    symbolModified = true;
+                }
+
+                continue;
+            }
+
+            // Every present data-store entry represents a field that should exist,
+            // including entries with an explicitly empty value
+            bool createField = !destField && currentlyPresent;
+
+            if( createField )
+            {
+                const VECTOR2I symbolPos = symbol->GetPosition();
+                destField = new SCH_FIELD( symbol, FIELD_T::USER, srcName );
+                destField->SetPosition( symbolPos );
+                symbol->AddField( destField );
+                symbolModified = true;
+            }
+
+            if( !destField )
+                continue;
+
+            if( destField->GetId() == FIELD_T::VALUE )
+            {
+                // Value field cannot be empty
+                wxString newValue = symbolIsPower ? symbol->GetName() : srcValue;
+
+                if( !newValue.IsEmpty() && destField->GetText() != newValue )
+                {
+                    symbol->GetField( FIELD_T::VALUE )->SetText( newValue );
+                    symbolModified = true;
+                }
+            }
+            else if( destField->GetText() != srcValue )
+            {
+                destField->SetText( srcValue );
+                symbolModified = true;
+            }
+        }
+
+        std::vector<SCH_FIELD*> symbolFields;
+        symbol->GetFields( symbolFields );
+
+        // Remove any fields that are not mandatory
+        for( SCH_FIELD* field : symbolFields )
+        {
+            if( field->IsMandatory() || field->IsPrivate() )
+                continue;
+
+            const wxString& existingName = field->GetName();
+
+            // Entries for fields whose columns still exist were handled above.  Anything left here
+            // has had its column removed from the table.
+            if( GetFieldNameCol( existingName ) == -1 )
+            {
+                symbol->RemoveField( field );
+                symbolModified = true;
+            }
+        }
+
+        if( symbolModified )
+            modifiedSymbols.insert( symbol );
+    }
+
+    // Apply all field edits before rebuilding metadata. Publish parents first so children
+    // also see edits made to a separate copy of their parent on the editing canvas.
+    std::vector<LIB_SYMBOL*> symbols = m_symbolsList;
+
+    std::stable_sort( symbols.begin(), symbols.end(),
+                      []( const LIB_SYMBOL* aLeft, const LIB_SYMBOL* aRight )
+                      {
+                          return aLeft->GetInheritanceDepth() < aRight->GetInheritanceDepth();
+                      } );
+
+    for( LIB_SYMBOL* symbol : symbols )
+    {
+        // Unedited children can inherit changed descriptions and keywords too.
+        symbol->RefreshLibraryTreeCaches();
+
+        if( modifiedSymbols.contains( symbol ) )
+            symbolChangeHandler( symbol );
+
+        acceptDataStoreItem( symbol );
+    }
+
+    m_edited = false;
+
+    // Call post-apply handler if provided (for library operations and tree refresh)
+    if( postApplyHandler )
+        postApplyHandler();
+}
+
+
+bool LIB_FIELDS_EDITOR_GRID_DATA_MODEL::ValidateReferences( wxString& aSymbolName, wxString& aErrorMessage ) const
+{
+    const wxString referenceFieldName = GetDefaultFieldName( FIELD_T::REFERENCE, UNTRANSLATED );
+
+    for( LIB_SYMBOL* symbol : m_symbolsList )
+    {
+        wxString reference;
+        getStoredFieldValue( symbol, referenceFieldName, reference );
+
+        // An empty reference on a derived symbol inherits the parent's reference.
+        if( symbol->IsDerived() && reference.IsEmpty() )
+            continue;
+
+        aErrorMessage = GetFieldValidationErrorMessage( FIELD_T::REFERENCE, reference );
+
+        if( !aErrorMessage.IsEmpty() )
+        {
+            aSymbolName = UnescapeString( symbol->GetName() );
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::GetTypeName( int row, int col )
+{
+    if( ColIsAttribute( col ) )
+        return wxGRID_VALUE_BOOL;
+
+    return wxGridTableBase::GetTypeName( row, col );
+}
+
+
+KIID_PATH LIB_FIELDS_EDITOR_GRID_DATA_MODEL::getDataStoreKey( LIB_SYMBOL* const& aItem ) const
+{
+    KIID_PATH key;
+    key.push_back( aItem->m_Uuid );
+    return key;
+}
+
+
+wxString LIB_FIELDS_EDITOR_GRID_DATA_MODEL::getItemIdentifier( LIB_SYMBOL* const& aItem ) const
+{
+    return aItem->GetName();
+}

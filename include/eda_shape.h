@@ -1,0 +1,783 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2018 Jean-Pierre Charras jp.charras at wanadoo.fr
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <memory>
+#include <optional>
+
+#include <bezier_curves.h>
+#include <core/mirror.h>
+#include <geometry/ellipse.h>
+#include <geometry/shape_poly_set.h>
+#include <geometry/approximation.h>
+#include <geometry/shape_ellipse.h>
+#include <eda_fill.h>
+#include <properties/property.h>
+#include <stroke_params.h>
+#include <line_ending.h>
+#include <trigo.h>
+#include <frame_type.h>
+#include <api/serializable.h>
+
+class LINE_READER;
+class EDA_DRAW_FRAME;
+class FOOTPRINT;
+class MSG_PANEL_ITEM;
+struct EDA_IU_SCALE;
+
+namespace kiapi::common::types
+{
+    class GraphicShape;
+}
+
+using KIGFX::COLOR4D;
+
+enum class SHAPE_T : int
+{
+    UNDEFINED = -1,
+    SEGMENT = 0,
+    RECTANGLE, ///< Use RECTANGLE instead of RECT to avoid collision in a Windows header.
+    ARC,
+    CIRCLE,
+    POLY,
+    BEZIER,
+    ELLIPSE,
+    ELLIPSE_ARC
+};
+
+
+/// Holding struct to keep originating midpoint
+struct ARC_MID
+{
+    VECTOR2I mid;
+    VECTOR2I start;
+    VECTOR2I end;
+    VECTOR2I center;
+};
+
+
+struct EDA_SHAPE_HATCH_CACHE_DATA
+{
+    SHAPE_POLY_SET     hatching;
+    std::vector<SEG>   hatchLines;
+};
+
+
+class EDA_SHAPE : public SERIALIZABLE
+{
+public:
+    EDA_SHAPE( SHAPE_T aType, int aLineWidth, FILL_T aFill );
+
+    /// Construct an EDA_SHAPE from an abstract SHAPE geometry.
+    EDA_SHAPE( const SHAPE& aShape );
+
+    EDA_SHAPE( const EDA_SHAPE& aOther );
+    EDA_SHAPE& operator=( const EDA_SHAPE& aOther );
+
+    EDA_SHAPE( EDA_SHAPE&& ) noexcept = default;
+    EDA_SHAPE& operator=( EDA_SHAPE&& ) noexcept = default;
+
+    virtual ~EDA_SHAPE();
+
+    virtual EDA_ITEM* AsEdaItem() { return nullptr; }
+
+    void SwapShape( EDA_SHAPE* aImage );
+
+    void Serialize( google::protobuf::Any &aContainer ) const override;
+    bool Deserialize( const google::protobuf::Any &aContainer ) override;
+
+    void Serialize( google::protobuf::Any &aContainer, const EDA_IU_SCALE& aScale ) const;
+    bool Deserialize( const google::protobuf::Any& aContainer, const EDA_IU_SCALE& aScale );
+
+    void Serialize( kiapi::common::types::GraphicShape& aOutput, const EDA_IU_SCALE& aScale ) const;
+    bool Deserialize( const kiapi::common::types::GraphicShape& aInput, const EDA_IU_SCALE& aScale );
+
+    wxString ShowShape() const;
+
+    wxString SHAPE_T_asString() const;
+
+    virtual bool IsProxyItem() const { return m_proxyItem; }
+    virtual void SetIsProxyItem( bool aIsProxy = true ) { m_proxyItem = aIsProxy; }
+
+    bool IsAnyFill() const
+    {
+        return GetFillMode() != FILL_T::NO_FILL;
+    }
+
+    bool IsSolidFill() const
+    {
+        return    GetFillMode() == FILL_T::FILLED_SHAPE
+               || GetFillMode() == FILL_T::FILLED_WITH_COLOR
+               || GetFillMode() == FILL_T::FILLED_WITH_BG_BODYCOLOR;
+    }
+
+    bool IsHatchedFill() const
+    {
+        return    GetFillMode() == FILL_T::HATCH
+               || GetFillMode() == FILL_T::REVERSE_HATCH
+               || GetFillMode() == FILL_T::CROSS_HATCH;
+    }
+
+    virtual bool IsFilledForHitTesting() const
+    {
+        return IsSolidFill();
+    }
+
+    virtual void SetFilled( bool aFlag )
+    {
+        setFilled( aFlag );
+    }
+
+    void SetFillMode( FILL_T aFill );
+    FILL_T GetFillMode() const                 { return m_fill; }
+
+    void SetFillModeProp( UI_FILL_MODE );
+    UI_FILL_MODE GetFillModeProp() const;
+
+    void SetHatchingDirty()                    { m_hatchingDirty = true; }
+    const SHAPE_POLY_SET& GetHatching() const;
+    const std::vector<SEG>& GetHatchLines() const;
+
+    bool IsClosed() const;
+
+    COLOR4D GetFillColor() const               { return m_fillColor; }
+    void SetFillColor( const COLOR4D& aColor ) { m_fillColor = aColor; }
+
+    virtual void SetWidth( int aWidth );
+    virtual int GetWidth() const               { return m_stroke.GetWidth(); }
+    virtual int GetEffectiveWidth() const      { return GetWidth(); }
+    virtual int GetHatchLineWidth() const      { return GetEffectiveWidth(); }
+    virtual int GetHatchLineSpacing() const    { return GetHatchLineWidth() * 10; }
+
+    void       SetLineStyle( const LINE_STYLE aStyle );
+    LINE_STYLE GetLineStyle() const;
+
+    void    SetLineColor( const COLOR4D& aColor ) { m_stroke.SetColor( aColor ); }
+    COLOR4D GetLineColor() const                  { return m_stroke.GetColor(); }
+
+    virtual void SetShape( SHAPE_T aShape )    { m_shape = aShape; }
+    SHAPE_T      GetShape() const              { return m_shape; }
+
+    const LINE_ENDING& GetStartEnding() const
+    {
+        return IsClosed() ? m_blankEnding : m_startEnding;
+    }
+    void SetStartEnding( const LINE_ENDING& aEnding ) { m_startEnding = aEnding; }
+
+    const LINE_ENDING& GetEndEnding() const
+    {
+        return IsClosed() ? m_blankEnding : m_endEnding;
+    }
+    void SetEndEnding( const LINE_ENDING& aEnding ) { m_endEnding = aEnding; }
+
+    LINE_ENDING_STYLE GetStartEndingStyle() const { return m_startEnding.GetStyle(); }
+    void              SetStartEndingStyle( LINE_ENDING_STYLE aStyle ) { m_startEnding.SetStyle( aStyle ); }
+
+    LINE_ENDING_STYLE GetEndEndingStyle() const { return m_endEnding.GetStyle(); }
+    void              SetEndEndingStyle( LINE_ENDING_STYLE aStyle ) { m_endEnding.SetStyle( aStyle ); }
+
+    int  GetStartEndingLength() const { return m_startEnding.GetLength(); }
+    void SetStartEndingLength( int aLength ) { m_startEnding.SetLength( aLength ); }
+    int  GetStartEndingWidth() const { return m_startEnding.GetWidth(); }
+    void SetStartEndingWidth( int aWidth ) { m_startEnding.SetWidth( aWidth ); }
+
+    int  GetEndEndingLength() const { return m_endEnding.GetLength(); }
+    void SetEndEndingLength( int aLength ) { m_endEnding.SetLength( aLength ); }
+    int  GetEndEndingWidth() const { return m_endEnding.GetWidth(); }
+    void SetEndEndingWidth( int aWidth ) { m_endEnding.SetWidth( aWidth ); }
+
+    int  GetStartEndingStrokeWidth() const { return m_startEnding.GetStrokeWidth(); }
+    void SetStartEndingStrokeWidth( int aWidth ) { m_startEnding.SetStrokeWidth( aWidth ); }
+    int  GetEndEndingStrokeWidth() const { return m_endEnding.GetStrokeWidth(); }
+    void SetEndEndingStrokeWidth( int aWidth ) { m_endEnding.SetStrokeWidth( aWidth ); }
+
+    /**
+     * Compute outward-facing tangent angles at the start and end of the shape.
+     *
+     * When aLineWidth > 0, the tangent accounts for line shortening so that
+     * end shapes align with the visible stroke on tight curves.
+     */
+    void GetEndingTangents( EDA_ANGLE& aStartTangent, EDA_ANGLE& aEndTangent, int aLineWidth = 0 ) const;
+
+    /**
+     * Return the source endpoints used to place line endings.
+     *
+     * @return false if the shape does not have usable endpoints for line endings.
+     */
+    bool GetLineEndingEndpoints( VECTOR2I& aStartPoint, VECTOR2I& aEndPoint ) const;
+
+    /**
+     * Shorten a segment body for line endings.
+     *
+     * Static so SCH_LINE (which doesn't inherit EDA_SHAPE) can use it too.
+     *
+     * @return false if the line endings consume the whole segment body.
+     */
+    static bool ShortenSegmentForEndings( VECTOR2I& aStart, VECTOR2I& aEnd, const LINE_ENDING& aStartEnding,
+                                          const LINE_ENDING& aEndEnding, int aLineWidth );
+
+    /**
+     * Shorten an arc body for line endings.
+     *
+     * @return false if the line endings consume the whole arc body.
+     */
+    bool ShortenArcForEndings( EDA_ANGLE& aStartAngle, EDA_ANGLE& aArcAngle, double aRadius, int aLineWidth ) const;
+
+    /**
+     * Return the cubic Bezier curve shortened for line endings.
+     *
+     * The shortening distance is mapped onto the source curve using a
+     * fixed-cost numerical arc-length estimator, then the curve is subdivided with
+     * de Casteljau so curve-capable backends can keep a Bezier.
+     */
+    std::optional<BEZIER<double>> ShortenedBezierCurve( int aLineWidth ) const;
+
+    /**
+     * Return the flattened Bezier polyline after line-ending shortening.
+     */
+    std::vector<VECTOR2D> ShortenedBezierPolyline( int aLineWidth ) const;
+
+    bool ShortenPolyForEndings( VECTOR2D& aFirst, VECTOR2D& aLast, const VECTOR2D& aSecond,
+                                const VECTOR2D& aPenultimate, int aLineWidth ) const;
+
+    /**
+     * Apply line-ending body shortening to copied/generated polyline points.
+     *
+     * Line endings belong to the first open outline only.  Other outlines are
+     * returned unchanged.
+     *
+     * @return false if the outline is invalid or the line endings consume its body.
+     */
+    bool ShortenBodyPolyPoints( std::vector<VECTOR2I>& aPoints, int aOutlineIdx, int aLineWidth ) const;
+
+    /**
+     * Copy an outline and apply line-ending body shortening when applicable.
+     *
+     * @return false if the outline is invalid or the line endings consume its body.
+     */
+    bool GetShortenedBodyPolyPoints( const SHAPE_LINE_CHAIN& aOutline, int aOutlineIdx, std::vector<VECTOR2I>& aPoints,
+                                     int aLineWidth ) const;
+
+
+    /**
+     * Return the starting point of the graphic.
+     */
+    const VECTOR2I& GetStart() const { return m_start; }
+    int             GetStartY() const { return m_start.y; }
+    int             GetStartX() const { return m_start.x; }
+
+    virtual void SetStart( const VECTOR2I& aStart )
+    {
+        m_start = aStart;
+        m_endsSwapped = false;
+        m_hatchingDirty = true;
+    }
+
+    void SetStartY( int y )
+    {
+        VECTOR2I s = m_start;
+        s.y = y;
+        SetStart( s );
+    }
+
+    void SetStartX( int x )
+    {
+        VECTOR2I s = m_start;
+        s.x = x;
+        SetStart( s );
+    }
+
+    void SetCenterY( int y )
+    {
+        VECTOR2I newStart = m_start;
+        VECTOR2I newEnd = m_end;
+        newEnd.y += y - m_start.y;
+        newStart.y = y;
+        SetStart( newStart );
+        SetEnd( newEnd );
+        m_hatchingDirty = true;
+    }
+
+    void SetCenterX( int x )
+    {
+        VECTOR2I newStart = m_start;
+        VECTOR2I newEnd = m_end;
+        newEnd.x += x - m_start.x;
+        newStart.x = x;
+        SetStart( newStart );
+        SetEnd( newEnd );
+        m_hatchingDirty = true;
+    }
+
+    /**
+     * Return the ending point of the graphic.
+     */
+    const VECTOR2I& GetEnd() const { return m_end; }
+    int             GetEndY() const { return m_end.y; }
+    int             GetEndX() const { return m_end.x; }
+
+    virtual void SetEnd( const VECTOR2I& aEnd )
+    {
+        m_end = aEnd;
+        m_endsSwapped = false;
+        m_hatchingDirty = true;
+    }
+
+    void SetEndY( int aY )
+    {
+        VECTOR2I e = m_end;
+        e.y = aY;
+        SetEnd( e );
+    }
+
+    void SetEndX( int aX )
+    {
+        VECTOR2I e = m_end;
+        e.x = aX;
+        SetEnd( e );
+    }
+
+    void SetRadius( int aX )
+    {
+        SetEnd( m_start + VECTOR2I( aX, 0 ) );
+        m_hatchingDirty = true;
+    }
+
+    virtual VECTOR2I GetTopLeft() const { return GetStart(); }
+    virtual VECTOR2I GetBotRight() const { return GetEnd(); }
+
+    virtual void SetTop( int val ) { SetStartY( val ); }
+    virtual void SetLeft( int val ) { SetStartX( val ); }
+    virtual void SetRight( int val ) { SetEndX( val ); }
+    virtual void SetBottom( int val ) { SetEndY( val ); }
+
+    virtual void    SetBezierC1( const VECTOR2I& aPt ) { m_bezierC1 = aPt; }
+    const VECTOR2I& GetBezierC1() const { return m_bezierC1; }
+
+    virtual void    SetBezierC2( const VECTOR2I& aPt ) { m_bezierC2 = aPt; }
+    const VECTOR2I& GetBezierC2() const { return m_bezierC2; }
+
+    virtual void SetEllipseCenter( const VECTOR2I& aPt )
+    {
+        m_ellipse.Center = aPt;
+        m_hatchingDirty = true;
+        recalcEllipseArcEndpoints();
+    }
+
+    const VECTOR2I& GetEllipseCenter() const { return m_ellipse.Center; }
+
+    virtual void SetEllipseMajorRadius( int aR )
+    {
+        m_ellipse.MajorRadius = aR;
+        m_hatchingDirty = true;
+        recalcEllipseArcEndpoints();
+    }
+
+    int GetEllipseMajorRadius() const { return m_ellipse.MajorRadius; }
+
+    virtual void SetEllipseMinorRadius( int aR )
+    {
+        m_ellipse.MinorRadius = aR;
+        m_hatchingDirty = true;
+        recalcEllipseArcEndpoints();
+    }
+
+    int GetEllipseMinorRadius() const { return m_ellipse.MinorRadius; }
+
+    virtual void SetEllipseRotation( const EDA_ANGLE& aA )
+    {
+        m_ellipse.Rotation = aA;
+        m_hatchingDirty = true;
+        recalcEllipseArcEndpoints();
+    }
+
+    EDA_ANGLE GetEllipseRotation() const { return m_ellipse.Rotation; }
+
+    // Meaningful only when m_shape == SHAPE_T::ELLIPSE_ARC.
+    virtual void SetEllipseStartAngle( const EDA_ANGLE& aA )
+    {
+        m_ellipse.StartAngle = aA;
+        m_hatchingDirty = true;
+        recalcEllipseArcEndpoints();
+    }
+
+    EDA_ANGLE GetEllipseStartAngle() const { return m_ellipse.StartAngle; }
+
+    virtual void SetEllipseEndAngle( const EDA_ANGLE& aA )
+    {
+        m_ellipse.EndAngle = aA;
+        m_hatchingDirty = true;
+        recalcEllipseArcEndpoints();
+    }
+
+    EDA_ANGLE GetEllipseEndAngle() const { return m_ellipse.EndAngle; }
+
+    /// Direct read-only access to the underlying ellipse payload. Useful for copying
+    /// into a SHAPE_ELLIPSE when building effective collision shapes.
+    const ELLIPSE<int>& GetEllipse() const { return m_ellipse; }
+
+    VECTOR2I getCenter() const;
+    virtual void SetCenter( const VECTOR2I& aCenter );
+
+    /**
+     * Set the end point from the angle center and start.
+     *
+     * aAngle is:
+     * - clockwise in right-down coordinate system
+     * - counter-clockwise in right-up (libedit) coordinate system.
+     */
+    void SetArcAngleAndEnd( const EDA_ANGLE& aAngle, bool aCheckNegativeAngle = false );
+
+    virtual void SetArcAngle( const EDA_ANGLE& aAngle ) { SetArcAngleAndEnd( aAngle, true ); }
+
+    EDA_ANGLE GetArcAngle() const;
+
+    EDA_ANGLE GetSegmentAngle() const;
+
+    /**
+     * Have the start and end points been swapped since they were set?
+     *
+     * @return true if they have.
+     */
+    bool EndsSwapped() const { return m_endsSwapped; }
+
+    // Some attributes are read only, since they are derived from m_Start, m_End, and m_Angle.
+    // No Set...() function for these attributes.
+
+    VECTOR2I              GetArcMid() const;
+    std::vector<VECTOR2I> GetRectCorners() const;
+    virtual std::vector<VECTOR2I> GetCornersInSequence( EDA_ANGLE angle ) const;
+
+    /**
+     * Calc arc start and end angles such that aStartAngle < aEndAngle.  Each may be between
+     * -360.0 and 360.0.
+     */
+    void CalcArcAngles( EDA_ANGLE& aStartAngle, EDA_ANGLE& aEndAngle ) const;
+
+    int GetRadius() const;
+
+    /**
+     * Set the three controlling points for an arc.
+     *
+     * NB: these are NOT what's currently stored, so we have to do some calculations behind
+     * the scenes.  However, they are what SHOULD be stored.
+     */
+    virtual void SetArcGeometry( const VECTOR2I& aStart, const VECTOR2I& aMid, const VECTOR2I& aEnd );
+
+    /**
+     * Set the data used for mid point caching.
+     *
+     * If the controlling points remain constant, then we keep the midpoint the same as it was
+     * when read in.  This minimizes VCS churn.
+     *
+     * @param aStart Cached start point.
+     * @param aMid Cached mid point.
+     * @param aEnd Cached end point.
+     * @param aCenter Calculated center point using the preceeding three.
+     */
+    void SetCachedArcData( const VECTOR2I& aStart, const VECTOR2I& aMid, const VECTOR2I& aEnd,
+                           const VECTOR2I& aCenter );
+
+    const std::vector<VECTOR2I>& GetBezierPoints() const { return m_bezierPoints; }
+
+    /**
+     * Duplicate the polygon outlines into a flat list of VECTOR2I points.
+     *
+     * Outlines (and holes) are appended in order; primarily intended for legacy
+     * callers that expect explicit point buffers rather than SHAPE objects.
+     */
+    std::vector<VECTOR2I> GetPolyPoints() const;
+
+    /**
+     * @return the number of corners of the polygonal shape.
+     */
+    int GetPointCount() const;
+
+    SHAPE_POLY_SET& GetPolyShape();
+    const SHAPE_POLY_SET& GetPolyShape() const;
+
+    /**
+     * @return true if the polygonal shape is valid (has more than 2 points).
+     */
+    bool IsPolyShapeValid() const;
+
+    virtual void SetPolyShape( const SHAPE_POLY_SET& aShape )
+    {
+        GetPolyShape() = aShape;
+
+        for( int ii = 0; ii < GetPolyShape().OutlineCount(); ++ii )
+        {
+            if( GetPolyShape().HoleCount( ii ) )
+            {
+                GetPolyShape().Fracture();
+                break;
+            }
+        }
+
+        m_hatchingDirty = true;
+    }
+
+    void SetPolyPoints( const std::vector<VECTOR2I>& aPoints );
+
+    /**
+     * Rebuild the m_bezierPoints vertex list that approximate the Bezier curve by a list of
+     * segments.
+     *
+     * Has meaning only for #BEZIER shape.
+     *
+     * @param aMaxError is the max deviation between the polyline and the curve.
+     */
+    void RebuildBezierToSegmentsPointsList( int aMaxError );
+    void RebuildBezierToSegmentsPointsList() { RebuildBezierToSegmentsPointsList( getMaxError() ); }
+
+    /**
+     * Make a set of SHAPE objects representing the #EDA_SHAPE.
+     *
+     * Caller owns the objects.
+     *
+     * @param aEdgeOnly indicates only edges should be generated (even if 0 width), and no fill
+     *                  shapes.
+     */
+    virtual std::vector<SHAPE*> MakeEffectiveShapes( bool aEdgeOnly = false ) const
+    {
+        return makeEffectiveShapes( aEdgeOnly );
+    }
+
+    /**
+     * Make the line-ending geometry associated with this shape.
+     *
+     * Caller owns the objects.
+     */
+    std::vector<SHAPE*> MakeLineEndingEffectiveShapes( int aLineWidth ) const;
+
+    /**
+     * Make effective geometry for the shape body shortened for line endings plus the
+     * line-ending geometry itself.
+     *
+     * Caller owns the objects.
+     */
+    std::vector<SHAPE*> MakeEffectiveShapesWithLineEndings( int aLineWidth ) const;
+
+    virtual std::vector<SHAPE*> MakeEffectiveShapesForHitTesting() const
+    {
+        return makeEffectiveShapes( false, false, true );
+    }
+
+    /**
+     * Make a set of SHAPE objects to hand to STROKE_PARAMS::Stroke().
+     *
+     * A Bezier comes back as one SHAPE_LINE_CHAIN and an ellipse as one SHAPE_ELLIPSE, so the
+     * pattern runs continuously along the curve instead of restarting at every point of its
+     * polyline approximation.  Every other shape comes from MakeEffectiveShapes(), edges only.
+     *
+     * If the shape has line endings that consume part of the body, the body is shortened
+     * accordingly (a shortened Bezier still comes back as one SHAPE_LINE_CHAIN).
+     *
+     * Caller owns the objects.
+     *
+     * @param aLineWidth is the width used to size the line endings; -1 uses
+     *                   GetEffectiveWidth() (callers whose width is resolved externally, e.g.
+     *                   by render settings, must pass it explicitly).
+     */
+    std::vector<SHAPE*> MakeEffectiveShapesForStroking( int aLineWidth = -1 ) const;
+
+    void ShapeGetMsgPanelInfo( EDA_DRAW_FRAME* aFrame, std::vector<MSG_PANEL_ITEM>& aList );
+
+    void SetRectangleHeight( const int& aHeight );
+
+    void SetRectangleWidth( const int& aWidth );
+
+    void SetRectangle( const long long int& aHeight, const long long int& aWidth );
+
+    virtual void SetCornerRadius( int aRadius );
+    int GetCornerRadius() const;
+
+    bool IsClockwiseArc() const;
+
+    /**
+     * @return the length of the segment using the hypotenuse calculation.
+     */
+    double GetLength() const;
+
+    int GetRectangleHeight() const;
+    int GetRectangleWidth() const;
+
+    virtual void UpdateHatching() const;
+
+    /**
+     * Convert the shape to a closed polygon.
+     *
+     * Circles and arcs are approximated by segments.
+     *
+     * @param aBuffer is a buffer to store the polygon.
+     * @param aClearance is the clearance around the pad.
+     * @param aError is the maximum deviation from a true arc.
+     * @param aErrorLoc whether any approximation error should be placed inside or outside
+     * @param ignoreLineWidth is used for edge cut items where the line width is only for
+     *                        visualization
+     * @param includeFill
+     */
+    void TransformShapeToPolygon( SHAPE_POLY_SET& aBuffer, int aClearance, int aError, ERROR_LOC aErrorLoc,
+                                  bool ignoreLineWidth = false, bool includeFill = false ) const;
+
+    /**
+     * Append only the line-ending geometry associated with this shape to a polygon set.
+     */
+    void TransformLineEndingsToPolygon( SHAPE_POLY_SET& aBuffer, int aClearance, int aError, ERROR_LOC aErrorLoc,
+                                        int aLineWidth ) const;
+
+    /**
+     * Convert the shape body shortened for line endings plus line-ending geometry to polygons.
+     */
+    void TransformWithLineEndingsToPolygon( SHAPE_POLY_SET& aBuffer, int aClearance, int aError, ERROR_LOC aErrorLoc,
+                                            bool ignoreLineWidth = false ) const;
+
+    bool GetLineEndingsBoundingBox( BOX2I& aBBox, int aLineWidth ) const;
+
+    int Compare( const EDA_SHAPE* aOther ) const;
+
+    double Similarity( const EDA_SHAPE& aOther ) const;
+
+    bool operator==( const EDA_SHAPE& aOther ) const;
+
+protected:
+    wxString getFriendlyName( FRAME_T aFrameType ) const;
+
+    void     setPosition( const VECTOR2I& aPos );
+    VECTOR2I getPosition() const;
+
+    virtual void setFilled( bool aFlag )
+    {
+        m_fill = aFlag ? FILL_T::FILLED_SHAPE : FILL_T::NO_FILL;
+    }
+
+    virtual SHAPE_POLY_SET getHatchingKnockouts() const
+    {
+        return SHAPE_POLY_SET();
+    }
+
+    void move( const VECTOR2I& aMoveVector );
+    void rotate( const VECTOR2I& aRotCentre, const EDA_ANGLE& aAngle );
+    void flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection );
+    void scale( double aScale );
+
+    virtual EDA_ANGLE getDrawRotation() const { return ANGLE_0; }
+
+    const BOX2I getBoundingBox() const;
+
+    void computeArcBBox( BOX2I& aBBox ) const;
+
+    bool hitTest( const VECTOR2I& aPosition, int aAccuracy = 0 ) const;
+    bool hitTest( const BOX2I& aRect, bool aContained, int aAccuracy = 0 ) const;
+    bool hitTest( const SHAPE_LINE_CHAIN& aPoly, bool aContained ) const;
+
+    const std::vector<VECTOR2I> buildBezierToSegmentsPointsList( int aMaxError ) const;
+
+    void beginEdit( const VECTOR2I& aStartPoint );
+    bool continueEdit( const VECTOR2I& aPosition );
+    void calcEdit( const VECTOR2I& aPosition );
+
+    /**
+     * Finish editing the shape.
+     *
+     * @param aClosed Should polygon shapes be closed (yes for pcbnew/fpeditor, no for libedit).
+     */
+    void endEdit( bool aClosed = true );
+    void setEditState( int aState ) { m_editState = aState; }
+
+    virtual bool isMoving() const { return false; }
+
+    /**
+     * Make a set of #SHAPE objects representing the #EDA_SHAPE.
+     *
+     * Caller owns the objects.
+     *
+     * @param aEdgeOnly indicates only edges should be generated (even if 0 width), and no fill
+     *                  shapes.
+     * @param aLineChainOnly indicates #SHAPE_POLY_SET is being abused slightly to represent a
+     *                       lineChain rather than a closed polygon.
+     * @param aHittesting
+     */
+    // fixme: move to shape_compound
+    std::vector<SHAPE*> makeEffectiveShapes( bool aEdgeOnly, bool aLineChainOnly = false,
+                                             bool aHittesting = false ) const;
+
+    /**
+     * Make effective geometry for the shape body shortened for line endings, without the
+     * line-ending geometry itself.  Falls back to makeEffectiveShapes() when no shortening
+     * applies.
+     *
+     * Caller owns the objects.
+     */
+    std::vector<SHAPE*> makeShortenedBodyShapes( int aLineWidth, bool aEdgeOnly = false ) const;
+
+    SHAPE_ELLIPSE buildShapeEllipse() const;
+
+    /// When m_shape == ELLIPSE_ARC, recompute m_start/m_end from m_ellipse.
+    /// No-op for other shapes.
+    void recalcEllipseArcEndpoints();
+
+    virtual int getMaxError() const { return 100; }
+
+    // non-const for PCB_SHAPE
+    SHAPE_POLY_SET& hatching() const;
+    std::vector<SEG>& hatchLines() const;
+
+protected:
+    bool                   m_endsSwapped;  // true if start/end were swapped e.g. SetArcAngleAndEnd
+    SHAPE_T                m_shape;        // Shape: line, Circle, Arc
+    STROKE_PARAMS          m_stroke;       // Line style, width, etc.
+    LINE_ENDING            m_startEnding;  // Line ending at start point
+    LINE_ENDING            m_endEnding;    // Line ending at end point
+    LINE_ENDING            m_blankEnding;  // Used to return a blank ending for closed shapes
+    FILL_T                 m_fill;
+    COLOR4D                m_fillColor;
+
+    mutable std::unique_ptr<EDA_SHAPE_HATCH_CACHE_DATA> m_hatchingCache;
+    mutable bool           m_hatchingDirty;
+
+    long long int          m_rectangleHeight;
+    long long int          m_rectangleWidth;
+    int                    m_cornerRadius;
+
+    VECTOR2I               m_start;             // Line start point or Circle center
+    VECTOR2I               m_end;               // Line end point or Circle 3 o'clock point
+
+    VECTOR2I               m_arcCenter;         // Used only for Arcs: arc end point
+    ARC_MID                m_arcMidData;        // Used to store originating data
+
+    VECTOR2I               m_bezierC1;          // Bezier Control Point 1
+    VECTOR2I               m_bezierC2;          // Bezier Control Point 2
+
+    std::vector<VECTOR2I>  m_bezierPoints;
+    ELLIPSE<int>                            m_ellipse;  // Used only for ELLIPSE / ELLIPSE_ARC
+    mutable std::unique_ptr<SHAPE_POLY_SET> m_poly;     // Stores the S_POLYGON shape
+
+    int                    m_editState;
+    bool                   m_proxyItem;         // A shape storing proxy information (ie: a pad
+                                                //   number box, thermal spoke template, etc.)
+};
+
+DECLARE_ENUM_TO_WXANY( SHAPE_T );
+DECLARE_ENUM_TO_WXANY( LINE_STYLE );
+DECLARE_ENUM_TO_WXANY( LINE_ENDING_STYLE );
+DECLARE_ENUM_TO_WXANY( UI_FILL_MODE );
+

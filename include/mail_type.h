@@ -1,0 +1,78 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2014 CERN
+ * Copyright The KiCad Developers, see AUTHORS.TXT for contributors.
+ * @author Maciej Suminski <maciej.suminski@cern.ch>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+
+#ifndef MAIL_TYPE_H_
+#define MAIL_TYPE_H_
+
+/**
+ * The set of mail types sendable via #KIWAY::ExpressMail() and supplied as
+ * the @a aCommand parameter to that function.
+ *
+ * Such mail will be received in KIWAY_PLAYER::KiwayMailIn( KIWAY_MAIL_EVENT& aEvent ) and
+ * aEvent.Command() will match aCommand to KIWAY::ExpressMail().
+ */
+enum MAIL_T
+{
+    MAIL_CROSS_PROBE,       // PCB<->SCH, CVPCB->SCH cross-probing.
+    MAIL_SELECTION,         // SCH<->PCB selection synchronization.
+    MAIL_ASSIGN_FOOTPRINTS, // CVPCB->SCH footprint stuffing
+    MAIL_SCH_SAVE,          // CVPCB->SCH save the schematic
+    MAIL_PCB_SAVE,          // KICAD->PCB save the board
+    MAIL_EESCHEMA_NETLIST,  // SCH->CVPCB netlist immediately after launching CVPCB
+    MAIL_SYMBOL_NETLIST,    // SCH->FP_CHOOSER symbol pin & fp_filter information
+    MAIL_PCB_UPDATE,        // SCH->PCB forward update
+    MAIL_SCH_UPDATE,        // PCB->SCH forward update
+    MAIL_IMPORT_FILE,       // Import a different format file
+    MAIL_SCH_GET_NETLIST,   // Fetch a netlist from schematics
+    MAIL_SCH_GET_ITEM,      // Fetch item from KIID
+    MAIL_PCB_GET_NETLIST,   // Fetch a netlist from PCB layout
+    MAIL_PCB_UPDATE_LINKS,  // Update the schematic symbol paths in the PCB's footprints
+    MAIL_SCH_REFRESH,       // Tell the schematic editor to refresh the display.
+    MAIL_ADD_LOCAL_LIB,     // Add a local library to the project library table
+    MAIL_LIB_EDIT,
+    MAIL_FP_EDIT,               // SCH->FP_EDITOR open the footprint with the given file path
+    MAIL_FP_EDIT_LIBID,         // SCH->FP_EDITOR open the footprint with this LIB_ID
+    MAIL_SCH_EDIT_LIBID,        // PCB->SYMBOL_EDITOR open the symbol with this LIB_ID
+    MAIL_RELOAD_LIB,            // Reload Library List if one was added
+    MAIL_RELOAD_PLUGINS,        // Reload python plugins
+    MAIL_REFRESH_SYMBOL,        // Refresh symbol in symbol viewer
+    MAIL_SCH_NAVIGATE_TO_SHEET, // Navigate to sheet by filename if in hierarchy
+    MAIL_SCH_SHEET_CHANGED,     // Schematic editor current sheet changed
+    MAIL_CALC_SHOW,             // Show the PCB calculator window
+    MAIL_SCH_RELOAD,            // Reload the schematic from disk (for example after a git pull)
+    MAIL_PCB_RELOAD,            // Reload the board from disk (for example after a git pull)
+    MAIL_SCH_PROJECT_SETTINGS_CHANGED, // Project settings changed on disk without a document reload
+    MAIL_PCB_PROJECT_SETTINGS_CHANGED, // Project settings changed on disk without a document reload
+    MAIL_PCB_GET_FOOTPRINT_IDS, // Fetch each footprint reference and LIB_ID from the PCB layout
+    MAIL_PCB_RECONCILE_NETS,    // Name the PCB nets after the schematic nets they match
+    MAIL_SCH_LINK_FOOTPRINTS,   // Fill empty symbol footprint fields from footprint references and LIB_IDs
+};
+
+/**
+ * Reply payload for #MAIL_SCH_GET_NETLIST when the user deliberately aborts netlist
+ * generation (for example, answering No to the duplicate-sheet-names prompt). The caller
+ * treats this as a silent cancel, distinct from an unannotated schematic which echoes the
+ * original annotation message back.
+ */
+#define MAIL_SCH_GET_NETLIST_CANCELLED "\x01__netlist_cancelled__"
+
+#endif  // MAIL_TYPE_H_

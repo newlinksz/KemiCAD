@@ -1,0 +1,10 @@
+#define BRAND_RESOURCE
+
+#include "resource.h"
+
+IDI_APP_GERBVIEW_ICON ICON "../resources/bitmaps_png/icons/icon_gerbview.ico"
+
+#define RC_VER_FILE_DESCRIPTION "KemiCAD Gerber Viewer " BRAND_RC_VER_STR
+#define RC_VER_INTERNALNAME "gerbview"
+#define RC_VER_ORIGINALFILENAME "gerbview.exe"
+#include "kiwin32.rc"

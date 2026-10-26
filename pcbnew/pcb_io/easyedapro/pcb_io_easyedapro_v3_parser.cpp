@@ -1,0 +1,1901 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you may find one here:
+ * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+ * or you may search the http://www.gnu.org website for the version 2 license,
+ * or you may write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ */
+
+#include "pcb_io_easyedapro_v3_parser.h"
+#include <io/easyedapro/easyedapro_import_utils.h>
+
+#include <memory>
+
+
+#include <json_common.h>
+#include <core/json_serializers.h>
+#include <core/map_helpers.h>
+#include <string_utils.h>
+
+#include <wx/log.h>
+#include <wx/base64.h>
+#include <wx/mstream.h>
+
+#include <footprint.h>
+#include <board.h>
+#include <pcb_group.h>
+#include <pcb_shape.h>
+#include <pcb_text.h>
+#include <pcb_track.h>
+#include <pcb_reference_image.h>
+#include <geometry/shape_arc.h>
+#include <geometry/shape_rect.h>
+#include <zone.h>
+#include <pad.h>
+#include <fix_board_shape.h>
+#include <board_design_settings.h>
+#include <board_design_settings_defaults.h>
+#include <netclass.h>
+#include <project/net_settings.h>
+
+#include <font/font.h>
+#include <core/mirror.h>
+#include <convert_basic_shapes_to_polygon.h>
+#include <trace_helpers.h>
+
+using namespace EASYEDAPRO;
+
+static const wxString safeSpacingNames[] = { wxS( "Track" ),
+                                             wxS( "SMD Pad" ),
+                                             wxS( "TH Pad" ),
+                                             wxS( "SMD Test Point" ),
+                                             wxS( "TH Test Point" ),
+                                             wxS( "Via" ),
+                                             wxS( "Fill Region / Teardrop" ),
+                                             wxS( "Copper / Plane Zone" ),
+                                             wxS( "Slot Region" ),
+                                             wxS( "Line" ),
+                                             wxS( "Text / Image" ),
+                                             wxS( "Board Outline" ),
+                                             wxS( "Hole" ) };
+
+// Empty entries are source categories that the current item conversion flattens into another
+// KiCad type.  Their values are retained as comments in the generated .kicad_dru file.
+static const wxString safeSpacingConditions[] = { wxS( "A.Type == 'Track'" ),
+                                                  wxS( "A.Type == 'Pad' && A.Pad_Type == 'SMD'" ),
+                                                  wxS( "A.Type == 'Pad' && A.Pad_Type == 'Through-hole'" ),
+                                                  wxEmptyString,
+                                                  wxEmptyString,
+                                                  wxS( "A.Type == 'Via'" ),
+                                                  wxEmptyString,
+                                                  wxEmptyString,
+                                                  wxEmptyString,
+                                                  wxEmptyString,
+                                                  wxEmptyString,
+                                                  wxEmptyString,
+                                                  wxEmptyString };
+
+
+static wxString safeSpacingToMm( double aMil )
+{
+    return wxString::FromUTF8( FormatDouble2Str( pcbIUScale.IUTomm( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( aMil ) ) ) );
+}
+
+
+wxString PCB_IO_EASYEDAPRO_V3_PARSER::GenerateSafeSpacingRules() const
+{
+    return GenerateSafeSpacingRules( m_safeSpacing );
+}
+
+
+wxString PCB_IO_EASYEDAPRO_V3_PARSER::GenerateSafeSpacingRules( const nlohmann::json& aSafeSpacing )
+{
+    if( !aSafeSpacing.is_array() || aSafeSpacing.empty() )
+        return wxEmptyString;
+
+    wxString rules = wxS( "(version 1)\n\n"
+                          "# EasyEDA Pro safeSpacing values.  Values are mils even when the\n"
+                          "# source rule context reports unit \"mm\".  Entries without a\n"
+                          "# generated rule are source categories that KiCad's imported item\n"
+                          "# model cannot distinguish; they remain here for lossless reference.\n" );
+
+    for( size_t row = 0; row < sizeof( safeSpacingNames ) / sizeof( safeSpacingNames[0] ) && row < aSafeSpacing.size();
+         ++row )
+    {
+        const nlohmann::json& values = aSafeSpacing.at( row );
+
+        if( !values.is_array() )
+            continue;
+
+        for( size_t col = 0; col <= row && col < values.size(); ++col )
+        {
+            if( !values.at( col ).is_number() )
+                continue;
+
+            double   value = values.at( col );
+            wxString mil = wxString::FromUTF8( FormatDouble2Str( value ) );
+            wxString mm = safeSpacingToMm( value );
+
+            rules += wxString::Format( wxS( "# %s ↔ %s: %s mil (%s mm)\n" ), safeSpacingNames[row],
+                                       safeSpacingNames[col], mil, mm );
+
+            if( value <= 0 || safeSpacingConditions[row].empty() || safeSpacingConditions[col].empty()
+                || ( row == 0 && col == 0 ) )
+            {
+                continue;
+            }
+            wxString conditionA = safeSpacingConditions[row];
+            wxString conditionB = safeSpacingConditions[col];
+            conditionB.Replace( wxS( "A." ), wxS( "B." ) );
+
+            rules += wxString::Format( wxS( "\n(rule \"EasyEDA safe spacing: %s ↔ %s\"\n"
+                                            "  (condition \"(%s) && (%s)\")\n"
+                                            "  (constraint clearance (min %smm)))\n" ),
+                                       safeSpacingNames[row], safeSpacingNames[col], conditionA, conditionB, mm );
+        }
+    }
+
+    constexpr size_t boardOutline = 11;
+
+    if( boardOutline < aSafeSpacing.size() && aSafeSpacing.at( boardOutline ).is_array() )
+    {
+        const nlohmann::json& values = aSafeSpacing.at( boardOutline );
+
+        for( size_t index : { 0u, 1u, 2u, 5u } )
+        {
+            if( index >= values.size() || !values.at( index ).is_number() || values.at( index ).get<double>() <= 0 )
+            {
+                continue;
+            }
+
+            wxString mm = safeSpacingToMm( values.at( index ) );
+
+            rules += wxString::Format( wxS( "\n(rule \"EasyEDA safe spacing: %s ↔ Board Outline\"\n"
+                                            "  (condition \"(%s)\")\n"
+                                            "  (constraint edge_clearance (min %smm)))\n" ),
+                                       safeSpacingNames[index], safeSpacingConditions[index], mm );
+        }
+    }
+
+    return rules;
+}
+
+
+static const int SHAPE_JOIN_DISTANCE = pcbIUScale.mmToIU( 1.5 );
+
+
+PCB_IO_EASYEDAPRO_V3_PARSER::PCB_IO_EASYEDAPRO_V3_PARSER( BOARD* aBoard, PROGRESS_REPORTER* aProgressReporter ) :
+        m_board( aBoard ),
+        m_v2Parser( aBoard, aProgressReporter )
+{
+}
+
+
+static void V3AlignText( EDA_TEXT* text, int align );
+static int  V3AlignToOriginCode( const wxString& aAlign );
+
+
+std::unique_ptr<PAD> PCB_IO_EASYEDAPRO_V3_PARSER::createV3PAD( FOOTPRINT* aFootprint, const V3_ROW& aRow )
+{
+    int          layer = V3GetInt( aRow.inner, "layerId", 1 );
+    PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+    wxString padNumber = V3GetString( aRow.inner, "num" );
+
+    VECTOR2D center;
+    center.x = V3GetDouble( aRow.inner, "centerX" );
+    center.y = V3GetDouble( aRow.inner, "centerY" );
+
+    double orientation = V3GetDouble( aRow.inner, "padAngle" );
+
+    nlohmann::json holeObj = aRow.inner.value( "hole", nlohmann::json() );
+    nlohmann::json padDef = aRow.inner.value( "defaultPad", nlohmann::json() );
+
+    std::unique_ptr<PAD> pad = std::make_unique<PAD>( aFootprint );
+
+    pad->SetNumber( padNumber );
+    pad->SetPosition( PCB_IO_EASYEDAPRO_PARSER::ScalePos( center ) );
+    pad->SetOrientationDegrees( orientation );
+    pad->SetPadstackMode( PADSTACK::MODE::NORMAL );
+
+    // Process hole
+    bool hasHole = false;
+
+    if( holeObj.is_object() )
+    {
+        wxString holeType = V3GetString( holeObj, "holeType", wxS( "ROUND" ) );
+
+        if( holeType == wxS( "RECT" ) )
+            holeType = wxS( "SLOT" );
+
+        if( holeType != wxS( "ROUND" ) && holeType != wxS( "SLOT" ) )
+            holeType = wxS( "ROUND" );
+
+        VECTOR2D drill;
+        drill.x = V3GetDouble( holeObj, "width" );
+        drill.y = V3GetDouble( holeObj, "height" );
+
+        if( drill.x > 0 || drill.y > 0 )
+        {
+            hasHole = true;
+
+            double drill_dir = V3GetDouble( aRow.inner, "relativeAngle" );
+
+            double deg = EDA_ANGLE( drill_dir, DEGREES_T ).Normalize90().AsDegrees();
+
+            if( std::abs( deg ) >= 45 )
+                std::swap( drill.x, drill.y );
+
+            if( holeType == wxS( "SLOT" ) )
+                pad->SetDrillShape( PAD_DRILL_SHAPE::OBLONG );
+
+            pad->SetDrillSize( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( drill ) );
+            pad->SetLayerSet( PAD::PTHMask() );
+            pad->SetAttribute( PAD_ATTRIB::PTH );
+        }
+    }
+
+    if( !hasHole )
+    {
+        if( klayer == F_Cu )
+            pad->SetLayerSet( PAD::SMDMask() );
+        else if( klayer == B_Cu )
+            pad->SetLayerSet( PAD::SMDMask().FlipStandardLayers() );
+
+        pad->SetAttribute( PAD_ATTRIB::SMD );
+    }
+
+    // Process pad shape
+    if( padDef.is_object() )
+    {
+        wxString padType = V3GetString( padDef, "padType", wxS( "RECT" ) );
+
+        if( padType == wxS( "RECT" ) )
+        {
+            VECTOR2D size;
+            size.x = V3GetDouble( padDef, "width", 1.0 );
+            size.y = V3GetDouble( padDef, "height", 1.0 );
+            double radius = V3GetDouble( padDef, "radius" );
+            double radiusRatio = std::clamp( radius, 0.0, 100.0 ) / 100 / 2;
+
+            pad->SetSize( PADSTACK::ALL_LAYERS, PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size ) );
+
+            if( radiusRatio == 0 )
+                pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::RECTANGLE );
+            else
+            {
+                pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::ROUNDRECT );
+                pad->SetRoundRectRadiusRatio( PADSTACK::ALL_LAYERS, radiusRatio );
+            }
+        }
+        else if( padType == wxS( "ELLIPSE" ) )
+        {
+            VECTOR2D size;
+            size.x = V3GetDouble( padDef, "width", 1.0 );
+            size.y = V3GetDouble( padDef, "height", 1.0 );
+
+            pad->SetSize( PADSTACK::ALL_LAYERS, PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size ) );
+            pad->SetShape( PADSTACK::ALL_LAYERS, size.x == size.y ? PAD_SHAPE::CIRCLE : PAD_SHAPE::OVAL );
+        }
+        else if( padType == wxS( "OVAL" ) )
+        {
+            VECTOR2D size;
+            size.x = V3GetDouble( padDef, "width", 1.0 );
+            size.y = V3GetDouble( padDef, "height", 1.0 );
+
+            pad->SetSize( PADSTACK::ALL_LAYERS, PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size ) );
+            pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::OVAL );
+        }
+        else if( padType == wxS( "POLY" ) || padType == wxS( "POLYGON" ) )
+        {
+            pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CUSTOM );
+            pad->SetAnchorPadShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CIRCLE );
+            pad->SetSize( PADSTACK::ALL_LAYERS, { 1, 1 } );
+
+            nlohmann::json polyData = padDef.value( "path", nlohmann::json() );
+
+            std::vector<std::unique_ptr<PCB_SHAPE>> results = m_v2Parser.ParsePoly( aFootprint, polyData, true, false );
+
+            for( auto& shape : results )
+            {
+                shape->SetLayer( klayer );
+                shape->SetWidth( 0 );
+                shape->Move( -pad->GetPosition() );
+                pad->AddPrimitive( PADSTACK::ALL_LAYERS, shape.release() );
+            }
+        }
+    }
+    else
+    {
+        pad->SetSize( PADSTACK::ALL_LAYERS, PCB_IO_EASYEDAPRO_PARSER::ScaleSize( VECTOR2D( 1.0, 1.0 ) ) );
+        pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::RECTANGLE );
+    }
+
+    pad->SetThermalSpokeAngle( ANGLE_90 );
+
+    return pad;
+}
+
+
+PCB_TEXT* PCB_IO_EASYEDAPRO_V3_PARSER::createV3Text( BOARD_ITEM_CONTAINER* aContainer, const EASYEDAPRO::V3_ROW& aRow )
+{
+    int          layer = V3GetInt( aRow.inner, "layerId", 3 );
+    PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+    VECTOR2D location;
+    location.x = V3GetDouble( aRow.inner, "x" );
+    location.y = V3GetDouble( aRow.inner, "y" );
+
+    wxString string = V3GetString( aRow.inner, "text" );
+    wxString font = V3GetString( aRow.inner, "fontFamily", wxS( "default" ) );
+
+    double height = V3GetDouble( aRow.inner, "fontSize", 45.0 );
+    double strokew = V3GetDouble( aRow.inner, "strokeWidth", 6.0 );
+
+    wxString originStr = V3GetString( aRow.inner, "origin", wxS( "LEFT_BOTTOM" ) );
+    int      align = V3AlignToOriginCode( originStr );
+    double   angle = V3GetDouble( aRow.inner, "angle" );
+    int      inverted = V3GetBool( aRow.inner, "reverse" ) ? 1 : 0;
+    int      mirror = V3GetBool( aRow.inner, "mirror" ) ? 1 : 0;
+
+    PCB_TEXT* text = new PCB_TEXT( aContainer );
+
+    text->SetText( string );
+    text->SetLayer( klayer );
+    text->SetPosition( PCB_IO_EASYEDAPRO_PARSER::ScalePos( location ) );
+    text->SetIsKnockout( inverted );
+    text->SetTextThickness( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( strokew ) );
+    text->SetTextSize( VECTOR2D( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( height * 0.6 ),
+                                 PCB_IO_EASYEDAPRO_PARSER::ScaleSize( height * 0.7 ) ) );
+
+    if( font != wxS( "default" ) )
+        text->SetFont( KIFONT::FONT::GetFont( font ) );
+
+    V3AlignText( text, align );
+
+    if( IsBackLayer( klayer ) ^ !!mirror )
+    {
+        text->SetMirrored( true );
+        text->SetTextAngleDegrees( -angle );
+    }
+    else
+    {
+        text->SetTextAngleDegrees( angle );
+    }
+
+    return text;
+}
+
+
+std::unique_ptr<FOOTPRINT>
+PCB_IO_EASYEDAPRO_V3_PARSER::ParseFootprint( const std::map<wxString, EASYEDAPRO::BLOB>& aBlobMap,
+                                             const V3_DOC_RAW&                           aDoc )
+{
+    std::unique_ptr<FOOTPRINT> footprintPtr = std::make_unique<FOOTPRINT>( m_board );
+    FOOTPRINT*                 footprint = footprintPtr.get();
+
+    const VECTOR2I defaultTextSize( pcbIUScale.mmToIU( 1.0 ), pcbIUScale.mmToIU( 1.0 ) );
+    const int      defaultTextThickness( pcbIUScale.mmToIU( 0.15 ) );
+    VECTOR2I       canvasOrigin( 0, 0 );
+
+    for( PCB_FIELD* field : footprint->GetFields() )
+    {
+        field->SetTextSize( defaultTextSize );
+        field->SetTextThickness( defaultTextThickness );
+    }
+
+    for( const V3_ROW& row : aDoc.rows )
+    {
+        if( row.type == wxS( "CANVAS" ) )
+        {
+            canvasOrigin = PCB_IO_EASYEDAPRO_PARSER::ScalePos(
+                    VECTOR2D( V3GetDouble( row.inner, "originX" ), V3GetDouble( row.inner, "originY" ) ) );
+        }
+        else if( row.type == wxS( "POLY" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+            double       thickness = V3GetDouble( row.inner, "width" );
+
+            nlohmann::json polyData = row.inner.value( "path", nlohmann::json::array() );
+
+            std::vector<std::unique_ptr<PCB_SHAPE>> results = m_v2Parser.ParsePoly( footprint, polyData, false, false );
+
+            for( auto& shape : results )
+            {
+                shape->SetLayer( klayer );
+                shape->SetWidth( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( thickness ) );
+                footprint->Add( shape.release(), ADD_MODE::APPEND );
+            }
+        }
+        else if( row.type == wxS( "PAD" ) )
+        {
+            std::unique_ptr<PAD> pad = createV3PAD( footprint, row );
+            footprint->Add( pad.release(), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "FILL" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            nlohmann::json polyDataList = row.inner.value( "path", nlohmann::json::array() );
+
+            if( !polyDataList.is_null() && !polyDataList.empty() )
+            {
+                if( !polyDataList.at( 0 ).is_array() )
+                    polyDataList = nlohmann::json::array( { polyDataList } );
+
+                std::vector<SHAPE_LINE_CHAIN> contours;
+
+                for( nlohmann::json& polyData : polyDataList )
+                {
+                    SHAPE_LINE_CHAIN contour = m_v2Parser.ParseContour( polyData, false );
+                    contour.SetClosed( true );
+                    contours.push_back( contour );
+                }
+
+                SHAPE_POLY_SET polySet;
+
+                for( SHAPE_LINE_CHAIN& contour : contours )
+                    polySet.AddOutline( contour );
+
+                polySet.RebuildHolesFromContours();
+
+                std::unique_ptr<PCB_GROUP> group;
+
+                if( polySet.OutlineCount() > 1 )
+                    group = std::make_unique<PCB_GROUP>( footprint );
+
+                for( const SHAPE_POLY_SET::POLYGON& poly : polySet.CPolygons() )
+                {
+                    std::unique_ptr<PCB_SHAPE> shape = std::make_unique<PCB_SHAPE>( footprint, SHAPE_T::POLY );
+
+                    shape->SetFilled( true );
+                    shape->SetPolyShape( poly );
+                    shape->SetLayer( klayer );
+                    shape->SetWidth( 0 );
+
+                    if( group )
+                        group->AddItem( shape.get() );
+
+                    footprint->Add( shape.release(), ADD_MODE::APPEND );
+                }
+
+                if( group )
+                    footprint->Add( group.release(), ADD_MODE::APPEND );
+            }
+        }
+        else if( row.type == wxS( "ATTR" ) )
+        {
+            wxString key = V3GetString( row.inner, "key" );
+            wxString value = V3JsonToString( row.inner.value( "value", nlohmann::json() ) );
+
+            if( key == wxS( "Designator" ) )
+                footprint->GetField( FIELD_T::REFERENCE )->SetText( value );
+        }
+        else if( row.type == wxS( "REGION" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            nlohmann::json polyDataList = row.inner.value( "path", nlohmann::json::array() );
+            nlohmann::json prohibitTypes = row.inner.value( "prohibitType", nlohmann::json::array() );
+
+            std::set<int> flags;
+
+            if( prohibitTypes.is_array() )
+            {
+                for( const auto& pt : prohibitTypes )
+                {
+                    wxString ptStr;
+
+                    if( pt.is_string() )
+                        ptStr = pt.get<std::string>();
+
+                    if( ptStr == wxS( "COMPONENT" ) )
+                        flags.insert( 2 );
+                    else if( ptStr == wxS( "TRACK" ) )
+                        flags.insert( 5 );
+                    else if( ptStr == wxS( "COPPER" ) )
+                        flags.insert( 6 );
+                    else if( ptStr == wxS( "VIA" ) )
+                        flags.insert( 7 );
+                    else if( ptStr == wxS( "FILL" ) || ptStr == wxS( "PLANE" ) )
+                        flags.insert( 8 );
+                }
+            }
+
+            for( nlohmann::json& polyData : polyDataList )
+            {
+                SHAPE_POLY_SET polySet;
+
+                std::vector<std::unique_ptr<PCB_SHAPE>> results =
+                        m_v2Parser.ParsePoly( nullptr, polyData, true, false );
+
+                for( auto& shape : results )
+                {
+                    shape->SetFilled( true );
+                    shape->TransformShapeToPolygon( polySet, klayer, 0, ARC_HIGH_DEF, ERROR_INSIDE, true );
+                }
+
+                polySet.Simplify();
+
+                std::unique_ptr<ZONE> zone = std::make_unique<ZONE>( footprint );
+
+                zone->SetIsRuleArea( true );
+                zone->SetDoNotAllowFootprints( !!flags.count( 2 ) );
+                zone->SetDoNotAllowZoneFills( !!flags.count( 7 ) || !!flags.count( 6 ) || !!flags.count( 8 ) );
+                zone->SetDoNotAllowPads( !!flags.count( 7 ) );
+                zone->SetDoNotAllowTracks( !!flags.count( 7 ) || !!flags.count( 5 ) );
+                zone->SetDoNotAllowVias( !!flags.count( 7 ) );
+
+                zone->SetLayer( klayer );
+                zone->Outline()->Append( polySet );
+
+                footprint->Add( zone.release(), ADD_MODE::APPEND );
+            }
+        }
+        else if( row.type == wxS( "IMAGE" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            VECTOR2D start;
+            start.x = V3GetDouble( row.inner, "startX" );
+            start.y = V3GetDouble( row.inner, "startY" );
+
+            VECTOR2D size;
+            size.x = V3GetDouble( row.inner, "width" );
+            size.y = V3GetDouble( row.inner, "height" );
+
+            double         angle = V3GetDouble( row.inner, "angle" );
+            bool           mirror = V3GetBool( row.inner, "mirror" );
+            nlohmann::json polyDataList = row.inner.value( "path", nlohmann::json::array() );
+
+            BOX2I                         bbox;
+            std::vector<SHAPE_LINE_CHAIN> contours;
+            for( nlohmann::json& polyData : polyDataList )
+            {
+                SHAPE_LINE_CHAIN contour = m_v2Parser.ParseContour( polyData, false );
+                contour.SetClosed( true );
+
+                contours.push_back( contour );
+
+                bbox.Merge( contour.BBox() );
+            }
+
+            if( bbox.GetSize().x == 0 || bbox.GetSize().y == 0 )
+                continue;
+
+            VECTOR2D scale( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size.x ) / bbox.GetSize().x,
+                            PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size.y ) / bbox.GetSize().y );
+
+            SHAPE_POLY_SET polySet;
+
+            for( SHAPE_LINE_CHAIN& contour : contours )
+            {
+                for( int i = 0; i < contour.PointCount(); i++ )
+                {
+                    VECTOR2I pt = contour.CPoint( i );
+                    contour.SetPoint( i, VECTOR2I( pt.x * scale.x, pt.y * scale.y ) );
+                }
+
+                polySet.AddOutline( contour );
+            }
+
+            polySet.RebuildHolesFromContours();
+
+            std::unique_ptr<PCB_GROUP> group;
+
+            if( polySet.OutlineCount() > 1 )
+                group = std::make_unique<PCB_GROUP>( footprint );
+
+            BOX2I polyBBox = polySet.BBox();
+
+            for( const SHAPE_POLY_SET::POLYGON& poly : polySet.CPolygons() )
+            {
+                std::unique_ptr<PCB_SHAPE> shape = std::make_unique<PCB_SHAPE>( footprint, SHAPE_T::POLY );
+
+                shape->SetFilled( true );
+                shape->SetPolyShape( poly );
+                shape->SetLayer( klayer );
+                shape->SetWidth( 0 );
+
+                shape->Move( PCB_IO_EASYEDAPRO_PARSER::ScalePos( start ) - polyBBox.GetOrigin() );
+                shape->Rotate( PCB_IO_EASYEDAPRO_PARSER::ScalePos( start ), EDA_ANGLE( angle, DEGREES_T ) );
+
+                if( IsBackLayer( klayer ) ^ mirror )
+                {
+                    FLIP_DIRECTION flipDirection = FLIP_DIRECTION::LEFT_RIGHT;
+                    shape->Mirror( PCB_IO_EASYEDAPRO_PARSER::ScalePos( start ), flipDirection );
+                }
+
+                if( group )
+                    group->AddItem( shape.get() );
+
+                footprint->Add( shape.release(), ADD_MODE::APPEND );
+            }
+
+            if( group )
+                footprint->Add( group.release(), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "OBJ" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            VECTOR2D start;
+            start.x = V3GetDouble( row.inner, "startX" );
+            start.y = V3GetDouble( row.inner, "startY" );
+
+            VECTOR2D size;
+            size.x = V3GetDouble( row.inner, "width" );
+            size.y = V3GetDouble( row.inner, "height" );
+
+            double   angle = V3GetDouble( row.inner, "angle" );
+            bool     mirror = V3GetBool( row.inner, "mirror" );
+            wxString imageUrl = V3GetString( row.inner, "path" );
+
+            if( imageUrl.empty() )
+                continue;
+
+            wxString mimeType, base64Data;
+
+            if( imageUrl.BeforeFirst( ':' ) == wxS( "blob" ) )
+            {
+                wxString objectId = imageUrl.AfterLast( ':' );
+
+                if( auto blob = get_opt( aBlobMap, objectId ) )
+                {
+                    wxString blobUrl = blob->url;
+
+                    if( blobUrl.BeforeFirst( ':' ) == wxS( "data" ) )
+                    {
+                        wxArrayString paramsArr = wxSplit( blobUrl.AfterFirst( ':' ).BeforeFirst( ',' ), ';', '\0' );
+
+                        base64Data = blobUrl.AfterFirst( ',' );
+
+                        if( paramsArr.size() > 0 )
+                            mimeType = paramsArr[0];
+                    }
+                }
+            }
+
+            VECTOR2D kstart = PCB_IO_EASYEDAPRO_PARSER::ScalePos( start );
+            VECTOR2D ksize = PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size );
+
+            if( mimeType.empty() || base64Data.empty() )
+                continue;
+
+            wxMemoryBuffer buf = wxBase64Decode( base64Data );
+
+            if( mimeType == wxS( "image/svg+xml" ) )
+            {
+                // Not yet supported by EasyEDA
+            }
+            else
+            {
+                VECTOR2D kcenter = kstart + ksize / 2;
+
+                std::unique_ptr<PCB_REFERENCE_IMAGE> bitmap =
+                        std::make_unique<PCB_REFERENCE_IMAGE>( footprint, kcenter, klayer );
+                REFERENCE_IMAGE& refImage = bitmap->GetReferenceImage();
+
+                wxImage::SetDefaultLoadFlags( wxImage::GetDefaultLoadFlags() & ~wxImage::Load_Verbose );
+
+                if( refImage.ReadImageFile( buf ) )
+                {
+                    double scaleFactor = PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size.x ) / refImage.GetSize().x;
+                    refImage.SetImageScale( scaleFactor );
+
+                    // TODO: support non-90-deg angles
+                    bitmap->Rotate( kstart, EDA_ANGLE( angle, DEGREES_T ) );
+
+                    if( mirror )
+                    {
+                        int x = bitmap->GetPosition().x;
+                        MIRROR( x, KiROUND( kstart.x ) );
+                        bitmap->SetX( x );
+
+                        refImage.MutableImage().Mirror( FLIP_DIRECTION::LEFT_RIGHT );
+                    }
+
+                    footprint->Add( bitmap.release(), ADD_MODE::APPEND );
+                }
+            }
+        }
+        else if( row.type == wxS( "STRING" ) )
+        {
+            footprint->Add( createV3Text( footprint, row ), ADD_MODE::APPEND );
+        }
+    }
+
+    // 3D models are applied by the caller from the component's Device ATTR (board import)
+    // or a matching library device (FootprintLoad).  Do not pick an arbitrary device here:
+    // footprints are often shared by devices with different models.
+
+    // Heal board outlines
+    std::vector<PCB_SHAPE*> edgeShapes;
+
+    for( BOARD_ITEM* item : footprint->GraphicalItems() )
+    {
+        if( item->IsOnLayer( Edge_Cuts ) && item->Type() == PCB_SHAPE_T )
+            edgeShapes.push_back( static_cast<PCB_SHAPE*>( item ) );
+    }
+
+    ConnectBoardShapes( edgeShapes, SHAPE_JOIN_DISTANCE );
+
+    // Build courtyard if missing
+    if( !footprint->IsOnLayer( F_CrtYd ) )
+    {
+        BOX2I bbox = footprint->GetLayerBoundingBox( { F_Cu, F_Fab, F_Paste, F_Mask, Edge_Cuts } );
+        bbox.Inflate( pcbIUScale.mmToIU( 0.25 ) );
+
+        std::unique_ptr<PCB_SHAPE> shape = std::make_unique<PCB_SHAPE>( footprint, SHAPE_T::RECTANGLE );
+
+        shape->SetWidth( pcbIUScale.mmToIU( DEFAULT_COURTYARD_WIDTH ) );
+        shape->SetLayer( F_CrtYd );
+        shape->SetStart( bbox.GetOrigin() );
+        shape->SetEnd( bbox.GetEnd() );
+
+        footprint->Add( shape.release(), ADD_MODE::APPEND );
+    }
+
+    // Add F_Fab reference text if missing
+    bool hasFabRef = false;
+
+    for( BOARD_ITEM* item : footprint->GraphicalItems() )
+    {
+        if( item->Type() == PCB_TEXT_T && item->IsOnLayer( F_Fab ) )
+        {
+            if( static_cast<PCB_TEXT*>( item )->GetText() == wxT( "${REFERENCE}" ) )
+            {
+                hasFabRef = true;
+                break;
+            }
+        }
+    }
+
+    if( !hasFabRef )
+    {
+        int                       c_refTextSize = pcbIUScale.mmToIU( 0.5 );
+        int                       c_refTextThickness = pcbIUScale.mmToIU( 0.1 );
+        std::unique_ptr<PCB_TEXT> refText = std::make_unique<PCB_TEXT>( footprint );
+
+        refText->SetLayer( F_Fab );
+        refText->SetTextSize( VECTOR2I( c_refTextSize, c_refTextSize ) );
+        refText->SetTextThickness( c_refTextThickness );
+        refText->SetText( wxT( "${REFERENCE}" ) );
+
+        footprint->Add( refText.release(), ADD_MODE::APPEND );
+    }
+
+    footprint->MoveAnchorPosition( -canvasOrigin );
+
+    return footprintPtr;
+}
+
+
+static void V3AlignText( EDA_TEXT* text, int align )
+{
+    switch( align )
+    {
+    case 1:
+        text->SetVertJustify( GR_TEXT_V_ALIGN_TOP );
+        text->SetHorizJustify( GR_TEXT_H_ALIGN_LEFT );
+        break;
+    case 2:
+        text->SetVertJustify( GR_TEXT_V_ALIGN_CENTER );
+        text->SetHorizJustify( GR_TEXT_H_ALIGN_LEFT );
+        break;
+    case 3:
+        text->SetVertJustify( GR_TEXT_V_ALIGN_BOTTOM );
+        text->SetHorizJustify( GR_TEXT_H_ALIGN_LEFT );
+        break;
+    case 4:
+        text->SetVertJustify( GR_TEXT_V_ALIGN_TOP );
+        text->SetHorizJustify( GR_TEXT_H_ALIGN_CENTER );
+        break;
+    case 5:
+        text->SetVertJustify( GR_TEXT_V_ALIGN_CENTER );
+        text->SetHorizJustify( GR_TEXT_H_ALIGN_CENTER );
+        break;
+    case 6:
+        text->SetVertJustify( GR_TEXT_V_ALIGN_BOTTOM );
+        text->SetHorizJustify( GR_TEXT_H_ALIGN_CENTER );
+        break;
+    case 7:
+        text->SetVertJustify( GR_TEXT_V_ALIGN_TOP );
+        text->SetHorizJustify( GR_TEXT_H_ALIGN_RIGHT );
+        break;
+    case 8:
+        text->SetVertJustify( GR_TEXT_V_ALIGN_CENTER );
+        text->SetHorizJustify( GR_TEXT_H_ALIGN_RIGHT );
+        break;
+    case 9:
+        text->SetVertJustify( GR_TEXT_V_ALIGN_BOTTOM );
+        text->SetHorizJustify( GR_TEXT_H_ALIGN_RIGHT );
+        break;
+    }
+}
+
+
+static int V3AlignToOriginCode( const wxString& aAlign )
+{
+    if( aAlign == wxS( "LEFT_TOP" ) )
+        return 1;
+    if( aAlign == wxS( "LEFT_CENTER" ) || aAlign == wxS( "LEFT_MIDDLE" ) )
+        return 2;
+    if( aAlign == wxS( "LEFT_BOTTOM" ) )
+        return 3;
+    if( aAlign == wxS( "CENTER_TOP" ) )
+        return 4;
+    if( aAlign == wxS( "CENTER_MIDDLE" ) || aAlign == wxS( "CENTER_CENTER" ) )
+        return 5;
+    if( aAlign == wxS( "CENTER_BOTTOM" ) )
+        return 6;
+    if( aAlign == wxS( "RIGHT_TOP" ) )
+        return 7;
+    if( aAlign == wxS( "RIGHT_CENTER" ) || aAlign == wxS( "RIGHT_MIDDLE" ) )
+        return 8;
+    if( aAlign == wxS( "RIGHT_BOTTOM" ) )
+        return 9;
+
+    return 3; // default: LEFT_BOTTOM
+}
+
+
+void PCB_IO_EASYEDAPRO_V3_PARSER::ParseBoard( BOARD* aBoard, const nlohmann::json& aProject,
+                                              std::map<wxString, std::unique_ptr<FOOTPRINT>>&    aFootprintMap,
+                                              const std::map<wxString, EASYEDAPRO::BLOB>&        aBlobMap,
+                                              const std::multimap<wxString, EASYEDAPRO::POURED>& aPouredMap,
+                                              const V3_DOC_RAW& aDoc, const wxString& aFpLibName )
+{
+    // Structures to collect component-related rows for second-pass placement
+    struct COMP_DATA
+    {
+        int                          layer = 1;
+        VECTOR2D                     pos;
+        double                       angle = 0;
+        std::map<wxString, wxString> attrs;
+    };
+
+    struct ATTR_DATA
+    {
+        wxString parentId;
+        int      layer = 3;
+        double   x = 0;
+        double   y = 0;
+        bool     hasPos = false;
+        wxString key;
+        wxString value;
+        bool     keyVisible = false;
+        bool     valVisible = false;
+        wxString fontName;
+        double   fontSize = 45.0;
+        double   strokeWidth = 6.0;
+        wxString origin;
+        double   angle = 0;
+        int      inverted = 0;
+        int      mirror = 0;
+    };
+
+    struct PAD_NET_DATA
+    {
+        wxString compId;
+        wxString padNumber;
+        wxString padNet;
+    };
+
+    std::map<wxString, COMP_DATA>         componentMap;
+    std::multimap<wxString, ATTR_DATA>    attrMap;
+    std::multimap<wxString, PAD_NET_DATA> padNetMap;
+
+    std::multimap<wxString, EASYEDAPRO::POURED> boardPouredMap = aPouredMap;
+    std::map<wxString, ZONE*>                   poursToFill;
+    BOARD_DESIGN_SETTINGS&                      bds = aBoard->GetDesignSettings();
+
+    m_safeSpacing = nlohmann::json();
+
+    for( const V3_ROW& row : aDoc.rows )
+    {
+        if( row.type != wxS( "RULE" ) || V3GetString( row.inner, "ruleState" ) != wxS( "DEFAULT" ) )
+            continue;
+
+        nlohmann::json idArr = V3ParseIdArray( row.id );
+
+        if( !idArr.is_array() || idArr.size() < 3 || V3JsonToString( idArr[1] ) != wxS( "SAFE" ) )
+            continue;
+
+        nlohmann::json safeSpacing =
+                row.inner.value( "ruleContext", nlohmann::json() ).value( "safeSpacing", nlohmann::json::array() );
+
+        if( safeSpacing.is_array() && !safeSpacing.empty() )
+        {
+            m_safeSpacing = PCB_IO_EASYEDAPRO_PARSER::NormalizeSafeSpacing(
+                    safeSpacing[0].value( "content", nlohmann::json::array() ) );
+            break;
+        }
+    }
+
+    auto zoneClearance =
+            [&]() -> int
+            {
+                if( m_safeSpacing.is_array() && m_safeSpacing.size() > 7 && m_safeSpacing.at( 7 ).is_array()
+                    && !m_safeSpacing.at( 7 ).empty() && m_safeSpacing.at( 7 ).at( 0 ).is_number() )
+                {
+                    const int clearance = PCB_IO_EASYEDAPRO_PARSER::ScaleSize( m_safeSpacing.at( 7 ).at( 0 ).get<double>() );
+
+                    if( clearance > 0 )
+                        return clearance;
+                }
+
+                return bds.m_MinClearance;
+            };
+
+    const int zoneMinThickness = bds.GetDefaultZoneSettings().m_ZoneMinThickness;
+
+
+    for( const V3_ROW& row : aDoc.rows )
+    {
+        if( row.type == wxS( "LAYER" ) )
+        {
+            int layer = V3GetInt( row.inner, "layerId", -1 );
+
+            if( layer < 0 )
+            {
+                nlohmann::json id = V3ParseIdArray( row.id );
+
+                if( id.is_array() && id.size() > 1 )
+                {
+                    wxString layerId = V3JsonToString( id.at( 1 ) );
+                    long     parsedLayer;
+
+                    if( layerId.ToLong( &parsedLayer ) )
+                        layer = parsedLayer;
+                }
+            }
+
+            if( layer < 0 )
+                continue;
+
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            bool     use = V3GetBool( row.inner, "use", true );
+            wxString layerName = V3GetString( row.inner, "layerName" );
+
+            if( use )
+            {
+                LSET blayers = aBoard->GetEnabledLayers();
+                blayers.set( klayer );
+                aBoard->SetEnabledLayers( blayers );
+
+                if( !layerName.IsEmpty() )
+                    aBoard->SetLayerName( klayer, layerName );
+            }
+        }
+        else if( row.type == wxS( "NET" ) )
+        {
+            nlohmann::json idArr = V3ParseIdArray( row.id );
+            wxString       netname;
+
+            if( idArr.is_array() && idArr.size() > 1 )
+                netname = V3JsonToString( idArr[1] );
+
+            if( !netname.IsEmpty() )
+            {
+                aBoard->Add( new NETINFO_ITEM( aBoard, netname, aBoard->GetNetCount() + 1 ), ADD_MODE::APPEND );
+            }
+        }
+        else if( row.type == wxS( "RULE" ) )
+        {
+            nlohmann::json idArr = V3ParseIdArray( row.id );
+
+            if( !idArr.is_array() || idArr.size() < 3 )
+                continue;
+
+            wxString ruleType = V3JsonToString( idArr[1] );
+            bool     isDefault = V3GetString( row.inner, "ruleState" ) == wxS( "DEFAULT" );
+
+            nlohmann::json context = row.inner.value( "ruleContext", nlohmann::json() );
+
+            if( ruleType == wxS( "TRACK" ) && isDefault )
+            {
+                nlohmann::json track = context.value( "track", nlohmann::json() );
+                nlohmann::json content = track.value( "content", nlohmann::json::array() );
+
+                if( content.is_array() && !content.empty() )
+                {
+                    double minVal = V3GetDouble( content[0], "stroMin" );
+                    bds.m_TrackMinWidth = PCB_IO_EASYEDAPRO_PARSER::ScaleSize( minVal );
+                    aBoard->m_LegacyDesignSettingsLoaded = true;
+                }
+            }
+            else if( ruleType == wxS( "SAFE" ) && isDefault )
+            {
+                nlohmann::json safeSpacing = context.value( "safeSpacing", nlohmann::json::array() );
+
+                if( safeSpacing.is_array() && !safeSpacing.empty() )
+                {
+                    nlohmann::json content = PCB_IO_EASYEDAPRO_PARSER::NormalizeSafeSpacing(
+                            safeSpacing[0].value( "content", nlohmann::json::array() ) );
+
+                    if( m_safeSpacing.is_null() )
+                        m_safeSpacing = content;
+
+                    // EasyEDA Pro labels this array "mm", but its values are always mils.  The
+                    // lower-triangular matrix starts with the track-to-track clearance, which maps
+                    // to KiCad's global minimum clearance; the remaining object-specific values
+                    // cannot be represented by that single board setting.
+                    if( content.is_array() && !content.empty() && content.at( 0 ).is_array() && !content.at( 0 ).empty()
+                        && content.at( 0 ).at( 0 ).is_number() )
+                    {
+                        double trackClearance = content.at( 0 ).at( 0 );
+
+                        if( trackClearance > 0 )
+                        {
+                            int clearance = PCB_IO_EASYEDAPRO_PARSER::ScaleSize( trackClearance );
+                            bds.m_MinClearance = clearance;
+                            bds.m_NetSettings->GetDefaultNetclass()->SetClearance( clearance );
+                            aBoard->m_LegacyDesignSettingsLoaded = true;
+                            aBoard->m_LegacyNetclassesLoaded = true;
+                        }
+                    }
+                    double minEdgeClearance = 0;
+
+                    if( content.size() > 11 && content.at( 11 ).is_array() )
+                    {
+                        for( const nlohmann::json& value : content.at( 11 ) )
+                        {
+                            if( value.is_number() && value.get<double>() > 0
+                                && ( minEdgeClearance == 0 || value.get<double>() < minEdgeClearance ) )
+                            {
+                                minEdgeClearance = value;
+                            }
+                        }
+                    }
+
+                    if( minEdgeClearance > 0 )
+                    {
+                        bds.m_CopperEdgeClearance = PCB_IO_EASYEDAPRO_PARSER::ScaleSize( minEdgeClearance );
+                        aBoard->m_LegacyDesignSettingsLoaded = true;
+                    }
+                }
+            }
+        }
+        else if( row.type == wxS( "VIA" ) )
+        {
+            VECTOR2D center;
+            center.x = V3GetDouble( row.inner, "centerX" );
+            center.y = V3GetDouble( row.inner, "centerY" );
+
+            double   drill = V3GetDouble( row.inner, "holeDiameter" );
+            double   dia = V3GetDouble( row.inner, "viaDiameter" );
+            wxString netname = V3GetString( row.inner, "netName" );
+
+            std::unique_ptr<PCB_VIA> via = std::make_unique<PCB_VIA>( aBoard );
+
+            via->SetPadstackMode( PADSTACK::MODE::NORMAL );
+            via->SetPosition( PCB_IO_EASYEDAPRO_PARSER::ScalePos( center ) );
+            via->SetDrill( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( drill ) );
+            via->SetWidth( PADSTACK::ALL_LAYERS, PCB_IO_EASYEDAPRO_PARSER::ScaleSize( dia ) );
+            via->SetNet( aBoard->FindNet( netname ) );
+
+            aBoard->Add( via.release(), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "LINE" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            VECTOR2D start;
+            start.x = V3GetDouble( row.inner, "startX" );
+            start.y = V3GetDouble( row.inner, "startY" );
+
+            VECTOR2D end;
+            end.x = V3GetDouble( row.inner, "endX" );
+            end.y = V3GetDouble( row.inner, "endY" );
+
+            double   width = V3GetDouble( row.inner, "width" );
+            wxString netname = V3GetString( row.inner, "netName" );
+
+            std::unique_ptr<PCB_TRACK> track = std::make_unique<PCB_TRACK>( aBoard );
+
+            track->SetLayer( klayer );
+            track->SetStart( PCB_IO_EASYEDAPRO_PARSER::ScalePos( start ) );
+            track->SetEnd( PCB_IO_EASYEDAPRO_PARSER::ScalePos( end ) );
+            track->SetWidth( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( width ) );
+            track->SetNet( aBoard->FindNet( netname ) );
+
+            aBoard->Add( track.release(), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "ARC" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            VECTOR2D start;
+            start.x = V3GetDouble( row.inner, "startX" );
+            start.y = V3GetDouble( row.inner, "startY" );
+
+            VECTOR2D end;
+            end.x = V3GetDouble( row.inner, "endX" );
+            end.y = V3GetDouble( row.inner, "endY" );
+
+            double   angle = V3GetDouble( row.inner, "angle" );
+            double   width = V3GetDouble( row.inner, "width" );
+            wxString netname = V3GetString( row.inner, "netName" );
+
+            VECTOR2D delta = end - start;
+            VECTOR2D mid = ( start + delta / 2 );
+
+            double   ha = angle / 2;
+            double   hd = delta.EuclideanNorm() / 2;
+            double   cdist = hd / tan( DEG2RAD( ha ) );
+            VECTOR2D center = mid + delta.Perpendicular().Resize( cdist );
+
+            SHAPE_ARC sarc;
+            sarc.ConstructFromStartEndCenter( PCB_IO_EASYEDAPRO_PARSER::ScalePos( start ),
+                                              PCB_IO_EASYEDAPRO_PARSER::ScalePos( end ),
+                                              PCB_IO_EASYEDAPRO_PARSER::ScalePos( center ), angle >= 0, width );
+
+            std::unique_ptr<PCB_ARC> arc = std::make_unique<PCB_ARC>( aBoard, &sarc );
+            arc->SetWidth( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( width ) );
+            arc->SetLayer( klayer );
+            arc->SetNet( aBoard->FindNet( netname ) );
+
+            aBoard->Add( arc.release(), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "POLY" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            double         thickness = V3GetDouble( row.inner, "width" );
+            nlohmann::json polyData = row.inner.value( "path", nlohmann::json::array() );
+
+            std::vector<std::unique_ptr<PCB_SHAPE>> results = m_v2Parser.ParsePoly( aBoard, polyData, false, false );
+
+            for( auto& shape : results )
+            {
+                shape->SetLayer( klayer );
+                shape->SetWidth( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( thickness ) );
+
+                aBoard->Add( shape.release(), ADD_MODE::APPEND );
+            }
+        }
+        else if( row.type == wxS( "FILL" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            wxString netname = V3GetString( row.inner, "netName" );
+
+            nlohmann::json polyDataList = row.inner.value( "path", nlohmann::json::array() );
+
+            if( polyDataList.is_null() || polyDataList.empty() )
+                continue;
+
+            if( !polyDataList.at( 0 ).is_array() )
+                polyDataList = nlohmann::json::array( { polyDataList } );
+
+            std::vector<SHAPE_LINE_CHAIN> contours;
+
+            for( nlohmann::json& polyData : polyDataList )
+            {
+                SHAPE_LINE_CHAIN contour = m_v2Parser.ParseContour( polyData, true );
+                contour.SetClosed( true );
+                contours.push_back( contour );
+            }
+
+            SHAPE_POLY_SET zoneFillPoly;
+
+            for( SHAPE_LINE_CHAIN& contour : contours )
+                zoneFillPoly.AddOutline( contour );
+
+            zoneFillPoly.RebuildHolesFromContours();
+            zoneFillPoly.Fracture();
+
+            std::unique_ptr<ZONE> zone = std::make_unique<ZONE>( aBoard );
+
+            zone->SetNet( aBoard->FindNet( netname ) );
+            zone->SetLayer( klayer );
+            zone->Outline()->Append( SHAPE_RECT( zoneFillPoly.BBox() ).Outline() );
+            zone->SetFilledPolysList( klayer, zoneFillPoly );
+            zone->SetAssignedPriority( 500 );
+            zone->SetIsFilled( true );
+            zone->SetNeedRefill( false );
+
+            zone->SetLocalClearance( zoneClearance() );
+            zone->SetMinThickness( zoneMinThickness );
+
+            aBoard->Add( zone.release(), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "POUR" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            wxString netname = V3GetString( row.inner, "netName" );
+            int      fillOrder = V3GetInt( row.inner, "order" );
+
+            nlohmann::json polyDataList = row.inner.value( "path", nlohmann::json::array() );
+
+            std::unique_ptr<ZONE> zone = std::make_unique<ZONE>( aBoard );
+
+            zone->SetNet( aBoard->FindNet( netname ) );
+            zone->SetLayer( klayer );
+            zone->SetAssignedPriority( 500 - fillOrder );
+            zone->SetLocalClearance( zoneClearance() );
+            zone->SetMinThickness( zoneMinThickness );
+
+            for( nlohmann::json& polyData : polyDataList )
+            {
+                SHAPE_LINE_CHAIN contour = m_v2Parser.ParseContour( polyData, false );
+                contour.SetClosed( true );
+                zone->Outline()->Append( contour );
+            }
+
+            wxASSERT( zone->Outline()->OutlineCount() == 1 );
+
+            poursToFill.emplace( row.id, zone.get() );
+
+            aBoard->Add( zone.release(), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "TEARDROP" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+            wxString     netname = V3GetString( row.inner, "netName" );
+
+            nlohmann::json polyData = row.inner.value( "path", nlohmann::json::array() );
+
+            SHAPE_LINE_CHAIN contour = m_v2Parser.ParseContour( polyData, false );
+            contour.SetClosed( true );
+
+            std::unique_ptr<ZONE> zone = std::make_unique<ZONE>( aBoard );
+
+            zone->SetNet( aBoard->FindNet( netname ) );
+            zone->SetLayer( klayer );
+            zone->Outline()->Append( contour );
+            zone->SetFilledPolysList( klayer, contour );
+            zone->SetNeedRefill( false );
+            zone->SetIsFilled( true );
+            zone->SetAssignedPriority( 600 );
+            zone->SetLocalClearance( 0 );
+            zone->SetMinThickness( 0 );
+            zone->SetTeardropAreaType( TEARDROP_TYPE::TD_VIAPAD );
+
+            aBoard->Add( zone.release(), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "POURED" ) )
+        {
+            nlohmann::json idArr = V3ParseIdArray( row.id );
+            wxString       parentId;
+
+            if( idArr.is_array() && idArr.size() > 1 )
+                parentId = V3JsonToString( idArr[1] );
+
+            nlohmann::json fills = row.inner.value( "pourFill", nlohmann::json::array() );
+
+            if( !fills.is_array() )
+                continue;
+
+            for( const nlohmann::json& fill : fills )
+            {
+                EASYEDAPRO::POURED poured;
+                poured.pouredId = V3JsonToString( fill.value( "id", nlohmann::json( row.id ) ) );
+                poured.parentId = parentId;
+                poured.unki = V3GetInt( fill, "strokeWidth" );
+                poured.isPoly = V3GetBool( fill, "fill" );
+                poured.polyData = fill.value( "path", nlohmann::json::array() );
+
+                boardPouredMap.emplace( poured.parentId, poured );
+            }
+        }
+        else if( row.type == wxS( "REGION" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            nlohmann::json polyDataList = row.inner.value( "path", nlohmann::json::array() );
+            nlohmann::json prohibitTypes = row.inner.value( "prohibitType", nlohmann::json::array() );
+
+            std::set<int> flags;
+
+            if( prohibitTypes.is_array() )
+            {
+                for( const auto& pt : prohibitTypes )
+                {
+                    wxString ptStr;
+
+                    if( pt.is_string() )
+                        ptStr = pt.get<std::string>();
+
+                    if( ptStr == wxS( "COMPONENT" ) )
+                        flags.insert( 2 );
+                    else if( ptStr == wxS( "TRACK" ) )
+                        flags.insert( 5 );
+                    else if( ptStr == wxS( "COPPER" ) )
+                        flags.insert( 6 );
+                    else if( ptStr == wxS( "VIA" ) )
+                        flags.insert( 7 );
+                    else if( ptStr == wxS( "FILL" ) || ptStr == wxS( "PLANE" ) )
+                        flags.insert( 8 );
+                }
+            }
+
+            for( nlohmann::json& polyData : polyDataList )
+            {
+                SHAPE_LINE_CHAIN contour = m_v2Parser.ParseContour( polyData, false );
+                contour.SetClosed( true );
+
+                std::unique_ptr<ZONE> zone = std::make_unique<ZONE>( aBoard );
+
+                zone->SetIsRuleArea( true );
+                zone->SetDoNotAllowFootprints( !!flags.count( 2 ) );
+                zone->SetDoNotAllowZoneFills( !!flags.count( 7 ) || !!flags.count( 6 ) || !!flags.count( 8 ) );
+                zone->SetDoNotAllowPads( !!flags.count( 7 ) );
+                zone->SetDoNotAllowTracks( !!flags.count( 7 ) || !!flags.count( 5 ) );
+                zone->SetDoNotAllowVias( !!flags.count( 7 ) );
+
+                zone->SetLayer( klayer );
+                zone->Outline()->Append( contour );
+
+                aBoard->Add( zone.release(), ADD_MODE::APPEND );
+            }
+        }
+        else if( row.type == wxS( "STRING" ) )
+        {
+            aBoard->Add( createV3Text( aBoard, row ), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "COMPONENT" ) )
+        {
+            COMP_DATA comp;
+            comp.layer = V3GetInt( row.inner, "layerId", 1 );
+            comp.pos.x = V3GetDouble( row.inner, "x" );
+            comp.pos.y = V3GetDouble( row.inner, "y" );
+            comp.angle = V3GetDouble( row.inner, "angle" );
+
+            nlohmann::json attrsObj = row.inner.value( "attrs", nlohmann::json::object() );
+
+            if( attrsObj.is_object() )
+            {
+                for( auto& [k, v] : attrsObj.items() )
+                    comp.attrs[wxString( k )] = V3JsonToString( v );
+            }
+
+            componentMap[row.id] = comp;
+        }
+        else if( row.type == wxS( "ATTR" ) )
+        {
+            ATTR_DATA attr;
+            attr.parentId = V3GetString( row.inner, "parentId" );
+            attr.layer = V3GetInt( row.inner, "layerId", 3 );
+            attr.hasPos = !V3IsNullOrMissing( row.inner, "x" );
+
+            if( attr.hasPos )
+            {
+                attr.x = V3GetDouble( row.inner, "x" );
+                attr.y = V3GetDouble( row.inner, "y" );
+            }
+
+            attr.key = V3GetString( row.inner, "key" );
+            attr.value = V3JsonToString( row.inner.value( "value", nlohmann::json() ) );
+            attr.keyVisible = V3GetBool( row.inner, "keyVisible" );
+            attr.valVisible = V3GetBool( row.inner, "valueVisible" );
+            attr.fontName = V3GetString( row.inner, "fontFamily", wxS( "default" ) );
+            attr.fontSize = V3GetDouble( row.inner, "fontSize", 45.0 );
+            attr.strokeWidth = V3GetDouble( row.inner, "strokeWidth", 6.0 );
+            attr.origin = V3GetString( row.inner, "origin", wxS( "LEFT_BOTTOM" ) );
+            attr.angle = V3GetDouble( row.inner, "angle" );
+            attr.inverted = V3GetBool( row.inner, "reverse" ) ? 1 : 0;
+            attr.mirror = V3GetBool( row.inner, "mirror" ) ? 1 : 0;
+
+            attrMap.emplace( attr.parentId, attr );
+        }
+        else if( row.type == wxS( "PAD_NET" ) )
+        {
+            nlohmann::json idArr = V3ParseIdArray( row.id );
+
+            PAD_NET_DATA pn;
+            pn.compId = idArr.is_array() && idArr.size() > 1 ? V3JsonToString( idArr[1] ) : wxString();
+            pn.padNumber = idArr.is_array() && idArr.size() > 2 ? V3JsonToString( idArr[2] ) : wxString();
+            pn.padNet = V3GetString( row.inner, "padNet" );
+
+            if( !pn.compId.IsEmpty() )
+                padNetMap.emplace( pn.compId, pn );
+        }
+        else if( row.type == wxS( "PAD" ) )
+        {
+            wxString netname = V3GetString( row.inner, "netName" );
+
+            std::unique_ptr<FOOTPRINT> footprint = std::make_unique<FOOTPRINT>( aBoard );
+            std::unique_ptr<PAD>       pad = createV3PAD( footprint.get(), row );
+
+            pad->SetNet( aBoard->FindNet( netname ) );
+
+            VECTOR2I  pos = pad->GetPosition();
+            EDA_ANGLE orient = pad->GetOrientation();
+
+            pad->SetPosition( VECTOR2I() );
+            pad->SetOrientation( ANGLE_0 );
+
+            footprint->Add( pad.release(), ADD_MODE::APPEND );
+            footprint->SetPosition( pos );
+            footprint->SetOrientation( orient );
+
+            wxString fpName = wxS( "Pad_" ) + row.id;
+            LIB_ID   fpID = EASYEDAPRO::ToKiCadLibID( wxEmptyString, fpName );
+
+            footprint->SetFPID( fpID );
+            footprint->Reference().SetVisible( true );
+            footprint->Value().SetVisible( true );
+            footprint->AutoPositionFields();
+
+            aBoard->Add( footprint.release(), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "IMAGE" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            VECTOR2D start;
+            start.x = V3GetDouble( row.inner, "startX" );
+            start.y = V3GetDouble( row.inner, "startY" );
+
+            VECTOR2D size;
+            size.x = V3GetDouble( row.inner, "width" );
+            size.y = V3GetDouble( row.inner, "height" );
+
+            double         angle = V3GetDouble( row.inner, "angle" );
+            bool           mirror = V3GetBool( row.inner, "mirror" );
+            nlohmann::json polyDataList = row.inner.value( "path", nlohmann::json::array() );
+
+            BOX2I                         bbox;
+            std::vector<SHAPE_LINE_CHAIN> contours;
+            for( nlohmann::json& polyData : polyDataList )
+            {
+                SHAPE_LINE_CHAIN contour = m_v2Parser.ParseContour( polyData, false );
+                contour.SetClosed( true );
+
+                contours.push_back( contour );
+
+                bbox.Merge( contour.BBox() );
+            }
+
+            if( bbox.GetSize().x == 0 || bbox.GetSize().y == 0 )
+                continue;
+
+            VECTOR2D scale( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size.x ) / bbox.GetSize().x,
+                            PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size.y ) / bbox.GetSize().y );
+
+            SHAPE_POLY_SET polySet;
+
+            for( SHAPE_LINE_CHAIN& contour : contours )
+            {
+                for( int i = 0; i < contour.PointCount(); i++ )
+                {
+                    VECTOR2I pt = contour.CPoint( i );
+                    contour.SetPoint( i, VECTOR2I( pt.x * scale.x, pt.y * scale.y ) );
+                }
+
+                polySet.AddOutline( contour );
+            }
+
+            polySet.RebuildHolesFromContours();
+
+            std::unique_ptr<PCB_GROUP> group;
+
+            if( polySet.OutlineCount() > 1 )
+                group = std::make_unique<PCB_GROUP>( aBoard );
+
+            BOX2I polyBBox = polySet.BBox();
+
+            for( const SHAPE_POLY_SET::POLYGON& poly : polySet.CPolygons() )
+            {
+                std::unique_ptr<PCB_SHAPE> shape = std::make_unique<PCB_SHAPE>( aBoard, SHAPE_T::POLY );
+
+                shape->SetFilled( true );
+                shape->SetPolyShape( poly );
+                shape->SetLayer( klayer );
+                shape->SetWidth( 0 );
+
+                shape->Move( PCB_IO_EASYEDAPRO_PARSER::ScalePos( start ) - polyBBox.GetOrigin() );
+                shape->Rotate( PCB_IO_EASYEDAPRO_PARSER::ScalePos( start ), EDA_ANGLE( angle, DEGREES_T ) );
+
+                if( IsBackLayer( klayer ) ^ mirror )
+                {
+                    FLIP_DIRECTION flipDirection = FLIP_DIRECTION::LEFT_RIGHT;
+                    shape->Mirror( PCB_IO_EASYEDAPRO_PARSER::ScalePos( start ), flipDirection );
+                }
+
+                if( group )
+                    group->AddItem( shape.get() );
+
+                aBoard->Add( shape.release(), ADD_MODE::APPEND );
+            }
+
+            if( group )
+                aBoard->Add( group.release(), ADD_MODE::APPEND );
+        }
+        else if( row.type == wxS( "OBJ" ) )
+        {
+            int          layer = V3GetInt( row.inner, "layerId", 1 );
+            PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( layer );
+
+            VECTOR2D start;
+            start.x = V3GetDouble( row.inner, "startX" );
+            start.y = V3GetDouble( row.inner, "startY" );
+
+            VECTOR2D size;
+            size.x = V3GetDouble( row.inner, "width" );
+            size.y = V3GetDouble( row.inner, "height" );
+
+            double   angle = V3GetDouble( row.inner, "angle" );
+            bool     mirror = V3GetBool( row.inner, "mirror" );
+            wxString imageUrl = V3GetString( row.inner, "path" );
+
+            if( imageUrl.empty() )
+                continue;
+
+            wxString mimeType, base64Data;
+
+            if( imageUrl.BeforeFirst( ':' ) == wxS( "blob" ) )
+            {
+                wxString objectId = imageUrl.AfterLast( ':' );
+
+                if( auto blob = get_opt( aBlobMap, objectId ) )
+                {
+                    wxString blobUrl = blob->url;
+
+                    if( blobUrl.BeforeFirst( ':' ) == wxS( "data" ) )
+                    {
+                        wxArrayString paramsArr = wxSplit( blobUrl.AfterFirst( ':' ).BeforeFirst( ',' ), ';', '\0' );
+
+                        base64Data = blobUrl.AfterFirst( ',' );
+
+                        if( paramsArr.size() > 0 )
+                            mimeType = paramsArr[0];
+                    }
+                }
+            }
+
+            VECTOR2D kstart = PCB_IO_EASYEDAPRO_PARSER::ScalePos( start );
+            VECTOR2D ksize = PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size );
+
+            if( mimeType.empty() || base64Data.empty() )
+                continue;
+
+            wxMemoryBuffer buf = wxBase64Decode( base64Data );
+
+            if( mimeType == wxS( "image/svg+xml" ) )
+            {
+                // Not yet supported by EasyEDA
+            }
+            else
+            {
+                VECTOR2D kcenter = kstart + ksize / 2;
+
+                std::unique_ptr<PCB_REFERENCE_IMAGE> bitmap =
+                        std::make_unique<PCB_REFERENCE_IMAGE>( aBoard, kcenter, klayer );
+                REFERENCE_IMAGE& refImage = bitmap->GetReferenceImage();
+
+                wxImage::SetDefaultLoadFlags( wxImage::GetDefaultLoadFlags() & ~wxImage::Load_Verbose );
+
+                if( refImage.ReadImageFile( buf ) )
+                {
+                    double scaleFactor = PCB_IO_EASYEDAPRO_PARSER::ScaleSize( size.x ) / refImage.GetSize().x;
+                    refImage.SetImageScale( scaleFactor );
+
+                    // TODO: support non-90-deg angles
+                    bitmap->Rotate( kstart, EDA_ANGLE( angle, DEGREES_T ) );
+
+                    if( mirror )
+                    {
+                        int x = bitmap->GetPosition().x;
+                        MIRROR( x, KiROUND( kstart.x ) );
+                        bitmap->SetX( x );
+
+                        refImage.MutableImage().Mirror( FLIP_DIRECTION::LEFT_RIGHT );
+                    }
+
+                    aBoard->Add( bitmap.release(), ADD_MODE::APPEND );
+                }
+            }
+        }
+    } // end first pass
+
+    // Second pass: place components
+    for( auto const& [compId, comp] : componentMap )
+    {
+        wxString deviceId;
+        wxString fpIdOverride;
+        wxString fpDesignator;
+
+        // Collect attrs for this component
+        auto attrRange = attrMap.equal_range( compId );
+
+        for( auto it = attrRange.first; it != attrRange.second; ++it )
+        {
+            const ATTR_DATA& attr = it->second;
+
+            if( attr.key == wxS( "Device" ) )
+                deviceId = attr.value;
+            else if( attr.key == wxS( "Footprint" ) )
+                fpIdOverride = attr.value;
+            else if( attr.key == wxS( "Designator" ) )
+                fpDesignator = attr.value;
+        }
+
+        // BOM / identity / 3D fields come from the component's Device ATTR.
+        EASYEDAPRO::V3_DEVICE_DATA          deviceData = GetV3DeviceData( aProject, deviceId );
+        const std::map<wxString, wxString>& deviceAttrs = deviceData.attributes;
+
+        wxString fpId = fpIdOverride;
+
+        if( fpId.empty() )
+            fpId = get_def( deviceAttrs, wxS( "Footprint" ), wxEmptyString );
+
+        if( fpId.empty() )
+        {
+            wxLogTrace( traceEasyEdaIo, wxT( "EasyEDA Pro v3 component '%s' (%s): no footprint mapping, skipping." ),
+                        compId, fpDesignator );
+            continue;
+        }
+
+        auto it = aFootprintMap.find( fpId );
+
+        if( it == aFootprintMap.end() )
+        {
+            wxLogTrace( traceEasyEdaIo, "Footprint of '%s' with uuid '%s' not found.", fpDesignator, fpId );
+            continue;
+        }
+
+        std::unique_ptr<FOOTPRINT>& footprintOrig = it->second;
+        std::unique_ptr<FOOTPRINT>  footprint( static_cast<FOOTPRINT*>( footprintOrig->Duplicate( false ) ) );
+
+        footprint->SetParent( aBoard );
+
+        // Footprint LIB_ID uses package geometry name (e.g. C0402), matching schematic
+        // Footprint fields. Device/BOM identity stays in fields, not the FPID.
+        wxString libItemName = footprint->GetFPID().GetLibItemName();
+
+        if( libItemName.empty() )
+            libItemName = fpId;
+
+        footprint->SetFPID( ToKiCadLibID( aFpLibName, libItemName ) );
+
+        wxString modelUuid = get_def( deviceAttrs, wxS( "3D Model" ), wxEmptyString );
+        wxString modelTitle = get_def( deviceAttrs, wxS( "3D Model Title" ), modelUuid ).Trim();
+        wxString modelTransform = get_def( deviceAttrs, wxS( "3D Model Transform" ), wxEmptyString );
+
+        m_v2Parser.FillFootprintModelInfo( footprint.get(), modelUuid, modelTitle, modelTransform );
+
+        wxString valueText = ResolveV3DeviceValueText( deviceAttrs );
+
+        if( !valueText.empty() )
+            footprint->SetValue( valueText );
+
+        wxString description = deviceData.description;
+
+        if( description.empty() )
+            description = get_def( deviceAttrs, wxS( "Description" ), wxEmptyString );
+
+        if( !description.empty() )
+        {
+            footprint->GetField( FIELD_T::DESCRIPTION )
+                    ->SetText( NormalizeEasyEDAText( ResolveDeviceFieldVariables( description, deviceAttrs ) ) );
+        }
+
+        ForEachImportedDeviceField( deviceAttrs, false,
+                                    [&]( const wxString& attrKey, const wxString& value )
+                                    {
+                                        PCB_FIELD* field = nullptr;
+
+                                        if( attrKey == wxS( "Datasheet" ) )
+                                            field = footprint->GetField( FIELD_T::DATASHEET );
+                                        else
+                                            field = footprint->GetField( attrKey );
+
+                                        if( !field )
+                                        {
+                                            field = new PCB_FIELD( footprint.get(), FIELD_T::USER, attrKey );
+                                            footprint->Add( field, ADD_MODE::APPEND );
+                                        }
+
+                                        field->SetText( value );
+                                        field->SetVisible( false );
+                                    } );
+
+        // Apply position, rotation, flip
+        PCB_LAYER_ID klayer = m_v2Parser.LayerToKi( comp.layer );
+
+        if( klayer == B_Cu )
+            footprint->Flip( footprint->GetPosition(), FLIP_DIRECTION::TOP_BOTTOM );
+
+        footprint->SetOrientationDegrees( comp.angle );
+        footprint->SetPosition( PCB_IO_EASYEDAPRO_PARSER::ScalePos( comp.pos ) );
+
+        // Apply attributes (designator, etc.)
+        for( auto attrIt = attrRange.first; attrIt != attrRange.second; ++attrIt )
+        {
+            const ATTR_DATA& attr = attrIt->second;
+
+            if( attr.key == wxS( "Designator" ) )
+            {
+                PCB_FIELD* field = footprint->GetField( FIELD_T::REFERENCE );
+
+                if( attr.fontName != wxS( "default" ) )
+                    field->SetFont( KIFONT::FONT::GetFont( attr.fontName ) );
+
+                if( attr.valVisible && attr.keyVisible )
+                    field->SetText( attr.key + ':' + attr.value );
+                else if( attr.keyVisible )
+                    field->SetText( attr.key );
+                else
+                    field->SetText( attr.value );
+
+                field->SetVisible( attr.keyVisible || attr.valVisible );
+
+                PCB_LAYER_ID attrLayer = m_v2Parser.LayerToKi( attr.layer );
+                field->SetLayer( attrLayer );
+
+                if( attr.hasPos )
+                {
+                    field->SetPosition( PCB_IO_EASYEDAPRO_PARSER::ScalePos( VECTOR2D( attr.x, attr.y ) ) );
+                }
+
+                field->SetKeepUpright( false );
+                field->SetTextAngleDegrees( footprint->IsFlipped() ? -attr.angle : attr.angle );
+                field->SetIsKnockout( attr.inverted );
+                field->SetTextThickness( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( attr.strokeWidth ) );
+                field->SetTextSize( VECTOR2D( PCB_IO_EASYEDAPRO_PARSER::ScaleSize( attr.fontSize * 0.55 ),
+                                              PCB_IO_EASYEDAPRO_PARSER::ScaleSize( attr.fontSize * 0.6 ) ) );
+
+                int alignCode = V3AlignToOriginCode( attr.origin );
+                V3AlignText( field, alignCode );
+            }
+        }
+
+        // Apply pad nets
+        auto padNetRange = padNetMap.equal_range( compId );
+
+        for( auto pnIt = padNetRange.first; pnIt != padNetRange.second; ++pnIt )
+        {
+            const PAD_NET_DATA& pn = pnIt->second;
+
+            for( PAD* pad : footprint->Pads() )
+            {
+                if( pad->GetNumber() == pn.padNumber )
+                    pad->SetNet( aBoard->FindNet( pn.padNet ) );
+            }
+        }
+
+        aBoard->Add( footprint.release(), ADD_MODE::APPEND );
+    }
+
+    // Set zone fills from POURED data
+    if( EASYEDAPRO::IMPORT_POURED )
+    {
+        for( auto& [uuid, zone] : poursToFill )
+        {
+            SHAPE_POLY_SET fillPolySet;
+            SHAPE_POLY_SET thermalSpokes;
+
+            auto range = boardPouredMap.equal_range( uuid );
+
+            for( auto& pIt = range.first; pIt != range.second; ++pIt )
+            {
+                const EASYEDAPRO::POURED& poured = pIt->second;
+
+                SHAPE_POLY_SET thisPoly;
+
+                for( int dataId = 0; dataId < static_cast<int>( poured.polyData.size() ); dataId++ )
+                {
+                    const nlohmann::json& fillData = poured.polyData[dataId];
+                    const double          ptScale = 10;
+
+                    SHAPE_LINE_CHAIN contour = m_v2Parser.ParseContour( fillData, false, ARC_HIGH_DEF / ptScale );
+
+                    // Scale the fill
+                    for( int i = 0; i < contour.PointCount(); i++ )
+                        contour.SetPoint( i, contour.GetPoint( i ) * ptScale );
+
+                    if( poured.isPoly )
+                    {
+                        contour.SetClosed( true );
+
+                        // The contour can be self-intersecting
+                        SHAPE_POLY_SET simple( contour );
+                        simple.Simplify();
+
+                        if( dataId == 0 )
+                        {
+                            thisPoly.Append( simple );
+                        }
+                        else
+                        {
+                            thisPoly.BooleanSubtract( simple );
+                        }
+                    }
+                    else
+                    {
+                        const int thermalWidth = pcbIUScale.mmToIU( 0.2 );
+
+                        for( int segId = 0; segId < contour.SegmentCount(); segId++ )
+                        {
+                            const SEG& seg = contour.CSegment( segId );
+
+                            TransformOvalToPolygon( thermalSpokes, seg.A, seg.B, thermalWidth, ARC_HIGH_DEF,
+                                                    ERROR_INSIDE );
+                        }
+                    }
+                }
+
+                fillPolySet.Append( thisPoly );
+            }
+
+            if( !fillPolySet.IsEmpty() )
+            {
+                fillPolySet.Simplify();
+
+                const int strokeWidth = pcbIUScale.MilsToIU( 8 );
+
+                fillPolySet.Inflate( strokeWidth / 2, CORNER_STRATEGY::ROUND_ALL_CORNERS, ARC_HIGH_DEF, false );
+
+                fillPolySet.BooleanAdd( thermalSpokes );
+                fillPolySet.Fracture();
+
+                zone->SetFilledPolysList( zone->GetFirstLayer(), fillPolySet );
+                zone->SetNeedRefill( false );
+                zone->SetIsFilled( true );
+            }
+        }
+    }
+
+    // Heal board outlines
+    std::vector<PCB_SHAPE*> shapes;
+
+    for( BOARD_ITEM* item : aBoard->Drawings() )
+    {
+        if( !item->IsOnLayer( Edge_Cuts ) )
+            continue;
+
+        if( item->Type() == PCB_SHAPE_T )
+            shapes.push_back( static_cast<PCB_SHAPE*>( item ) );
+    }
+
+    ConnectBoardShapes( shapes, SHAPE_JOIN_DISTANCE );
+
+    // Center the board
+    BOX2I     outlineBbox = aBoard->ComputeBoundingBox( true );
+    PAGE_INFO pageInfo = aBoard->GetPageSettings();
+
+    VECTOR2D pageCenter( pcbIUScale.MilsToIU( pageInfo.GetWidthMils() / 2 ),
+                         pcbIUScale.MilsToIU( pageInfo.GetHeightMils() / 2 ) );
+
+    VECTOR2D offset = pageCenter - outlineBbox.GetCenter();
+
+    int alignGrid = pcbIUScale.mmToIU( 10 );
+    offset.x = KiROUND( offset.x / alignGrid ) * alignGrid;
+    offset.y = KiROUND( offset.y / alignGrid ) * alignGrid;
+
+    aBoard->Move( offset );
+    bds.SetAuxOrigin( offset );
+}

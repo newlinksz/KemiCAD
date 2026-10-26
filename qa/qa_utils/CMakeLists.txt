@@ -1,0 +1,86 @@
+# This program source code file is part of KiCad, a free EDA CAD application.
+#
+# Copyright (C) 2023 KiCad Developers, see AUTHORS.txt for contributors.
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+set( QA_UTIL_COMMON_SRC
+    stdstream_line_reader.cpp
+    utility_program.cpp
+    error_handlers.cpp
+
+    env_var_utils.cpp
+    file_utils.cpp
+    mock_utils.cpp
+    uuid_test_utils.cpp
+
+    geometry/geometry.cpp
+    geometry/line_chain_construction.cpp
+    geometry/poly_set_construction.cpp
+    geometry/seg_construction.cpp
+
+    wx_utils/unit_test_utils.cpp
+    wx_utils/wx_assert.cpp
+
+    # Format testing helpers
+    pdf_test_utils.cpp
+    svg_test_utils.cpp
+)
+
+# A generic library of useful functions for various testing purposes
+add_library( qa_utils STATIC
+    ${QA_UTIL_COMMON_SRC}
+)
+
+include_directories( BEFORE ${INC_BEFORE} )
+
+# for some obscure reason, on mingw/msys2 Boost::unit_test_framework does not work
+# So use the actual lib filename:
+if( MINGW )
+    set( LIBBOOST_UNIT_TEST_LIB libboost_unit_test_framework-mt )
+endif()
+
+target_link_libraries( qa_utils
+    common
+    turtle
+    Boost::headers
+    Boost::unit_test_framework
+    ${wxWidgets_LIBRARIES}
+    ${LIBBOOST_UNIT_TEST_LIB}
+)
+
+# Pass in the default data location
+set_source_files_properties( wx_utils/unit_test_utils.cpp PROPERTIES
+    COMPILE_DEFINITIONS "QA_DATA_ROOT=(\"${CMAKE_SOURCE_DIR}/qa/data\")"
+)
+
+target_include_directories( qa_utils PUBLIC
+    include
+)
+
+target_compile_definitions( qa_utils PUBLIC
+    BOOST_TEST_DYN_LINK
+)
+
+# Some tests need to reach into the native Gtk/Gdk headers on GTK builds.
+# Examples:
+#  - test_print_to_file.cpp reaches into GtkPrintSettings to reset the print-to-file setting
+#  - CanDoDisplayTests needs GdkDisplay
+if( KICAD_WX_PORT STREQUAL "gtk" )
+    find_package( PkgConfig REQUIRED )
+    pkg_check_modules( GTK3 REQUIRED gtk+-3.0 )
+    target_include_directories( qa_utils
+        SYSTEM PUBLIC ${GTK3_INCLUDE_DIRS}
+    )
+endif()

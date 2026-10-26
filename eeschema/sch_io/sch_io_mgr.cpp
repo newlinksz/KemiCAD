@@ -1,0 +1,376 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright (C) 2016 CERN
+ * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
+ *
+ * @author Wayne Stambaugh <stambaughw@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <memory>
+
+#include <wx/filename.h>
+#include <wx/uri.h>
+
+#include <sch_io/sch_io_mgr.h>
+#include <sch_io/eagle/sch_io_eagle.h>
+#include <sch_io/kicad_legacy/sch_io_kicad_legacy.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
+
+#include <sch_io/altium/sch_io_altium.h>
+#include <sch_io/cadstar/sch_io_cadstar_archive.h>
+#include <sch_io/easyeda/sch_io_easyeda.h>
+#include <sch_io/easyedapro/sch_io_easyedapro.h>
+#include <sch_io/easyedapro/sch_io_easyedapro_v3.h>
+#include <sch_io/geda/sch_io_geda.h>
+#include <sch_io/database/sch_io_database.h>
+#include <sch_io/ltspice/sch_io_ltspice.h>
+#include <sch_io/http_lib/sch_io_http_lib.h>
+#include <sch_io/pads/sch_io_pads.h>
+#include <sch_io/diptrace/sch_io_diptrace.h>
+#include <sch_io/pcad/sch_io_pcad.h>
+#include <sch_io/orcad/sch_io_orcad.h>
+#include <sch_io/easypc/sch_io_easypc.h>
+#include <sch_io/target3001/sch_io_target3001.h>
+#include <common.h>     // for ExpandEnvVarSubstitutions
+#include <ki_exception.h>
+
+#include <wildcards_and_files_ext.h>
+#include <kiway_player.h>
+#include <string_utils.h>
+#include <libraries/library_table_parser.h>
+
+#define FMT_UNIMPLEMENTED   _( "Plugin '%s' does not implement the '%s' function." )
+#define FMT_NOTFOUND        _( "Plugin type '%s' is not found." )
+
+
+
+// Some day plugins might be in separate DLL/DSOs, simply because of numbers of them
+// and code size.  Until then, use the simplest method:
+
+// This implementation is one of two which could be done.
+// The other one would cater to DLL/DSO's.  But since it would be nearly
+// impossible to link a KICAD type DLL/DSO right now without pulling in all
+// ::Draw() functions, I forgo that option temporarily.
+
+// Some day it may be possible to have some built in AND some DLL/DSO
+// plugins coexisting.
+
+
+SCH_IO* SCH_IO_MGR::FindPlugin( SCH_FILE_T aFileType )
+{
+    // This implementation is subject to change, any magic is allowed here.
+    // The public SCH_IO_MGR API is the only pertinent public information.
+
+    switch( aFileType )
+    {
+    case SCH_KICAD:           return new SCH_IO_KICAD_SEXPR();
+    case SCH_LEGACY:          return new SCH_IO_KICAD_LEGACY();
+    case SCH_ALTIUM:          return new SCH_IO_ALTIUM();
+    case SCH_CADSTAR_ARCHIVE: return new SCH_IO_CADSTAR_ARCHIVE();
+    case SCH_DATABASE:        return new SCH_IO_DATABASE();
+    case SCH_EAGLE:           return new SCH_IO_EAGLE();
+    case SCH_EASYEDA:         return new SCH_IO_EASYEDA();
+    case SCH_EASYEDAPRO:      return new SCH_IO_EASYEDAPRO();
+    case SCH_EASYEDAPRO_V3:   return new SCH_IO_EASYEDAPRO_V3();
+    case SCH_GEDA:            return new SCH_IO_GEDA();
+    case SCH_LTSPICE:         return new SCH_IO_LTSPICE();
+    case SCH_HTTP:            return new SCH_IO_HTTP_LIB();
+    case SCH_PADS:            return new SCH_IO_PADS();
+    case SCH_DIPTRACE:        return new SCH_IO_DIPTRACE();
+    case SCH_PCAD:            return new SCH_IO_PCAD();
+    case SCH_ORCAD:           return new SCH_IO_ORCAD();
+    case SCH_EASYPC:          return new SCH_IO_EASYPC();
+    case SCH_TARGET3001:      return new SCH_IO_TARGET3001();
+    default:                  return nullptr;
+    }
+}
+
+
+const wxString SCH_IO_MGR::ShowType( SCH_FILE_T aFileType )
+{
+    // keep this function in sync with EnumFromStr() relative to the
+    // text spellings.  If you change the spellings, you will obsolete
+    // library tables, so don't do change, only additions are ok.
+
+    switch( aFileType )
+    {
+    case SCH_KICAD:           return wxString( wxT( "KiCad" ) );
+    case SCH_LEGACY:          return wxString( wxT( "Legacy" ) );
+    case SCH_ALTIUM:          return wxString( wxT( "Altium" ) );
+    case SCH_CADSTAR_ARCHIVE: return wxString( wxT( "CADSTAR Schematic Archive" ) );
+    case SCH_DATABASE:        return wxString( wxT( "Database" ) );
+    case SCH_EAGLE:           return wxString( wxT( "EAGLE" ) );
+    case SCH_EASYEDA:         return wxString( wxT( "EasyEDA (JLCEDA) Std" ) );
+    case SCH_EASYEDAPRO:      return wxString( wxT( "EasyEDA (JLCEDA) Pro" ) );
+    case SCH_EASYEDAPRO_V3: return wxString( wxT( "EasyEDA (JLCEDA) Pro v3" ) );
+    case SCH_GEDA:            return wxString( wxT( "gEDA / Lepton EDA" ) );
+    case SCH_LTSPICE:         return wxString( wxT( "LTspice" ) );
+    case SCH_HTTP:            return wxString( wxT( "HTTP" ) );
+    case SCH_PADS:            return wxString( wxT( "PADS Logic" ) );
+    case SCH_DIPTRACE:        return wxString( wxT( "DipTrace" ) );
+    case SCH_PCAD:            return wxString( wxT( "P-CAD" ) );
+    case SCH_ORCAD:           return wxString( wxT( "OrCAD" ) );
+    case SCH_EASYPC:          return wxString( wxT( "Easy-PC" ) );
+    case SCH_TARGET3001:      return wxString( wxT( "TARGET 3001!" ) );
+    case SCH_NESTED_TABLE:    return LIBRARY_TABLE_ROW::TABLE_TYPE_NAME;
+    default:                  return wxString::Format( _( "Unknown SCH_FILE_T value: %d" ), aFileType );
+    }
+}
+
+
+SCH_IO_MGR::SCH_FILE_T SCH_IO_MGR::EnumFromStr( const wxString& aType )
+{
+    // keep this function in sync with ShowType() relative to the
+    // text spellings.  If you change the spellings, you will obsolete
+    // library tables, so don't do change, only additions are ok.
+
+    if( aType == wxT( "KiCad" ) )
+        return SCH_KICAD;
+    else if( aType == wxT( "Legacy" ) )
+        return SCH_LEGACY;
+    else if( aType == wxT( "Altium" ) )
+        return SCH_ALTIUM;
+    else if( aType == wxT( "CADSTAR Schematic Archive" ) )
+        return SCH_CADSTAR_ARCHIVE;
+    else if( aType == wxT( "Database" ) )
+        return SCH_DATABASE;
+    else if( aType == wxT( "EAGLE" ) )
+        return SCH_EAGLE;
+    else if( aType == wxT( "EasyEDA (JLCEDA) Std" ) )
+        return SCH_EASYEDA;
+    else if( aType == wxT( "EasyEDA (JLCEDA) Pro" ) )
+        return SCH_EASYEDAPRO;
+    else if( aType == wxT( "EasyEDA (JLCEDA) Pro v3" ) )
+        return SCH_EASYEDAPRO_V3;
+    else if( aType == wxT( "gEDA / Lepton EDA" ) )
+        return SCH_GEDA;
+    else if( aType == wxT( "LTspice" ) )
+        return SCH_LTSPICE;
+    else if( aType == wxT( "HTTP" ) )
+        return SCH_HTTP;
+    else if( aType == wxT( "PADS Logic" ) )
+        return SCH_PADS;
+    else if( aType == wxT( "DipTrace" ) )
+        return SCH_DIPTRACE;
+    else if( aType == wxT( "P-CAD" ) )
+        return SCH_PCAD;
+    else if( aType == wxT( "OrCAD" ) )
+        return SCH_ORCAD;
+    else if( aType == wxT( "Easy-PC" ) )
+        return SCH_EASYPC;
+    else if( aType == wxT( "TARGET 3001!" ) )
+        return SCH_TARGET3001;
+    else if( aType == LIBRARY_TABLE_ROW::TABLE_TYPE_NAME )
+        return SCH_NESTED_TABLE;
+
+    return SCH_FILE_UNKNOWN;
+}
+
+
+SCH_IO_MGR::SCH_FILE_T SCH_IO_MGR::GuessPluginTypeFromLibPath( const wxString& aLibPath, int aCtl )
+{
+    LIBRARY_TABLE_PARSER parser;
+
+    if( parser.Parse( aLibPath.ToStdString() ).has_value() )
+        return SCH_NESTED_TABLE;
+
+    for( const SCH_IO_MGR::SCH_FILE_T& fileType : SCH_IO_MGR::SCH_FILE_T_vector )
+    {
+        bool isKiCad = fileType == SCH_IO_MGR::SCH_KICAD || fileType == SCH_IO_MGR::SCH_LEGACY;
+
+        if( ( aCtl & KICTL_KICAD_ONLY ) && !isKiCad )
+            continue;
+
+        if( ( aCtl & KICTL_NONKICAD_ONLY ) && isKiCad )
+            continue;
+
+        IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( fileType ) );
+
+        if( !pi )
+            continue;
+
+        // For SCH_IO_MGR::SCH_KICAD and KICTL_CREATE option is set, use SCH_IO::CanReadLibrary()
+        // here instead  of SCH_IO_KICAD_SEXPR::CanReadLibrary because aLibPath perhaps
+        // does notexist, and we need to use the version that does not test the existence
+        // of the file, just know if aLibPath file type can be handled.
+        if( fileType == SCH_IO_MGR::SCH_KICAD && ( aCtl & KICTL_CREATE ) )
+        {
+            if( pi->SCH_IO::CanReadLibrary( aLibPath ) )    // Test only the file ext
+                return fileType;
+        }
+        else
+        {
+            // Other lib types must be tested using the specific CanReadLibrary() and
+            // in some cases need to read the file
+            if( pi->CanReadLibrary( aLibPath ) )
+                return fileType;
+        }
+    }
+
+    return SCH_IO_MGR::SCH_FILE_UNKNOWN;
+}
+
+
+SCH_IO_MGR::SCH_FILE_T SCH_IO_MGR::GuessPluginTypeFromSchPath( const wxString& aSchematicPath, int aCtl )
+{
+    for( const SCH_IO_MGR::SCH_FILE_T& fileType : SCH_IO_MGR::SCH_FILE_T_vector )
+    {
+        bool isKiCad = fileType == SCH_IO_MGR::SCH_KICAD || fileType == SCH_IO_MGR::SCH_LEGACY;
+
+        if( ( aCtl & KICTL_KICAD_ONLY ) && !isKiCad )
+            continue;
+
+        if( ( aCtl & KICTL_NONKICAD_ONLY ) && isKiCad )
+            continue;
+
+        IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( fileType ) );
+
+        if( !pi )
+            continue;
+
+        if( pi->CanReadSchematicFile( aSchematicPath ) )
+            return fileType;
+    }
+
+    return SCH_IO_MGR::SCH_FILE_UNKNOWN;
+}
+
+
+bool SCH_IO_MGR::ConvertLibrary( std::map<std::string, UTF8>* aOldFileProps, const wxString& aOldFilePath,
+                                 const wxString& aNewFilepath, REPORTER* aReporter )
+{
+    auto report = [&]( const wxString& aMessage, SEVERITY aSeverity )
+    {
+        if( aReporter )
+            aReporter->Report( aMessage, aSeverity );
+    };
+
+    SCH_IO_MGR::SCH_FILE_T oldFileType = SCH_IO_MGR::GuessPluginTypeFromLibPath( aOldFilePath );
+
+    if( oldFileType == SCH_IO_MGR::SCH_FILE_UNKNOWN )
+    {
+        report( _( "Unrecognized library type" ), RPT_SEVERITY_ERROR );
+        return false;
+    }
+
+    // A nested library table has no plugin to enumerate it; reject it before the null-plugin
+    // path below.
+    if( oldFileType == SCH_IO_MGR::SCH_NESTED_TABLE )
+        return false;
+
+    // Live backends are not convertible to a static .kicad_sym snapshot.  HTTP requires a
+    // library manager adapter that ConvertLibrary cannot provide, and DATABASE has the same
+    // semantic mismatch.  Without this guard the call silently produces an empty library.
+    if( oldFileType == SCH_IO_MGR::SCH_HTTP || oldFileType == SCH_IO_MGR::SCH_DATABASE )
+        return false;
+
+    IO_RELEASER<SCH_IO> oldFilePI( SCH_IO_MGR::FindPlugin( oldFileType ) );
+    IO_RELEASER<SCH_IO> kicadPI( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+
+    if( !oldFilePI || !kicadPI )
+        return false;
+
+    if( aReporter )
+        oldFilePI->SetReporter( aReporter );
+
+    std::vector<LIB_SYMBOL*>                 symbols;
+    std::vector<std::unique_ptr<LIB_SYMBOL>> newSymbols;
+    std::map<LIB_SYMBOL*, LIB_SYMBOL*>       symbolMap;
+
+    report( wxString::Format( _( "Loading symbol library '%s'" ), aOldFilePath ), RPT_SEVERITY_ACTION );
+
+    try
+    {
+        oldFilePI->EnumerateSymbolLib( symbols, aOldFilePath, aOldFileProps );
+
+        // Copy non-derived symbols first, so we can build a map from symbols to newSymbols
+        for( LIB_SYMBOL* symbol : symbols )
+        {
+            if( symbol->IsDerived() )
+                continue;
+
+            symbol->SetName( EscapeString( symbol->GetName(), CTX_LIBID ) );
+
+            newSymbols.push_back( std::make_unique<LIB_SYMBOL>( *symbol ) );
+            symbolMap[symbol] = newSymbols.back().get();
+        }
+
+        // Now do the derived symbols using the map to hook them up to their newSymbol parents
+        for( LIB_SYMBOL* symbol : symbols )
+        {
+            if( !symbol->IsDerived() )
+                continue;
+
+            symbol->SetName( EscapeString( symbol->GetName(), CTX_LIBID ) );
+
+            newSymbols.push_back( std::make_unique<LIB_SYMBOL>( *symbol ) );
+            newSymbols.back()->SetParent( symbolMap[ symbol->GetParent().lock().get() ] );
+        }
+
+        // Create a blank library
+        kicadPI->SaveLibrary( aNewFilepath );
+    }
+    catch( const IO_ERROR& io_err )
+    {
+        report( wxString::Format( _( "Library '%s' Convert err: \"%s\"" ), aOldFilePath, io_err.What() ),
+                RPT_SEVERITY_ERROR );
+        return false;
+    }
+    catch( const std::exception& e )
+    {
+        report( wxString::Format( _( "Error loading library '%s': %s" ), aOldFilePath, e.what() ), RPT_SEVERITY_ERROR );
+        return false;
+    }
+    catch( ... )
+    {
+        report( wxString::Format( _( "Error loading library '%s': unknown error" ), aOldFilePath ),
+                RPT_SEVERITY_ERROR );
+        return false;
+    }
+
+    bool ok = true;
+
+    for( std::unique_ptr<LIB_SYMBOL>& symbol : newSymbols )
+    {
+        const wxString symbolName = symbol->GetName();
+
+        try
+        {
+            kicadPI->SaveSymbol( aNewFilepath, std::move( symbol ) );
+        }
+        catch( const IO_ERROR& io_err )
+        {
+            report( wxString::Format( _( "Error saving symbol '%s': %s" ), symbolName, io_err.What() ),
+                    RPT_SEVERITY_ERROR );
+            ok = false;
+        }
+        catch( const std::exception& e )
+        {
+            report( wxString::Format( _( "Error saving symbol '%s': %s" ), symbolName, e.what() ),
+                    RPT_SEVERITY_ERROR );
+            ok = false;
+        }
+        catch( ... )
+        {
+            report( wxString::Format( _( "Error saving symbol '%s': unknown error" ), symbolName ),
+                    RPT_SEVERITY_ERROR );
+            ok = false;
+        }
+    }
+
+    return ok;
+}

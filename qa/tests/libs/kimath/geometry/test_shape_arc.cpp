@@ -1,0 +1,1716 @@
+/*
+ * This program source code file is part of KiCad, a free EDA CAD application.
+ *
+ * Copyright The KiCad Developers, see AUTHORS.TXT for contributors.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <qa_utils/wx_utils/unit_test_utils.h>
+#include <boost/test/data/test_case.hpp>
+
+#include <limits>
+
+#include <convert_basic_shapes_to_polygon.h>
+#include <geometry/shape_arc.h>
+#include <geometry/shape_circle.h>
+#include <geometry/shape_line_chain.h>
+#include <geometry/shape_segment.h>
+#include <geometry/shape_simple.h>
+#include <trigo.h>
+
+#include <qa_utils/geometry/geometry.h>
+#include <qa_utils/numeric.h>
+
+#include "geom_test_utils.h"
+
+BOOST_AUTO_TEST_SUITE( ShapeArc )
+
+/**
+ * All properties of an arc (depending on how it's constructed, some of these
+ * might be the same as the constructor params)
+ */
+struct ARC_PROPERTIES
+{
+    VECTOR2I m_center_point;
+    VECTOR2I m_start_point;
+    VECTOR2I m_end_point;
+    double   m_center_angle;
+    double   m_start_angle;
+    double   m_end_angle;
+    int      m_radius;
+    BOX2I    m_bbox;
+};
+
+/**
+ * Check a #SHAPE_ARC against a given set of geometric properties
+ * @param aArc Arc to test
+ * @param aProps Properties to test against
+ * @param aSynErrIU Permitted error for synthetic points and dimensions (currently radius and center)
+ */
+static void CheckArcGeom( const SHAPE_ARC& aArc, const ARC_PROPERTIES& aProps, const int aSynErrIU = 1 )
+{
+    // Angular error - note this can get quite large for very small arcs,
+    // as the integral position rounding has a relatively greater effect
+    const double angle_tol_deg = 2.0;
+
+    // Position error - rounding to nearest integer
+    const int pos_tol = 1;
+
+    BOOST_CHECK_PREDICATE( KI_TEST::IsVecWithinTol<VECTOR2I>,
+            ( aProps.m_start_point )( aProps.m_start_point )( pos_tol ) );
+
+    BOOST_CHECK_PREDICATE( KI_TEST::IsVecWithinTol<VECTOR2I>,
+            ( aArc.GetP1() )( aProps.m_end_point )( pos_tol ) );
+
+    BOOST_CHECK_PREDICATE( KI_TEST::IsVecWithinTol<VECTOR2I>,
+            ( aArc.GetCenter() )( aProps.m_center_point )( aSynErrIU ) );
+
+    BOOST_CHECK_PREDICATE( KI_TEST::IsWithinWrapped<double>,
+            ( aArc.GetCentralAngle().AsDegrees() )( aProps.m_center_angle )( 360.0 )( angle_tol_deg ) );
+
+    BOOST_CHECK_PREDICATE( KI_TEST::IsWithinWrapped<double>,
+            ( aArc.GetStartAngle().AsDegrees() )( aProps.m_start_angle )( 360.0 )( angle_tol_deg ) );
+
+    BOOST_CHECK_PREDICATE( KI_TEST::IsWithinWrapped<double>,
+            ( aArc.GetEndAngle().AsDegrees() )( aProps.m_end_angle )( 360.0 )( angle_tol_deg ) );
+
+    BOOST_CHECK_PREDICATE( KI_TEST::IsWithin<double>,
+            ( aArc.GetRadius() )( aProps.m_radius )( aSynErrIU ) );
+
+    // Angle normalization contracts
+    BOOST_TEST( aArc.GetStartAngle().AsDegrees() >= 0.0 );
+    BOOST_TEST( aArc.GetStartAngle().AsDegrees() <= 360.0 );
+
+    BOOST_TEST( aArc.GetEndAngle().AsDegrees() >= 0.0 );
+    BOOST_TEST( aArc.GetEndAngle().AsDegrees() <= 360.0 );
+
+    BOOST_TEST( aArc.GetCentralAngle().AsDegrees() >= -360.0 );
+    BOOST_TEST( aArc.GetCentralAngle().AsDegrees() <= 360.0 );
+
+    /// Check the chord agrees
+    const SEG chord = aArc.GetChord();
+
+    BOOST_CHECK_PREDICATE( KI_TEST::IsVecWithinTol<VECTOR2I>,
+            ( chord.A )( aProps.m_start_point )( pos_tol ) );
+
+    BOOST_CHECK_PREDICATE( KI_TEST::IsVecWithinTol<VECTOR2I>,
+            ( chord.B )( aProps.m_end_point )( pos_tol ) );
+
+    /// All arcs are solid
+    BOOST_CHECK_EQUAL( aArc.IsSolid(), true );
+
+    BOOST_CHECK_PREDICATE( KI_TEST::IsBoxWithinTol<BOX2I>,
+            ( aArc.BBox() )( aProps.m_bbox )( pos_tol ) );
+
+    /// Collisions will be checked elsewhere.
+}
+
+
+/**
+ * Check an arcs geometry and other class functions
+ * @param aArc Arc to test
+ * @param aProps Properties to test against
+ * @param aSynErrIU Permitted error for synthetic points and dimensions (currently radius and center)
+ */
+static void CheckArc( const SHAPE_ARC& aArc, const ARC_PROPERTIES& aProps, const int aSynErrIU = 1 )
+{
+    // Check the original arc
+    CheckArcGeom( aArc, aProps, aSynErrIU );
+
+    // Test the Clone function (also tests copy-ctor)
+    std::unique_ptr<SHAPE> new_shape{ aArc.Clone() };
+
+    BOOST_REQUIRE_EQUAL( new_shape->Type(), SH_ARC );
+
+    SHAPE_ARC* new_arc = dynamic_cast<SHAPE_ARC*>( new_shape.get() );
+
+    BOOST_REQUIRE( new_arc != nullptr );
+
+    /// Should have identical geom props
+    CheckArcGeom( *new_arc, aProps, aSynErrIU );
+}
+
+/**
+ * Check correct handling of filter strings (as used by WX)
+ */
+BOOST_AUTO_TEST_CASE( NullCtor )
+{
+    auto arc = SHAPE_ARC();
+
+    BOOST_CHECK_EQUAL( arc.GetWidth(), 0 );
+
+    static ARC_PROPERTIES null_props{
+        { 0, 0 },
+        { 0, 0 },
+        { 0, 0 },
+        0,
+        0,
+        0,
+        0,
+    };
+
+    CheckArc( arc, null_props );
+}
+
+
+/**
+ * Info to set up an arc by start, mid and end points
+ */
+struct ARC_START_MID_END
+{
+    VECTOR2I m_start_point;
+    VECTOR2I m_mid_point;
+    VECTOR2I m_end_point;
+};
+
+struct ARC_SME_CASE : public KI_TEST::NAMED_CASE
+{
+    /// Geom of the arc
+    ARC_START_MID_END m_geom;
+
+    /// Arc line width
+    int m_width;
+
+    /// Expected properties
+    ARC_PROPERTIES m_properties;
+};
+
+
+static const std::vector<ARC_SME_CASE> arc_sme_cases = {
+    {
+            "S(-100,0), M(0,100), E(100,0)",
+            {
+                    { -100, 0 },
+                    { 0, 100 },
+                    { 100, 0 },
+            },
+            0,
+            {
+                    { 0, 0 },
+                    { -100, 0 },
+                    { 100, 0 },
+                    180,
+                    180,
+                    0,
+                    100,
+                    { { -100, 0 }, { 200, 100 } },
+            },
+    },
+    {
+            "S(100,0), M(0,100), E(-100,0) (reversed)",
+            {
+                    { 100, 0 },
+                    { 0, 100 },
+                    { -100, 0 },
+            },
+            0,
+            {
+                    { 0, 0 },
+                    { 100, 0 },
+                    { -100, 0 },
+                    -180,
+                    0,
+                    180,
+                    100,
+                    { { -100, 0 }, { 200, 100 } },
+            },
+    },
+    {
+            // This data has a midpoint not exactly at the midway point of the arc.
+            // This should be corrected by the constructor.
+            // The mid point should be at about (-71, -71) for a 270 degree arc, with the
+            // bottom right quadrant open.
+            "S(100,0), M(-100,0), E(0,100) (bad midpoint)",
+            {
+                    { 100, 0 },
+                    { -100, 0 },
+                    { 0, 100 },
+            },
+            0,
+            {
+                    { 0, 0 },
+                    { 100, 0 },
+                    { 0, 100 },
+                    -270,
+                    0,
+                    90,
+                    100,
+                    { { -100, -100 }, { 200, 200 } },
+            },
+    }
+};
+
+
+BOOST_DATA_TEST_CASE( BasicSMEGeom, boost::unit_test::data::make( arc_sme_cases ), c )
+{
+    const SHAPE_ARC this_arc{
+        c.m_geom.m_start_point,
+        c.m_geom.m_mid_point,
+        c.m_geom.m_end_point,
+        c.m_width,
+    };
+
+    CheckArc( this_arc, c.m_properties );
+}
+
+
+/**
+ * Info to set up an arc by centre, start point and angle
+ */
+struct ARC_CENTRE_PT_ANGLE
+{
+    VECTOR2I m_center_point;
+    VECTOR2I m_start_point;
+    double   m_center_angle;
+};
+
+
+struct ARC_CPA_CASE : public KI_TEST::NAMED_CASE
+{
+    /// Geom of the arc
+    ARC_CENTRE_PT_ANGLE m_geom;
+
+    /// Arc line width
+    int m_width;
+
+    /// Expected properties
+    ARC_PROPERTIES m_properties;
+};
+
+
+static const std::vector<ARC_CPA_CASE> arc_cases = {
+    {
+            "C(0,0) 114 + 360 degree",
+            {
+                    { 0, 0 },
+                    { -306451, 687368 },
+                    360,
+            },
+            0,
+            {
+                    { 0, 0 },
+                    { -306451, 687368 },
+                    { -306451, 687368 },
+                    360,
+                    113.95929,
+                    113.95929,
+                    752587,
+                    { { -752587, -752587 }, { 1505174, 1505174 } },
+            },
+    },
+    {
+            "C(0,0) 180 + 360 degree",
+            {
+                    { 0, 0 },
+                    { -100, 0 },
+                    360,
+            },
+            0,
+            {
+                    { 0, 0 },
+                    { -100, 0 },
+                    { -100, 0 },
+                    360,
+                    180,
+                    180,
+                    100,
+                    { { -100, -100 }, { 200, 200 } },
+            },
+    },
+    {
+            "C(0,0) 180 + 90 degree",
+            {
+                    { 0, 0 },
+                    { -100, 0 },
+                    90,
+            },
+            0,
+            {
+                    { 0, 0 },
+                    { -100, 0 },
+                    { 0, -100 },
+                    90,
+                    180,
+                    270,
+                    100,
+                    { { -100, -100 }, { 100, 100 } },
+            },
+    },
+    {
+            "C(100,200)  0 - 30 degree",
+            {
+                    { 100, 200 },
+                    { 300, 200 },
+                    -30,
+            },
+            0,
+            {
+                    { 100, 200 },
+                    { 300, 200 },
+                    { 273, 100 }, // 200 * sin(30) = 100, 200* cos(30) = 173
+                    -30,
+                    0,
+                    330,
+                    200,
+                    { { 273, 100 }, { 27, 100 } },
+            },
+    },
+    {
+            // This is a "fan shape" which includes the top quadrant point,
+            // so it exercises the bounding box code (centre and end points
+            // do not contain the top quadrant)
+            "C(0,0) 30 + 120 degree",
+            {
+                    { 0, 0 },
+                    { 17320, 10000 },
+                    120,
+            },
+            0,
+            {
+                    { 0, 0 },
+                    { 17320, 10000 },
+                    { -17320, 10000 }, // 200 * sin(30) = 100, 200* cos(30) = 173
+                    120,
+                    30,
+                    150,
+                    20000,
+                    // bbox defined by: centre, top quadrant point, two endpoints
+                    { { -17320, 10000 }, { 17320 * 2, 10000 } },
+            },
+    },
+    {
+            // An arc that covers three quadrant points (L/R, bottom)
+            "C(0,0) 150 + 240 degree",
+            {
+                    { 0, 0 },
+                    { -17320, 10000 },
+                    240,
+            },
+            0,
+            {
+                    { 0, 0 },
+                    { -17320, 10000 },
+                    { 17320, 10000 },
+                    240,
+                    150,
+                    30,
+                    20000,
+                    // bbox defined by: L/R quads, bottom quad and start/end
+                    { { -20000, -20000 }, { 40000, 30000 } },
+            },
+    },
+    {
+            // Same as above but reverse direction
+            "C(0,0) 30 - 300 degree",
+            {
+                    { 0, 0 },
+                    { 17320, 10000 },
+                    -240,
+            },
+            0,
+            {
+                    { 0, 0 },
+                    { 17320, 10000 },
+                    { -17320, 10000 },
+                    -240,
+                    30,
+                    150,
+                    20000,
+                    // bbox defined by: L/R quads, bottom quad and start/end
+                    { { -20000, -20000 }, { 40000, 30000 } },
+            },
+    },
+};
+
+
+BOOST_DATA_TEST_CASE( BasicCPAGeom, boost::unit_test::data::make( arc_cases ), c )
+{
+    const SHAPE_ARC this_arc{
+        c.m_geom.m_center_point,
+        c.m_geom.m_start_point,
+        EDA_ANGLE( c.m_geom.m_center_angle, DEGREES_T ),
+        c.m_width,
+    };
+
+    CheckArc( this_arc, c.m_properties );
+}
+
+
+
+/**
+ * Info to set up an arc by tangent to two segments and a radius
+ */
+struct ARC_TAN_TAN_RADIUS
+{
+    SEG m_segment_1;
+    SEG m_segment_2;
+    int m_radius;
+};
+
+
+struct ARC_TTR_CASE : public KI_TEST::NAMED_CASE
+{
+    /// Geom of the arc
+    ARC_TAN_TAN_RADIUS m_geom;
+
+    /// Arc line width
+    int m_width;
+
+    /// Expected properties
+    ARC_PROPERTIES m_properties;
+};
+
+
+static const std::vector<ARC_TTR_CASE> arc_ttr_cases = {
+    {
+            "90 degree segments intersecting",
+            {
+                    { 0, 0, 0, 1000 },
+                    { 0, 0, 1000, 0 },
+                    1000,
+            },
+            0,
+            {
+                    { 1000, 1000 },
+                    { 0, 1000 },    //start on first segment
+                    { 1000, 0 },    //end on second segment
+                    90,             //positive angle due to start/end
+                    180,
+                    270,
+                    1000,
+                    { { 0, 0 }, { 1000, 1000 } },
+            }
+    },
+    {
+            "45 degree segments intersecting",
+            {
+                    { 0, 0, 0, 1000 },
+                    { 0, 0, 1000, 1000 },
+                    1000,
+            },
+            0,
+            {
+                    { 1000, 2414 },
+                    { 0, 2414 },       //start on first segment
+                    { 1707, 1707 },    //end on second segment
+                    135,               //positive angle due to start/end
+                    180,
+                    315,
+                    1000,
+                    { { 0, 1414 }, { 1707, 1000 } },
+            }
+    },
+    {
+            "135 degree segments intersecting",
+            {
+                    { 0, 0, 0, 1000 },
+                    { 0, 0, 1000, -1000 },
+                    1000,
+            },
+            0,
+            {
+                    { 1000, 414 },
+                    { 0, 414 },       //start on first segment ( radius * tan(45 /2) )
+                    { 293, -293 },    //end on second segment (radius * 1-cos(45)) )
+                    45,               //positive angle due to start/end
+                    180,
+                    225,
+                    1000,
+                    { { 0, -293 }, { 293, 707 } },
+            }
+    }
+
+
+};
+
+
+BOOST_DATA_TEST_CASE( BasicTTRGeom, boost::unit_test::data::make( arc_ttr_cases ), c )
+{
+    for( int testCase = 0; testCase < 8; ++testCase )
+    {
+        SEG            seg1  = c.m_geom.m_segment_1;
+        SEG            seg2  = c.m_geom.m_segment_2;
+        ARC_PROPERTIES props = c.m_properties;
+
+        if( testCase > 3 )
+        {
+            //Swap input segments.
+            seg1 = c.m_geom.m_segment_2;
+            seg2 = c.m_geom.m_segment_1;
+
+            //The result should swap start and end points and invert the angles:
+            props.m_end_point    = c.m_properties.m_start_point;
+            props.m_start_point  = c.m_properties.m_end_point;
+            props.m_start_angle  = c.m_properties.m_end_angle;
+            props.m_end_angle    = c.m_properties.m_start_angle;
+            props.m_center_angle = -c.m_properties.m_center_angle;
+        }
+
+        //Test all combinations of start and end points for the segments
+        if( ( testCase % 4 ) == 1 || ( testCase % 4 ) == 3 )
+        {
+            //Swap start and end points for seg1
+            VECTOR2I temp = seg1.A;
+            seg1.A = seg1.B;
+            seg1.B = temp;
+        }
+
+        if( ( testCase % 4 ) == 2 || ( testCase % 4 ) == 3 )
+        {
+            //Swap start and end points for seg2
+            VECTOR2I temp = seg2.A;
+            seg2.A        = seg2.B;
+            seg2.B        = temp;
+        }
+
+        const auto this_arc = SHAPE_ARC{ seg1, seg2,
+            c.m_geom.m_radius, c.m_width };
+
+        // Error of 4 IU permitted for the center and radius calculation
+        CheckArc( this_arc, props, SHAPE_ARC::MIN_PRECISION_IU );
+    }
+}
+
+
+/**
+ * Info to set up an arc start, end and center
+ */
+struct ARC_START_END_CENTER
+{
+    VECTOR2I m_start;
+    VECTOR2I m_end;
+    VECTOR2I m_center;
+};
+
+
+struct ARC_SEC_CASE : public KI_TEST::NAMED_CASE
+{
+    /// Geom of the arc
+    ARC_START_END_CENTER m_geom;
+
+    /// clockwise or anti-clockwise?
+    bool m_clockwise;
+
+    /// Expected mid-point of the arc
+    VECTOR2I m_expected_mid;
+};
+
+
+
+static const std::vector<ARC_SEC_CASE> arc_sec_cases = {
+    { "180 deg, clockwise", { { 100, 0 }, { 0, 0 }, { 50, 0 } }, true, { 50, -50 } },
+    { "180 deg, anticlockwise", { { 100, 0 }, { 0, 0 }, { 50, 0 } }, false, { 50, 50 } },
+    { "180 deg flipped, clockwise", { { 0, 0 }, { 100, 0 }, { 50, 0 } }, true, { 50, 50 } },
+    { "180 deg flipped, anticlockwise", { { 0, 0 }, { 100, 0 }, { 50, 0 } }, false, { 50, -50 } },
+    { "90 deg, clockwise", { { -100, 0 }, { 0, 100 }, { 0, 0 } }, true, { -71, 71 } },
+    { "90 deg, anticlockwise", { { -100, 0 }, { 0, 100 }, { 0, 0 } }, false, { 71, -71 } },
+};
+
+
+BOOST_DATA_TEST_CASE( BasicSECGeom, boost::unit_test::data::make( arc_sec_cases ), c )
+{
+    VECTOR2I start = c.m_geom.m_start;
+    VECTOR2I end = c.m_geom.m_end;
+    VECTOR2I center = c.m_geom.m_center;
+    bool     cw = c.m_clockwise;
+
+    SHAPE_ARC this_arc;
+    this_arc.ConstructFromStartEndCenter( start, end, center, cw );
+
+    BOOST_CHECK_EQUAL( this_arc.GetArcMid(), c.m_expected_mid );
+}
+
+
+struct ARC_CICLE_COLLIDE_CASE : public KI_TEST::NAMED_CASE
+{
+    ARC_START_MID_END   m_geom;
+    int                 m_arc_clearance;
+    VECTOR2I            m_circle_center;
+    int                 m_circle_radius;
+    bool                m_exp_result;
+    int                 m_exp_distance;
+};
+
+static const std::vector<ARC_CICLE_COLLIDE_CASE> arc_circle_collide_cases = {
+    { " Issue 20336, large arc", { { 183000000, 65710001}, {150496913, 147587363},{116291153, 66406583}}, 2000000 / 2, {116300000, 133100000}, 300000, true, 53319 }
+};
+
+
+BOOST_DATA_TEST_CASE( CollideCircle, boost::unit_test::data::make( arc_circle_collide_cases ), c )
+{
+    SHAPE_ARC arc( c.m_geom.m_start_point, c.m_geom.m_mid_point, c.m_geom.m_end_point, 0 );
+    SHAPE_CIRCLE circle( c.m_circle_center, c.m_circle_radius );
+
+    // Test a zero width arc (distance should equal the clearance)
+    BOOST_TEST_CONTEXT( "Test Clearance" )
+    {
+        int dist = -1;
+        BOOST_CHECK_EQUAL( arc.Collide( &circle, c.m_arc_clearance, &dist ), c.m_exp_result );
+        BOOST_CHECK_EQUAL( dist, c.m_exp_distance );
+    }
+
+    // Test by changing the width of the arc (distance should equal zero)
+    BOOST_TEST_CONTEXT( "Test Width" )
+    {
+        int dist = -1;
+        arc.SetWidth( c.m_arc_clearance * 2 );
+        BOOST_CHECK_EQUAL( arc.Collide( &circle, 0, &dist ), c.m_exp_result );
+
+        if( c.m_exp_result )
+            BOOST_CHECK_EQUAL( dist, 0 );
+        else
+            BOOST_CHECK_EQUAL( dist, -1 );
+    }
+}
+
+
+struct ARC_PT_COLLIDE_CASE : public KI_TEST::NAMED_CASE
+{
+    ARC_CENTRE_PT_ANGLE m_geom;
+    int                 m_arc_clearance;
+    VECTOR2I            m_point;
+    bool                m_exp_result;
+    int                 m_exp_distance;
+};
+
+
+static const std::vector<ARC_PT_COLLIDE_CASE> arc_pt_collide_cases = {
+    { " 270deg, 0 cl, 0   deg    ", { { 0, 0 }, { 100, 0 }, 270.0 }, 0, { 100, 0 }, true, 0 },
+    { " 270deg, 0 cl, 90  deg    ", { { 0, 0 }, { 100, 0 },  270.0 }, 0, { 0, 100 }, true, 0 },
+    { " 270deg, 0 cl, 180 deg    ", { { 0, 0 }, { 100, 0 },  270.0 }, 0, { -100, 0 }, true, 0 },
+    { " 270deg, 0 cl, 270 deg    ", { { 0, 0 }, { 100, 0 },  270.0 }, 0, { 0, -100 }, true, 0 },
+    { " 270deg, 0 cl, 45  deg    ", { { 0, 0 }, { 100, 0 },  270.0 }, 0, { 71, 71 }, true, 0 },
+    { " 270deg, 0 cl, -45 deg    ", { { 0, 0 }, { 100, 0 },  270.0 }, 0, { 71, -71 }, false, -1 },
+    { "-270deg, 0 cl, 0   deg    ", { { 0, 0 }, { 100, 0 }, -270.0 }, 0, { 100, 0 }, true, 0 },
+    { "-270deg, 0 cl, 90  deg    ", { { 0, 0 }, { 100, 0 }, -270.0 }, 0, { 0, 100 }, true, 0 },
+    { "-270deg, 0 cl, 180 deg    ", { { 0, 0 }, { 100, 0 }, -270.0 }, 0, { -100, 0 }, true, 0 },
+    { "-270deg, 0 cl, 270 deg    ", { { 0, 0 }, { 100, 0 }, -270.0 }, 0, { 0, -100 }, true, 0 },
+    { "-270deg, 0 cl, 45  deg    ", { { 0, 0 }, { 100, 0 }, -270.0 }, 0, { 71, 71 }, false, -1 },
+    { "-270deg, 0 cl, -45 deg    ", { { 0, 0 }, { 100, 0 }, -270.0 }, 0, { 71, -71 }, true, 0 },
+    { " 270deg, 5 cl, 0   deg, 5 pos X", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 105, 0 }, true, 5 },
+    { " 270deg, 5 cl, 0  deg, 5 pos Y", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 100, -5 }, true, 5 },
+    { " 270deg, 5 cl, 90  deg, 5 pos", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 0, 105 }, true, 5 },
+    { " 270deg, 5 cl, 180 deg, 5 pos", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { -105, 0 }, true, 5 },
+    { " 270deg, 5 cl, 270 deg, 5 pos", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 0, -105 }, true, 5 },
+    { " 270deg, 5 cl, 0   deg, 5 neg", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 105, 0 }, true, 5 },
+    { " 270deg, 5 cl, 90  deg, 5 neg", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 0, 105 }, true, 5 },
+    { " 270deg, 5 cl, 180 deg, 5 neg", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { -105, 0 }, true, 5 },
+    { " 270deg, 5 cl, 270 deg, 5 neg", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 0, -105 }, true, 5 },
+    { " 270deg, 5 cl, 45  deg, 5 pos", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 74, 75 }, true, 5 }, // 74.246, -74.246
+    { " 270deg, 5 cl, -45 deg, 5 pos", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 74, -75 }, false, -1 }, //74.246, -74.246
+    { " 270deg, 5 cl, 45  deg, 5 neg", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 67, 67 }, true, 5 }, // 67.17, 67.17
+    { " 270deg, 5 cl, -45 deg, 5 neg", { { 0, 0 }, { 100, 0 },  270.0 }, 5, { 67, -67 }, false, -1 }, // 67.17, -67.17
+    { " 270deg, 4 cl, 0   deg pos", { { 0, 0 }, { 100, 0 },  270.0 }, 4, { 105, 0 }, false, -1 },
+    { " 270deg, 4 cl, 90  deg pos", { { 0, 0 }, { 100, 0 },  270.0 }, 4, { 0, 105 }, false, -1 },
+    { " 270deg, 4 cl, 180 deg pos", { { 0, 0 }, { 100, 0 },  270.0 }, 4, { -105, 0 }, false, -1 },
+    { " 270deg, 4 cl, 270 deg pos", { { 0, 0 }, { 100, 0 },  270.0 }, 4, { 0, -105 }, false, -1 },
+    { "  90deg, 0 cl,   0 deg    ", { { 0, 0 }, { 71, -71 },  90.0 }, 0, { 71, -71 }, true, 0 },
+    { "  90deg, 0 cl,  45 deg    ", { { 0, 0 }, { 71, -71 },  90.0 }, 0, { 100, 0 }, true, 0 },
+    { "  90deg, 0 cl,  90 deg    ", { { 0, 0 }, { 71, -71 },  90.0 }, 0, { 71, 71 }, true, 0 },
+    { "  90deg, 0 cl, 135 deg    ", { { 0, 0 }, { 71, -71 },  90.0 }, 0, { 0, -100 }, false, -1 },
+    { "  90deg, 0 cl, -45 deg    ", { { 0, 0 }, { 71, -71 },  90.0 }, 0, { 0,  100 }, false, -1 },
+    { " -90deg, 0 cl,   0 deg    ", { { 0, 0 }, { 71,  71 }, -90.0 }, 0, { 71, -71 }, true, 0 },
+    { " -90deg, 0 cl,  45 deg    ", { { 0, 0 }, { 71,  71 }, -90.0 }, 0, { 100, 0 }, true, 0 },
+    { " -90deg, 0 cl,  90 deg    ", { { 0, 0 }, { 71,  71 }, -90.0 }, 0, { 71, 71 }, true, 0 },
+    { " -90deg, 0 cl, 135 deg    ", { { 0, 0 }, { 71,  71 }, -90.0 }, 0, { 0, -100 }, false, -1 },
+    { " -90deg, 0 cl, -45 deg    ", { { 0, 0 }, { 71,  71 }, -90.0 }, 0, { 0,  100 }, false, -1 },
+    { "issue 11358 collide",
+      { { 119888000, 60452000 }, { 120904000, 60452000 }, 360.0 },
+      0,
+      { 120395500, 59571830 },
+      true,
+      0 },
+    { "issue 11358 dist",
+      { { 119888000, 60452000 }, { 120904000, 60452000 }, 360.0 },
+      100,
+      { 118872050, 60452000 },
+      true,
+      50 },
+};
+
+
+BOOST_DATA_TEST_CASE( CollidePt, boost::unit_test::data::make( arc_pt_collide_cases ), c )
+{
+    SHAPE_ARC arc( c.m_geom.m_center_point, c.m_geom.m_start_point,
+                    EDA_ANGLE( c.m_geom.m_center_angle, DEGREES_T ) );
+
+    // Test a zero width arc (distance should equal the clearance)
+    BOOST_TEST_CONTEXT( "Test Clearance" )
+    {
+        int dist = -1;
+        BOOST_CHECK_EQUAL( arc.Collide( c.m_point, c.m_arc_clearance, &dist ),
+                            c.m_exp_result );
+        BOOST_CHECK_EQUAL( dist, c.m_exp_distance );
+    }
+
+    // Test by changing the width of the arc (distance should equal zero)
+    BOOST_TEST_CONTEXT( "Test Width" )
+    {
+        int dist = -1;
+        arc.SetWidth( c.m_arc_clearance * 2 );
+        BOOST_CHECK_EQUAL( arc.Collide( c.m_point, 0, &dist ), c.m_exp_result );
+
+        if( c.m_exp_result )
+            BOOST_CHECK_EQUAL( dist, 0 );
+        else
+            BOOST_CHECK_EQUAL( dist, -1 );
+    }
+}
+
+struct ARC_SEG_COLLIDE_CASE : public KI_TEST::NAMED_CASE
+{
+    ARC_CENTRE_PT_ANGLE m_geom;
+    int                 m_arc_clearance;
+    SEG                 m_seg;
+    bool                m_exp_result;
+    int                 m_exp_distance;
+    VECTOR2I            m_collide_point;
+};
+
+
+static const std::vector<ARC_SEG_COLLIDE_CASE> arc_seg_collide_cases = {
+    { "0   deg    ", { { 0, 0 }, { 100, 0 }, 270.0 }, 0, { { 100, 0 }, { 50, 0 } }, true, 0, { 100, 0 } },
+    { "90  deg    ", { { 0, 0 }, { 100, 0 }, 270.0 }, 0, { { 0, 100 }, { 0, 50 } }, true, 0, { 0, 100 } },
+    { "180 deg    ", { { 0, 0 }, { 100, 0 }, 270.0 }, 0, { { -100, 0 }, { -50, 0 } }, true, 0, { -100, 0 } },
+    { "270 deg    ", { { 0, 0 }, { 100, 0 }, 270.0 }, 0, { { 0, -100 }, { 0, -50 } }, true, 0, { 0, -100 } },
+    { "45  deg    ", { { 0, 0 }, { 100, 0 }, 270.0 }, 0, { { 71, 71 }, { 35, 35 } }, true, 0, { 70, 70 } },
+    { "-45 deg    ", { { 0, 0 }, { 100, 0 }, 270.0 }, 0, { { 71, -71 }, { 35, -35 } }, false, -1, { 0, 0 } },
+    { "seg inside arc start", { { 0, 0 }, { 71, -71 }, 90.0 },
+                        10, { { 90, 0 }, { -35, 0 } }, true, 10, { 100, 0 } },
+    { "seg inside arc end", { { 0, 0 }, { 71, -71  }, 90.0 },
+                        10, { { -35, 0 }, { 90, 0 } }, true, 10, { 100, 0 } },
+    { "large diameter arc", { { 172367922, 82282076 }, { 162530000, 92120000 }, -45.0 },
+                        433300, { { 162096732, 92331236 }, { 162096732, 78253268 } }, true, 433268, { 162530000, 92120000 } },
+    { "upside down collide", { { 26250000, 16520000 }, { 28360000, 16520000 }, 90.0 },
+                        0, { { 27545249, 18303444 }, { 27545249, 18114500 } }, true, 0, { 27545249, 18185662 } }
+};
+
+
+BOOST_DATA_TEST_CASE( CollideSeg, boost::unit_test::data::make( arc_seg_collide_cases ), c )
+{
+    SHAPE_ARC arc( c.m_geom.m_center_point, c.m_geom.m_start_point,
+                    EDA_ANGLE( c.m_geom.m_center_angle, DEGREES_T ) );
+
+    // Test a zero width arc (distance should equal the clearance)
+    BOOST_TEST_CONTEXT( "Test Clearance" )
+    {
+        int dist = -1;
+        BOOST_CHECK_EQUAL( arc.Collide( c.m_seg, c.m_arc_clearance, &dist ),
+                            c.m_exp_result );
+        BOOST_CHECK_EQUAL( dist, c.m_exp_distance );
+    }
+
+    // Test by changing the width of the arc (distance should equal zero)
+    BOOST_TEST_CONTEXT( "Test Width" )
+    {
+        int dist = -1;
+        arc.SetWidth( c.m_arc_clearance * 2 );
+        BOOST_CHECK_EQUAL( arc.Collide( c.m_seg, 0, &dist ), c.m_exp_result );
+
+        if( c.m_exp_result )
+            BOOST_CHECK_EQUAL( dist, 0 );
+        else
+            BOOST_CHECK_EQUAL( dist, -1 );
+    }
+
+    BOOST_TEST_CONTEXT( "Test Collide Point" )
+    {
+        VECTOR2I collide_point;
+        int dist = -1;
+
+        if( c.m_exp_result )
+        {
+            arc.Collide( c.m_seg, c.m_arc_clearance, &dist, &collide_point );
+            BOOST_CHECK_EQUAL( collide_point, c.m_collide_point );
+        }
+    }
+}
+
+struct ARC_DATA_MM
+{
+    // Coordinates and dimensions in millimeters
+    double m_center_x;
+    double m_center_y;
+    double m_start_x;
+    double m_start_y;
+    double m_center_angle;
+    double m_width;
+
+    SHAPE_ARC GenerateArc() const
+    {
+        SHAPE_ARC arc( VECTOR2D( pcbIUScale.mmToIU( m_center_x ), pcbIUScale.mmToIU( m_center_y ) ),
+                       VECTOR2D( pcbIUScale.mmToIU( m_start_x ), pcbIUScale.mmToIU( m_start_y ) ),
+                       EDA_ANGLE( m_center_angle, DEGREES_T ), pcbIUScale.mmToIU( m_width ) );
+
+        return arc;
+    }
+};
+
+
+struct ARC_ARC_COLLIDE_CASE : public KI_TEST::NAMED_CASE
+{
+    ARC_DATA_MM         m_arc1;
+    ARC_DATA_MM         m_arc2;
+    double              m_clearance;
+    bool                m_exp_result;
+};
+
+
+static const std::vector<ARC_ARC_COLLIDE_CASE> arc_arc_collide_cases = {
+    { "case 1: No intersection",
+      { 73.843527, 74.355869, 71.713528, 72.965869, -76.36664803, 0.2 },
+      { 71.236473, 74.704131, 73.366472, 76.094131, -76.36664803, 0.2 },
+      0,
+      false },
+    { "case 2: No intersection",
+      { 82.542335, 74.825975, 80.413528, 73.435869, -76.4, 0.2 },
+      { 76.491192, 73.839894, 78.619999, 75.23, -76.4, 0.2 },
+      0,
+      false },
+    { "case 3: No intersection",
+      { 89.318807, 74.810106, 87.19, 73.42, -76.4, 0.2 },
+      { 87.045667, 74.632941, 88.826472, 75.794131, -267.9, 0.2 },
+      0,
+      false },
+    { "case 4: Co-centered not intersecting",
+      { 94.665667, 73.772941, 96.446472, 74.934131, -267.9, 0.2 },
+      { 94.665667, 73.772941, 93.6551, 73.025482, -255.5, 0.2 },
+      0,
+      false },
+    { "case 5: Not intersecting, but end points very close",
+      { 72.915251, 80.493054, 73.570159, 81.257692, -260.5, 0.2 },
+      { 73.063537, 82.295989, 71.968628, 81.581351, -255.5, 0.2 },
+      0,
+      false },
+    { "case 6: Coincident centers, colliding due to arc thickness",
+      { 79.279991, 80.67988, 80.3749, 81.394518, -255.5, 0.3 },
+      { 79.279991, 80.67988, 80.3749, 81.694518, -255.5, 0.3 },
+      0,
+      true },
+    { "case 7: Single intersection",
+      { 88.495265, 81.766089, 90.090174, 82.867869, -255.5, 0.2 },
+      { 86.995265, 81.387966, 89.090174, 82.876887, -255.5, 0.2 },
+      0,
+      true },
+    { "case 8: Double intersection",
+      { 96.149734, 81.792126, 94.99, 83.37, -347.2, 0.2 },
+      { 94.857156, 81.240589, 95.91, 83.9, -288.5, 0.2 },
+      0,
+      true },
+    { "case 9: Endpoints within arc width",
+      { 72.915251, 86.493054, 73.970159, 87.257692, -260.5, 0.2 },
+      { 73.063537, 88.295989, 71.968628, 87.581351, -255.5, 0.2 },
+      0,
+      true },
+    { "case 10: Endpoints close, outside, no collision",
+      { 78.915251, 86.393054, 79.970159, 87.157692, 99.5, 0.2 },
+      { 79.063537, 88.295989, 77.968628, 87.581351, -255.5, 0.2 },
+      0,
+      false },
+    { "case 11: Endpoints close, inside, collision due to arc width",
+      { 85.915251, 86.993054, 86.970159, 87.757692, 99.5, 0.2 },
+      { 86.063537, 88.295989, 84.968628, 87.581351, -255.5, 0.2 },
+      0,
+      true },
+    { "case 12: Simulated differential pair length-tuning",
+      { 94.6551, 88.296, 95.6551, 88.296, 90.0, 0.1 },
+      { 94.6551, 88.296, 95.8551, 88.296, 90.0, 0.1 },
+      0.1,
+      false },
+    { "case 13: One arc fully enclosed in other, non-concentric",
+      { 73.77532, 93.413654, 75.70532, 93.883054, 60.0, 0.1 },
+      { 73.86532, 93.393054, 75.86532, 93.393054, 90.0, 0.3 },
+      0,
+      true },
+    { "case 14: One arc fully enclosed in other, concentric",
+      { 79.87532, 93.413654, 81.64532, 94.113054, 60.0, 0.1 },
+      { 79.87532, 93.413654, 81.86532, 93.393054, 90.0, 0.3 },
+      0,
+      true },
+    { "case 15: Arcs separated by clearance",
+        { 303.7615, 149.9252, 303.695968, 149.925237, 90.0262, 0.065 },
+        { 303.6345, 149.2637, 303.634523, 148.85619, 89.9957, 0.065 },
+      0.15,
+      false },
+};
+
+
+BOOST_DATA_TEST_CASE( CollideArc, boost::unit_test::data::make( arc_arc_collide_cases ), c )
+{
+    SHAPE_ARC arc1( c.m_arc1.GenerateArc() );
+    SHAPE_ARC arc2( c.m_arc2.GenerateArc() );
+
+
+    SHAPE_LINE_CHAIN arc1_slc( c.m_arc1.GenerateArc() );
+    arc1_slc.SetWidth( 0 );
+
+    SHAPE_LINE_CHAIN arc2_slc( c.m_arc2.GenerateArc() );
+    arc2_slc.SetWidth( 0 );
+
+    int      actual = 0;
+    VECTOR2I location;
+
+    SHAPE* arc1_sh = &arc1;
+    SHAPE* arc2_sh = &arc2;
+    SHAPE* arc1_slc_sh = &arc1_slc;
+    SHAPE* arc2_slc_sh = &arc2_slc;
+
+    bool result_arc_to_arc = arc1_sh->Collide( arc2_sh, pcbIUScale.mmToIU( c.m_clearance ),
+                                                &actual, &location );
+
+    // For arc to chain collisions, we need to re-calculate the clearances because the
+    // SHAPE_LINE_CHAIN is zero width
+    int clearance = pcbIUScale.mmToIU( c.m_clearance ) + ( arc2.GetWidth() / 2 );
+
+    bool result_arc_to_chain = arc1_sh->Collide( arc2_slc_sh, clearance, &actual, &location );
+
+    clearance = pcbIUScale.mmToIU( c.m_clearance ) + ( arc1.GetWidth() / 2 );
+    bool result_chain_to_arc = arc1_slc_sh->Collide( arc2_sh, clearance, &actual, &location );
+
+    clearance = ( arc1.GetWidth() / 2 ) + ( arc2.GetWidth() / 2 );
+    bool result_chain_to_chain = arc1_slc_sh->Collide( arc2_slc_sh, clearance, &actual, &location );
+
+    BOOST_CHECK_EQUAL( result_arc_to_arc, c.m_exp_result );
+    BOOST_CHECK_EQUAL( result_arc_to_chain, c.m_exp_result );
+    BOOST_CHECK_EQUAL( result_chain_to_arc, c.m_exp_result );
+    BOOST_CHECK_EQUAL( result_chain_to_chain, c.m_exp_result );
+}
+
+
+BOOST_AUTO_TEST_CASE( CollideArcToShapeLineChain )
+{
+    SHAPE_ARC arc( VECTOR2I( 206000000, 140110000 ), VECTOR2I( 201574617, 139229737 ),
+                   VECTOR2I( 197822958, 136722959 ), 250000 );
+
+    SHAPE_LINE_CHAIN lc( { VECTOR2I( 159600000, 142500000 ), VECTOR2I( 159600000, 142600000 ),
+                           VECTOR2I( 166400000, 135800000 ), VECTOR2I( 166400000, 111600000 ),
+                           VECTOR2I( 190576804, 111600000 ), VECTOR2I( 192242284, 113265480 ),
+                           VECTOR2I( 192255720, 113265480 ), VECTOR2I( 203682188, 124691948 ),
+                           VECTOR2I( 203682188, 140332188 ), VECTOR2I( 206000000, 142650000 ) },
+                         false );
+
+
+
+    SHAPE* arc_sh = &arc;
+    SHAPE* lc_sh = &lc;
+
+    BOOST_CHECK_EQUAL( arc_sh->Collide( &lc, 100000 ), true );
+    BOOST_CHECK_EQUAL( lc_sh->Collide( &arc, 100000 ), true );
+
+    SEG seg( VECTOR2I( 203682188, 124691948 ), VECTOR2I( 203682188, 140332188 ) );
+    BOOST_CHECK_EQUAL( arc.Collide( seg, 0 ), true );
+}
+
+
+BOOST_AUTO_TEST_CASE( CollideArcToClosedChainMatchesSegmentScan )
+{
+    struct CASE
+    {
+        SHAPE_ARC        m_arc;
+        SHAPE_SIMPLE     m_chain;
+        int              m_clearance;
+        bool             m_collides;
+    };
+
+    const SHAPE_ARC semicircle( VECTOR2I( -100, 0 ), VECTOR2I( 0, 100 ), VECTOR2I( 100, 0 ), 0 );
+    const SHAPE_ARC major( VECTOR2I( 0, 0 ), VECTOR2I( -87, -50 ), EDA_ANGLE( 300.0, DEGREES_T ), 0 );
+
+    BOOST_REQUIRE( major.GetCentralAngle().AsDegrees() > 180.0 );
+    BOOST_REQUIRE( major.BBox( 150 ).GetLeft() > -238 );
+
+    auto rect =
+            []( int aX0, int aY0, int aX1, int aY1 )
+            {
+                return SHAPE_SIMPLE( SHAPE_LINE_CHAIN( { VECTOR2I( aX0, aY0 ), VECTOR2I( aX1, aY0 ),
+                                                         VECTOR2I( aX1, aY1 ), VECTOR2I( aX0, aY1 ) }, true ) );
+            };
+
+    // SHAPE_SIMPLE routes through the SHAPE_LINE_CHAIN_BASE overload that carries the box reject
+    const CASE cases[] = { { SHAPE_ARC( semicircle, 4 ), rect( -10, 102, 10, 110 ), 0, true },
+                           { semicircle, rect( -10, 105, 10, 110 ), 5, false },
+                           { major, rect( -239, -10, -238, 10 ), 150, true } };
+
+    for( const CASE& c : cases )
+    {
+        BOOST_REQUIRE( !c.m_chain.PointInside( c.m_arc.GetP0() ) );
+
+        int      expectedActual = std::numeric_limits<int>::max();
+        VECTOR2I expectedLocation;
+
+        for( size_t i = 0; i < c.m_chain.GetSegmentCount(); i++ )
+        {
+            int      segmentActual = 0;
+            VECTOR2I segmentLocation;
+
+            if( c.m_arc.Collide( c.m_chain.GetSegment( i ), c.m_clearance, &segmentActual, &segmentLocation )
+                && segmentActual < expectedActual )
+            {
+                expectedActual = segmentActual;
+                expectedLocation = segmentLocation;
+            }
+        }
+
+        bool expected = expectedActual == 0 || expectedActual < c.m_clearance;
+        BOOST_REQUIRE_EQUAL( expected, c.m_collides );
+
+        int      actual = 0;
+        VECTOR2I location;
+        bool collided = static_cast<const SHAPE&>( c.m_arc ).Collide( &c.m_chain, c.m_clearance,
+                                                                     &actual, &location );
+
+        BOOST_CHECK_EQUAL( collided, expected );
+
+        if( expected )
+        {
+            BOOST_CHECK_EQUAL( actual, expectedActual );
+            BOOST_CHECK( location == expectedLocation );
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( CollideArcToPolygonApproximation )
+{
+    SHAPE_ARC arc( VECTOR2I( 73843527, 74355869 ), VECTOR2I( 71713528, 72965869 ),
+                   EDA_ANGLE( -76.36664803, DEGREES_T ), 1000000 );
+
+    // Create a polyset approximation from the arc - error outside (simulating the zone filler)
+    SHAPE_POLY_SET arcBuffer;
+    int            clearance = ( arc.GetWidth() * 3 ) / 2;
+    int            polygonApproximationError = SHAPE_ARC::DefaultAccuracyForPCB();
+
+    TransformArcToPolygon( arcBuffer, arc.GetP0(), arc.GetArcMid(), arc.GetP1(),
+                           arc.GetWidth() + 2 * clearance,
+                           polygonApproximationError, ERROR_OUTSIDE );
+
+    BOOST_REQUIRE_EQUAL( arcBuffer.OutlineCount(), 1 );
+    BOOST_CHECK_EQUAL( arcBuffer.HoleCount( 0 ), 0 );
+
+    // Make a reasonably large rectangular outline around the arc shape
+    BOX2I arcbbox = arc.BBox( clearance * 4 );
+
+    SHAPE_LINE_CHAIN zoneOutline( { arcbbox.GetPosition(),
+                                    arcbbox.GetPosition() + VECTOR2I( arcbbox.GetWidth(), 0 ),
+                                    arcbbox.GetEnd(),
+                                    arcbbox.GetEnd() - VECTOR2I( arcbbox.GetWidth(), 0 )
+                                  },
+                                  true );
+
+    // Create a synthetic "zone fill" polygon
+    SHAPE_POLY_SET zoneFill;
+    zoneFill.AddOutline( zoneOutline );
+    zoneFill.AddHole( arcBuffer.Outline( 0 ) );
+    zoneFill.CacheTriangulation();
+
+    int      actual = 0;
+    VECTOR2I location;
+    int      epsilon = polygonApproximationError / 10;
+
+    BOOST_CHECK_EQUAL( zoneFill.Collide( &arc, clearance + epsilon, &actual, &location ), true );
+
+    BOOST_CHECK_EQUAL( zoneFill.Collide( &arc, clearance - epsilon, &actual, &location ), false );
+}
+
+
+struct ARC_TO_POLYLINE_CASE : public KI_TEST::NAMED_CASE
+{
+    ARC_CENTRE_PT_ANGLE m_geom;
+};
+
+
+/**
+ * Predicate for checking a polyline has all the points on (near) a circle of
+ * given centre and radius
+ * @param  aPolyline the polyline to check
+ * @param  aCentre   the circle centre
+ * @param  aRad      the circle radius
+ * @param  aTolerance  the tolerance for the endpoint-centre distance
+ * @return           true if predicate met
+ */
+bool ArePolylineEndPointsNearCircle( const SHAPE_LINE_CHAIN& aPolyline, const VECTOR2I& aCentre,
+                                     int aRad, int aTolerance )
+{
+    std::vector<VECTOR2I> points;
+
+    for( int i = 0; i < aPolyline.PointCount(); ++i )
+    {
+        points.push_back( aPolyline.CPoint( i ) );
+    }
+
+    return GEOM_TEST::ArePointsNearCircle( points, aCentre, aRad, aTolerance );
+}
+
+
+/**
+ * Predicate for checking a polyline has all the segment mid points on
+ * (near) a circle of given centre and radius
+ * @param  aPolyline  the polyline to check
+ * @param  aCentre    the circle centre
+ * @param  aRad       the circle radius
+ * @param  aTolerance the tolerance for the midpoint-centre distance
+ * @return            true if predicate met
+ */
+bool ArePolylineMidPointsNearCircle( const SHAPE_LINE_CHAIN& aPolyline, const VECTOR2I& aCentre,
+                                     int aRad, int aTolerance )
+{
+    std::vector<VECTOR2I> points;
+
+    for( int i = 0; i < aPolyline.PointCount() - 1; ++i )
+    {
+        const VECTOR2I mid_pt = ( aPolyline.CPoint( i ) + aPolyline.CPoint( i + 1 ) ) / 2;
+        points.push_back( mid_pt );
+    }
+
+    return GEOM_TEST::ArePointsNearCircle( points, aCentre, aRad, aTolerance );
+}
+
+
+const std::vector<ARC_TO_POLYLINE_CASE> ArcToPolyline_cases{
+    {
+        "Zero rad",
+        {
+            { 0, 0 },
+            { 0, 0 },
+            180,
+        },
+    },
+    {
+        "Semicircle",
+        {
+            { 0, 0 },
+            { -1000000, 0 },
+            180,
+        },
+    },
+    {
+        // check that very small circles don't fall apart and that reverse angles
+        // work too
+        "Extremely small semicircle",
+        {
+            { 0, 0 },
+            { -1000, 0 },
+            -180,
+        },
+    },
+    {
+        // Make sure it doesn't only work for "easy" angles
+        "Non-round geometry",
+        {
+            { 0, 0 },
+            { 1234567, 0 },
+            42.22,
+        },
+    },
+};
+
+
+BOOST_DATA_TEST_CASE( ArcToPolyline, boost::unit_test::data::make( ArcToPolyline_cases ), c )
+{
+    const int width = 0;
+
+    // Note: do not expect accuracies around 1 to work.  We use integers internally so we're
+    // liable to rounding errors.  In PCBNew accuracy defaults to 5000 and we don't recommend
+    // anything lower than 1000 (for performance reasons).
+    const int accuracy = 100;
+    const int epsilon  = 1;
+
+    const SHAPE_ARC this_arc{ c.m_geom.m_center_point, c.m_geom.m_start_point,
+                                EDA_ANGLE( c.m_geom.m_center_angle, DEGREES_T ), width };
+
+    const SHAPE_LINE_CHAIN chain = this_arc.ConvertToPolyline( accuracy );
+
+    BOOST_TEST_MESSAGE( "Polyline has " << chain.PointCount() << " points" );
+
+    // Start point (exactly) where expected
+    BOOST_CHECK_EQUAL( chain.CPoint( 0 ), c.m_geom.m_start_point );
+
+    // End point (exactly) where expected
+    BOOST_CHECK_EQUAL( chain.CLastPoint(), this_arc.GetP1() );
+
+    int radius = ( c.m_geom.m_center_point - c.m_geom.m_start_point ).EuclideanNorm();
+
+    // Other points within accuracy + epsilon (for rounding) of where they should be
+    BOOST_CHECK_PREDICATE( ArePolylineEndPointsNearCircle,
+            ( chain )( c.m_geom.m_center_point )( radius )( accuracy + epsilon ) );
+
+    BOOST_CHECK_PREDICATE( ArePolylineMidPointsNearCircle,
+            ( chain )( c.m_geom.m_center_point )( radius )( accuracy + epsilon ) );
+}
+
+
+/**
+ * Test that TransformArcToPolygon handles shallow arcs (where the mid-point is nearly
+ * collinear with start and end points) without producing invalid geometry due to
+ * integer overflow from extremely large radii.
+ *
+ * This is a regression test for issue #22475 where shallow-radius arc segments
+ * caused polygon pour rendering artifacts.
+ */
+BOOST_AUTO_TEST_CASE( TransformShallowArcToPolygon )
+{
+    SHAPE_POLY_SET buffer;
+
+    // Create an arc where the mid-point is only slightly off the start-end line.
+    // This creates a very large radius arc that previously caused integer overflow.
+    const VECTOR2I start( 0, 0 );
+    const VECTOR2I end( 10000000, 0 );       // 10mm chord length
+    const VECTOR2I mid( 5000000, 5 );        // Mid-point only 5nm off the line
+
+    const int width = 250000;                // 0.25mm track width
+    const int aError = 5000;                 // Default error tolerance
+
+    // This should not crash or produce invalid geometry
+    TransformArcToPolygon( buffer, start, mid, end, width, aError, ERROR_INSIDE );
+
+    // Should produce at least one outline
+    BOOST_CHECK( buffer.OutlineCount() >= 1 );
+
+    // The outline should be valid (closed, has points)
+    if( buffer.OutlineCount() > 0 )
+    {
+        const SHAPE_LINE_CHAIN& outline = buffer.COutline( 0 );
+        BOOST_CHECK( outline.IsClosed() );
+        BOOST_CHECK( outline.PointCount() >= 3 );
+
+        // The bounding box should be reasonable (roughly the track width around the chord)
+        BOX2I bbox = outline.BBox();
+        BOOST_CHECK( bbox.GetWidth() <= end.x + width * 2 );
+        BOOST_CHECK( bbox.GetHeight() <= width * 2 + 100 ); // Allow some tolerance
+    }
+}
+
+
+/**
+ * Test that arcs with extremely large radii (greater than INT_MAX/2) are
+ * properly converted to line segments.
+ */
+BOOST_AUTO_TEST_CASE( TransformVeryShallowArcToPolygon )
+{
+    SHAPE_POLY_SET buffer;
+
+    // Create an arc that is effectively a straight line - mid-point essentially on the line.
+    // This should be detected by IsEffectiveLine() and handled as a line segment.
+    const VECTOR2I start( 0, 0 );
+    const VECTOR2I end( 50000000, 0 );       // 50mm chord length
+    const VECTOR2I mid( 25000000, 1 );       // Mid-point only 1nm off the line
+
+    const int width = 250000;                // 0.25mm track width
+    const int aError = 5000;
+
+    // This should not crash and should produce valid geometry
+    TransformArcToPolygon( buffer, start, mid, end, width, aError, ERROR_INSIDE );
+
+    BOOST_CHECK( buffer.OutlineCount() >= 1 );
+
+    if( buffer.OutlineCount() > 0 )
+    {
+        const SHAPE_LINE_CHAIN& outline = buffer.COutline( 0 );
+        BOOST_CHECK( outline.IsClosed() );
+        BOOST_CHECK( outline.PointCount() >= 3 );
+    }
+}
+
+
+/**
+ * Test arc with values similar to problematic arcs in issue #22475 board.
+ * These arcs have distToMid around 12-13µm with radius around 24mm.
+ */
+BOOST_AUTO_TEST_CASE( TransformIssue22475ArcToPolygon )
+{
+    SHAPE_POLY_SET buffer;
+
+    // Values approximating one of the problematic arcs from issue #22475:
+    // radius=24.35 mm, distToMid=12960 nm, chord=1.62 mm, angle=-3.8 deg
+    // Compute start, mid, end points for such an arc
+    const VECTOR2I start( 0, 0 );
+    const VECTOR2I end( 1620000, 0 );          // 1.62mm chord length
+    const VECTOR2I mid( 810000, 12960 );       // Mid-point 12960nm (12.96µm) off the line
+
+    const int width = 200000;                   // 0.2mm track width
+    const int aError = 5000;
+
+    // Before the fix, this should create a polygon with very large extent
+    // After the fix, it should create a reasonable oval-shaped polygon
+    TransformArcToPolygon( buffer, start, mid, end, width, aError, ERROR_INSIDE );
+
+    BOOST_REQUIRE( buffer.OutlineCount() >= 1 );
+
+    const SHAPE_LINE_CHAIN& outline = buffer.COutline( 0 );
+    BOOST_CHECK( outline.IsClosed() );
+    BOOST_CHECK( outline.PointCount() >= 3 );
+
+    BOX2I bbox = outline.BBox();
+
+    // The bounding box should be reasonable - roughly chord + 2*width wide, 2*width high
+    // With the fix (treating as oval), width should be ~1620000 + 2*200000 = 2020000
+    // Height should be ~2*200000 = 400000
+    // Without the fix, the height could be enormous due to the large arc radius
+
+    // Check that the polygon isn't ridiculously large
+    BOOST_CHECK_MESSAGE( bbox.GetWidth() <= 3000000,
+                         wxString::Format( "Polygon width %lld is too large (expected ~2020000)", (long long)bbox.GetWidth() ) );
+    BOOST_CHECK_MESSAGE( bbox.GetHeight() <= 1000000,
+                         wxString::Format( "Polygon height %lld is too large (expected ~400000)", (long long)bbox.GetHeight() ) );
+}
+
+
+/**
+ * Test that SHAPE_ARC::Collide handles arcs with near-INT_MAX radius without crashing.
+ * Reproduces a crash during PADS ASCII import where a near-collinear arc produced a
+ * radius exceeding INT_MAX, overflowing the CIRCLE(int) constructor and KiROUND.
+ */
+BOOST_AUTO_TEST_CASE( CollideNearlyFlatArcDoesNotOverflow )
+{
+    // Values from the core dump: a nearly-flat arc with enormous radius
+    const VECTOR2I start( 68208364, -8000 );
+    const VECTOR2I mid( 771364, 500000 );
+    const VECTOR2I end( 35224335, -7999 );
+    const int      width = 1270000;
+
+    SHAPE_ARC arc( start, mid, end, width );
+
+    // Radius should be near or above INT_MAX/2, triggering the segment fallback
+    BOOST_CHECK( arc.GetRadius() >= (double) std::numeric_limits<int>::max() / 2.0 );
+
+    // Point near the arc endpoints.  Must not crash.
+    const VECTOR2I testPt( 35224298, -5381 );
+    int            actual = 0;
+    VECTOR2I       location;
+
+    BOOST_CHECK_NO_THROW( arc.Collide( testPt, 635000, &actual, &location ) );
+
+    // Segment near the arc.  Must not crash.
+    const SEG testSeg( VECTOR2I( 35224298, -5381 ), VECTOR2I( 35696364, -32988651 ) );
+
+    BOOST_CHECK_NO_THROW( arc.Collide( testSeg, 635000, &actual, &location ) );
+}
+
+
+/**
+ * Three near-coincident points must not fabricate a multi-metre circumcircle.
+ *
+ *   (arc (start 135.674 84.576744)
+ *        (mid   135.673999 84.576744)
+ *        (end   135.673998 84.576744) ...)
+ *
+ * Previously CalcArcCenter() slope-epsilon fallback for colinear inputs
+ * produced a centre ~2 m away and a radius ~2 m, and the PNS drag preview
+ * drew a board-spanning ghost circle through the three coincident points.
+ */
+BOOST_AUTO_TEST_CASE( DegenerateArcCoincidentPoints )
+{
+    SHAPE_ARC arc( VECTOR2I( 135674000, 84576744 ),
+                   VECTOR2I( 135673999, 84576744 ),
+                   VECTOR2I( 135673998, 84576744 ),
+                   100000 );
+
+    BOOST_CHECK_LT( arc.GetRadius(), 10.0 );
+
+    SHAPE_LINE_CHAIN poly = arc.ConvertToPolyline();
+    BOOST_CHECK_LT( poly.BBox().GetWidth(),  1000 );  // < 1 µm
+    BOOST_CHECK_LT( poly.BBox().GetHeight(), 1000 );
+    BOOST_CHECK_LT( arc.GetLength(),         1000.0 );
+}
+
+
+// Collinear points from the reported board.  The coincident start/mid sends CalcArcCenter() to
+// the chord midpoint, which makes start and end antipodal and the raw sweep a clean half turn
+BOOST_AUTO_TEST_CASE( CollinearArcSweepIsNotAFullTurn )
+{
+    const SHAPE_ARC arc( VECTOR2I( 2275000, 3123714 ),
+                         VECTOR2I( 2275000, 3123715 ),
+                         VECTOR2I( 2275000, 3123720 ),
+                         127000 );
+
+    BOOST_CHECK_LT( std::abs( arc.GetCentralAngle().AsDegrees() ), 1.0 );
+
+    // The 6 nm chord is the whole run; a fabricated sweep inflates this without bound
+    BOOST_CHECK_CLOSE( arc.GetLength(), 6.0, 1.0 );
+
+    const SHAPE_LINE_CHAIN poly = arc.ConvertToPolyline();
+    BOOST_CHECK_LT( poly.BBox().GetWidth(), 10 );
+    BOOST_CHECK_LT( poly.BBox().GetHeight(), 10 );
+}
+
+
+// The guard must not catch major arcs, which are the only users of the full-turn correction
+BOOST_AUTO_TEST_CASE( CurvedArcsKeepTheirSweep )
+{
+    const SHAPE_ARC quarter( VECTOR2I( 1000000, 0 ), VECTOR2I( 707107, 707107 ),
+                             VECTOR2I( 0, 1000000 ), 127000 );
+
+    BOOST_CHECK_CLOSE( quarter.GetCentralAngle().AsDegrees(), 90.0, 0.01 );
+
+    const SHAPE_ARC major( VECTOR2I( 1000000, 0 ), VECTOR2I( -1000000, 0 ),
+                           VECTOR2I( 0, -1000000 ), 127000 );
+
+    BOOST_CHECK_CLOSE( major.GetCentralAngle().AsDegrees(), 270.0, 0.01 );
+}
+
+
+// Coincident start/mid plus a distant end previously produced a center far off from the inputs
+BOOST_AUTO_TEST_CASE( CalcArcCenterTwoCoincidentStartMid )
+{
+    const VECTOR2D start( 0.0, 0.0 );
+    const VECTOR2D mid  ( 0.0, 0.0 );
+    const VECTOR2D end  ( 1000.0, 0.0 );
+
+    VECTOR2D center = CalcArcCenter( start, mid, end );
+
+    BOOST_CHECK_CLOSE( center.x, 500.0, 1e-9 );
+    BOOST_CHECK_SMALL( center.y, 1e-9 );
+}
+
+
+BOOST_AUTO_TEST_CASE( CalcArcCenterTwoCoincidentMidEnd )
+{
+    const VECTOR2D start( -1000.0, 0.0 );
+    const VECTOR2D mid  ( 0.0, 0.0 );
+    const VECTOR2D end  ( 0.0, 0.0 );
+
+    VECTOR2D center = CalcArcCenter( start, mid, end );
+
+    BOOST_CHECK_CLOSE( center.x, -500.0, 1e-9 );
+    BOOST_CHECK_SMALL( center.y, 1e-9 );
+}
+
+
+BOOST_AUTO_TEST_CASE( CalcArcCenterTwoCoincidentStartEnd )
+{
+    // Coincident start/end with a distinct mid is a 360-degree arc, center is midpoint to mid
+    const VECTOR2D start( 0.0, 0.0 );
+    const VECTOR2D mid  ( 1000.0, 0.0 );
+    const VECTOR2D end  ( 0.0, 0.0 );
+
+    VECTOR2D center = CalcArcCenter( start, mid, end );
+
+    BOOST_CHECK_CLOSE( center.x, 500.0, 1e-9 );
+    BOOST_CHECK_SMALL( center.y, 1e-9 );
+}
+
+
+// Three near-coincident points collapse to the centroid via the bbox guard, not the pairwise guard
+BOOST_AUTO_TEST_CASE( CalcArcCenterThreeNearCoincident )
+{
+    const VECTOR2D start( 100.0, 200.0 );
+    const VECTOR2D mid  ( 101.0, 200.0 );
+    const VECTOR2D end  ( 100.0, 201.0 );
+
+    VECTOR2D center = CalcArcCenter( start, mid, end );
+
+    BOOST_CHECK_CLOSE( center.x, ( start.x + mid.x + end.x ) / 3.0, 1e-9 );
+    BOOST_CHECK_CLOSE( center.y, ( start.y + mid.y + end.y ) / 3.0, 1e-9 );
+}
+
+
+// A thin arc must not trip the coincident-point guards despite its short chord and small sagitta
+BOOST_AUTO_TEST_CASE( CalcArcCenterThinArcNotDegenerate )
+{
+    const VECTOR2D start( 0.0, 0.0 );
+    const VECTOR2D mid  ( 10.0, 1.0 );
+    const VECTOR2D end  ( 20.0, 0.0 );
+
+    VECTOR2D center = CalcArcCenter( start, mid, end );
+
+    double rs = ( center - start ).EuclideanNorm();
+    double rm = ( center - mid ).EuclideanNorm();
+    double re = ( center - end ).EuclideanNorm();
+
+    // Snapping to the 10 nm grid moves the center off the exact (10, -49.5) by half an IU
+    BOOST_CHECK_SMALL( rs - rm, 1.0 );
+    BOOST_CHECK_SMALL( rm - re, 1.0 );
+
+    // True circumradius is 50.5 IU; a wrongly-triggered midpoint guard would give ~10 IU
+    BOOST_CHECK_GT( rs, 40.0 );
+}
+
+
+// A few-IU arc rounds its own mid point off the true circle, but the three points still span a
+// healthy triangle.  Reading that as a coincident pair collapses the centre onto the chord and
+// turns a quarter turn into a reflex sweep
+BOOST_AUTO_TEST_CASE( CalcArcCenterFewUnitArcKeepsItsCircumcircle )
+{
+    const SHAPE_ARC arc( VECTOR2I( 0, 0 ), VECTOR2I( 5, 0 ), ANGLE_90 );
+
+    BOOST_CHECK_LT( std::abs( arc.GetCentralAngle().AsDegrees() ), 180.0 );
+
+    // The chord midpoint fallback sits at (3, 3), inside the arc it is supposed to circumscribe
+    BOOST_CHECK_GT( ( arc.GetCenter() - arc.GetArcMid() ).EuclideanNorm(), arc.GetRadius() / 2.0 );
+}
+
+
+// A board-scale arc must not regress from the new pairwise coincidence guards
+BOOST_AUTO_TEST_CASE( CalcArcCenterBoardScaleSanity )
+{
+    const double R = 50000000.0;
+    const VECTOR2D start( R, 0.0 );
+    const VECTOR2D mid  ( 0.0, R );
+    const VECTOR2D end  ( -R, 0.0 );
+
+    VECTOR2D center = CalcArcCenter( start, mid, end );
+
+    BOOST_CHECK_SMALL( center.x, 1.0 );
+    BOOST_CHECK_SMALL( center.y, 1.0 );
+}
+
+namespace
+{
+// Circumcenter of integer points relative to start, in long double
+VECTOR2<long double> exactCircumcenter( const VECTOR2I& aS, const VECTOR2I& aM, const VECTOR2I& aE )
+{
+    long double bx = (long double) aM.x - aS.x, by = (long double) aM.y - aS.y;
+    long double cx = (long double) aE.x - aS.x, cy = (long double) aE.y - aS.y;
+    long double b2 = bx * bx + by * by, c2 = cx * cx + cy * cy;
+    long double d = 2.0L * ( bx * cy - by * cx );
+
+    return VECTOR2<long double>( aS.x + ( b2 * cy - c2 * by ) / d, aS.y + ( c2 * bx - b2 * cx ) / d );
+}
+
+
+// Point on the circle about aCenter, rounded to integer IU
+VECTOR2I arcPoint( const VECTOR2D& aCenter, double aRadius, double aDegrees, const VECTOR2I& aOffset )
+{
+    double a = aDegrees * M_PI / 180.0;
+
+    return VECTOR2I( KiROUND( aCenter.x + aRadius * std::cos( a ) ) + aOffset.x,
+                     KiROUND( aCenter.y + aRadius * std::sin( a ) ) + aOffset.y );
+}
+} // namespace
+
+
+// A 150 um arc must get the same center wherever it sits.  The slope formulation drifted by
+// 147 nm at 10 cm and 1244 nm at 1 m
+BOOST_AUTO_TEST_CASE( CalcArcCenterTranslationInvariant )
+{
+    const VECTOR2D c0( 18833.0, 51544.24 );
+    const double   radius = 150000.0;
+    const int      offsets[] = { 0, 100000000, 1000000000, -1000000000 };
+
+    VECTOR2I baseCenter;
+
+    for( int off : offsets )
+    {
+        const VECTOR2I o( off, off );
+        VECTOR2I       s = arcPoint( c0, radius, 20.0, o );
+        VECTOR2I       m = arcPoint( c0, radius, 60.0, o );
+        VECTOR2I       e = arcPoint( c0, radius, 100.0, o );
+
+        VECTOR2I                 center = CalcArcCenter( s, m, e );
+        VECTOR2<long double>     exact = exactCircumcenter( s, m, e );
+        VECTOR2D                 dcenter = CalcArcCenter( VECTOR2D( s ), VECTOR2D( m ), VECTOR2D( e ) );
+
+        BOOST_CHECK_LE( std::abs( (long double) center.x - exact.x ), 1.5L );
+        BOOST_CHECK_LE( std::abs( (long double) center.y - exact.y ), 1.5L );
+
+        double rs = ( dcenter - VECTOR2D( s ) ).EuclideanNorm();
+        double re = ( dcenter - VECTOR2D( e ) ).EuclideanNorm();
+        BOOST_CHECK_LE( std::abs( rs - re ), 1.0 );
+
+        if( off == 0 )
+            baseCenter = center;
+        else
+            BOOST_CHECK_LE( ( center - o - baseCenter ).EuclideanNorm(), 1.5 );
+    }
+}
+
+
+// Codex found the slope form returning (1e9 + 5, 1e9) for this right-angled arc
+BOOST_AUTO_TEST_CASE( CalcArcCenterFarFromOrigin )
+{
+    const VECTOR2I s( 1000000000, 1000000000 );
+    const VECTOR2I m( 1000000010, 1000000000 );
+    const VECTOR2I e( 1000000000, 1000000010 );
+
+    BOOST_CHECK_EQUAL( CalcArcCenter( s, m, e ), VECTOR2I( 1000000005, 1000000005 ) );
+    BOOST_CHECK_EQUAL( CalcArcCenter( VECTOR2D( s ), VECTOR2D( m ), VECTOR2D( e ) ),
+                       VECTOR2D( 1000000005.0, 1000000005.0 ) );
+}
+
+
+// A center a nm or two off the 100 nm grid snaps to it, since every radius still agrees
+BOOST_AUTO_TEST_CASE( CalcArcCenterSnapsToGridWhenRadiiAgree )
+{
+    const VECTOR2I c( 1000000, 2000000 );
+    const VECTOR2I s = c + VECTOR2I( 250000, 0 );
+    const VECTOR2I m = c + VECTOR2I( 150000, 200001 );
+    const VECTOR2I e = c + VECTOR2I( -150000, 200000 );
+
+    VECTOR2<long double> exact = exactCircumcenter( s, m, e );
+
+    BOOST_CHECK_GT( std::abs( exact.x - c.x ) + std::abs( exact.y - c.y ), 1.0L );
+    BOOST_CHECK_EQUAL( CalcArcCenter( s, m, e ), c );
+    BOOST_CHECK_EQUAL( CalcArcCenter( VECTOR2D( s ), VECTOR2D( m ), VECTOR2D( e ) ), VECTOR2D( c ) );
+}
+
+
+// The 10 nm grid point would put the radii 4 nm apart, so the exact center is kept
+BOOST_AUTO_TEST_CASE( CalcArcCenterKeepsExactWhenSnapBreaksRadii )
+{
+    const VECTOR2I s( 0, 0 );
+    const VECTOR2I m( 10, 0 );
+    const VECTOR2I e( 0, 10 );
+
+    BOOST_CHECK_EQUAL( CalcArcCenter( s, m, e ), VECTOR2I( 5, 5 ) );
+}
+
+// Near a half turn r^2 - chord^2/4 cancels to nothing; the center must sit at the true offset
+BOOST_AUTO_TEST_CASE( CalcArcCenterFromAngleNearHalfTurn )
+{
+    const VECTOR2D start( 0.0, 0.0 );
+    const VECTOR2D end( 1.0e9, 0.0 );
+    const EDA_ANGLE angle( 179.999999, DEGREES_T );
+
+    VECTOR2D center = CalcArcCenter( start, end, angle );
+
+    long double half = angle.AsRadians() / 2.0L;
+    long double offset = 5.0e8L * std::cos( half ) / std::sin( half );
+
+    BOOST_CHECK_LE( std::abs( (long double) center.x - 5.0e8L ), 1e-3L );
+    BOOST_CHECK_LE( std::abs( std::abs( (long double) center.y ) - offset ), 0.1L );
+}
+
+// The center is rounded once from an exact numerator, so a .4999999 fraction cannot be pushed up
+BOOST_AUTO_TEST_CASE( CalcArcCenterRoundsOnceNearHalf )
+{
+    const VECTOR2I s( -2123435277, -1114039370 );
+    const VECTOR2I m( -1828331619, -517415848 );
+    const VECTOR2I e( 2011509719, -1246150838 );
+
+    BOOST_CHECK_EQUAL( CalcArcCenter( s, m, e ), VECTOR2I( -74371215, -1756259108 ) );
+}
+
+
+// GetClearance passes an INT_MAX / 2 sentinel that must not overflow the arc bounding box
+BOOST_AUTO_TEST_CASE( GetClearanceAgainstSegment )
+{
+    const SHAPE_ARC     arc( VECTOR2I( 0, 0 ), VECTOR2I( 1000000, 0 ), ANGLE_90, 50000 );
+    const SHAPE_SEGMENT seg( VECTOR2I( 2000000, 0 ), VECTOR2I( 2000000, 0 ), 50000 );
+
+    // Gap between the arc start point and the segment minus both half widths
+    BOOST_CHECK_EQUAL( arc.GetClearance( &seg ), 1000000 - 25000 - 25000 );
+    BOOST_CHECK_EQUAL( seg.GetClearance( &arc ), 1000000 - 25000 - 25000 );
+}
+
+
+// Beyond the search cutoff no collision is reported, which must not read as zero clearance
+BOOST_AUTO_TEST_CASE( GetClearanceBeyondCutoff )
+{
+    const SHAPE_SEGMENT a( VECTOR2I( 0, 0 ), VECTOR2I( 0, 0 ) );
+    const SHAPE_SEGMENT b( VECTOR2I( 1500000000, 0 ), VECTOR2I( 1500000000, 0 ) );
+
+    BOOST_CHECK_EQUAL( a.GetClearance( &b ), std::numeric_limits<int>::max() );
+}
+
+BOOST_AUTO_TEST_SUITE_END()
