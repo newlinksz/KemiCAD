@@ -120,6 +120,10 @@ inline ORCAD_POINT OrcadInverseOrient( int aOrient, int aX, int aY )
 class ORCAD_CONVERTER
 {
 public:
+
+    // Filename helpers exposed for QA (OrCAD page-letter prefix strip / page file names).
+    static wxString MakePageFileName( int aPageIndex, const std::string& aPageName );
+    static wxString SanitizeFileName( const std::string& aName );
     /**
      * @param aDesign parsed design; held by reference and MUTATED during
      *                conversion (page-content shift, placeholder symbol
@@ -503,8 +507,6 @@ private:
     void assignPageItemUuids( size_t aPageOrdinal );
 
 
-    static wxString MakePageFileName( int aPageIndex, const std::string& aPageName );
-
     /** Shift content on the 10-DBU grid to preserve connectivity. */
     void applyPageSettings( ORCAD_RAW_PAGE& aPage, SCH_SCREEN* aScreen );
     void placePageFrame( const ORCAD_RAW_PAGE& aPage, SCH_SCREEN* aScreen );
@@ -604,8 +606,6 @@ private:
     /** True when the point lies strictly INSIDE (not at an endpoint of) an H/V wire. */
     static bool onSegment( int aX, int aY, const ORCAD_WIRE& aWire );
 
-
-    static wxString SanitizeFileName( const std::string& aName );
 
 private:
     ORCAD_DESIGN&      m_design;

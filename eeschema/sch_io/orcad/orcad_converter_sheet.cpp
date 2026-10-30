@@ -55,6 +55,7 @@
 #include <connection_graph.h>
 #include <core/kicad_algo.h>
 #include <font/font.h>
+#include <kemi_format_profile.h>
 #include <ki_exception.h>
 #include <kiid.h>
 #include <layer_ids.h>
@@ -1987,8 +1988,10 @@ void ORCAD_CONVERTER::placeFolder( FOLDER_WALK& aWalk, std::vector<ORCAD_RAW_PAG
         std::vector<std::pair<wxString, wxString>> names;
 
         for( size_t i = 0; i < aPages.size(); ++i )
-            names.emplace_back( folderSheetName( aPages[i].name ),
-                                MakePageFileName( static_cast<int>( i + 1 ), aPages[i].name ) );
+        {
+            wxString fileName = MakePageFileName( static_cast<int>( i + 1 ), aPages[i].name );
+            names.emplace_back( uniqueSheetName( wxFileName( fileName ).GetName() ), fileName );
+        }
 
         std::vector<SCH_SHEET*> topSheets = createTopLevelSheets( names, true, true );
         aWalk.pageIndex = static_cast<int>( aPages.size() );
@@ -2076,7 +2079,8 @@ void ORCAD_CONVERTER::placeFolder( FOLDER_WALK& aWalk, std::vector<ORCAD_RAW_PAG
             int        currentPage = ++aWalk.pageIndex;
             const_cast<KIID&>( pageSheet->m_Uuid ) = deterministicUuid( "sheet", currentPage );
             wxString fileName = MakePageFileName( currentPage, page.name );
-            pageSheet->GetField( FIELD_T::SHEET_NAME )->SetText( folderSheetName( page.name ) );
+            pageSheet->GetField( FIELD_T::SHEET_NAME )->SetText(
+                    uniqueSheetName( wxFileName( fileName ).GetName() ) );
             pageSheet->GetField( FIELD_T::SHEET_FILENAME )->SetText( fileName );
             pageSheet->SetScreen( pageScreen );
             pageScreen->SetFileName( m_schematic->Project().GetProjectPath() + fileName );
@@ -2713,8 +2717,10 @@ void ORCAD_CONVERTER::convertFlatPages( const SCH_SHEET_PATH& aRootPath )
 
         for( size_t i = 0; i < sheetJobs.size(); ++i )
         {
-            names.emplace_back( uniqueSheetName( sheetJobs[i].name ),
-                                MakePageFileName( static_cast<int>( i + 1 ), sheetJobs[i].job.page->name ) );
+            // Sheet title matches the file stem: "02-更改记录".
+            wxString fileName = MakePageFileName( static_cast<int>( i + 1 ),
+                                                  sheetJobs[i].job.page->name );
+            names.emplace_back( uniqueSheetName( wxFileName( fileName ).GetName() ), fileName );
         }
 
         std::vector<SCH_SHEET*> topSheets = createTopLevelSheets( names, true, false );
@@ -2759,7 +2765,6 @@ void ORCAD_CONVERTER::convertUnreferencedPages()
     {
         for( ORCAD_RAW_PAGE& page : folderPages )
         {
-            wxString name = uniqueSheetName( FromOrcadString( page.name ) );
             wxString fileName;
 
             do
@@ -2767,6 +2772,7 @@ void ORCAD_CONVERTER::convertUnreferencedPages()
                 fileName = MakePageFileName( static_cast<int>( fileIndex++ ), page.name );
             } while( !usedFileNames.insert( fileName.Lower() ).second );
 
+            wxString name = uniqueSheetName( wxFileName( fileName ).GetName() );
             pages.push_back( &page );
             names.emplace_back( name, fileName );
         }
@@ -3938,8 +3944,8 @@ void ORCAD_CONVERTER::placePageFrame( const ORCAD_RAW_PAGE& aPage, SCH_SCREEN* a
 
 wxString ORCAD_CONVERTER::MakePageFileName( int aPageIndex, const std::string& aPageName )
 {
-    wxString fileName =
-            wxString::Format( wxS( "P%02d_" ), aPageIndex ) + SanitizeFileName( aPageName ) + wxS( ".kicad_sch" );
+    wxString fileName = wxString::Format( wxS( "%02d-%s." ), aPageIndex, SanitizeFileName( aPageName ) )
+                        + KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt;
 
     ReplaceIllegalFileNameChars( fileName, '_' );
 
@@ -3951,20 +3957,69 @@ wxString ORCAD_CONVERTER::SanitizeFileName( const std::string& aName )
 {
     const wxString illegal( wxS( "<>:\"/\\|?*" ) );
     wxString       in = FromOrcadString( aName );
-    wxString       out;
+
+    // Trim leading whitespace so "  00_B.  HOLE " still matches the page-letter prefix.
+    in.Trim( false );
+
+    // Drop a leading OrCAD page index such as "00_A. " / "00_B.  " / "01. " so filenames
+    // become "01-HOLE" / "02-更改记录" rather than "01-BHOLE" / "02-A更改记录".
+    // Pattern: digits, optional ([_-]? letter), then one or more separators (. _ - : space).
+    size_t pos = 0;
+
+    while( pos < in.length() && wxIsdigit( in[pos] ) )
+        pos++;
+
+    if( pos > 0 )
+    {
+        size_t cursor = pos;
+
+        // Optional page letter: "B", "_B", or "-A" immediately after the digits.
+        if( cursor < in.length()
+            && ( in[cursor] == '_' || in[cursor] == '-' )
+            && ( cursor + 1 ) < in.length() && wxIsalpha( in[cursor + 1] ) )
+        {
+            cursor += 2;
+        }
+        else if( cursor < in.length() && wxIsalpha( in[cursor] ) )
+        {
+            cursor++;
+        }
+
+        size_t sep = cursor;
+
+        while( sep < in.length()
+               && ( in[sep] == '.' || in[sep] == '_' || in[sep] == '-' || in[sep] == ':'
+                    || wxIsspace( in[sep] ) ) )
+        {
+            sep++;
+        }
+
+        // When a page letter was consumed, require trailing separators so names like
+        // "12_foo" are left intact.  Digit-only prefixes still need separators ("01. POWER").
+        const bool hadLetter = cursor > pos;
+
+        if( sep < in.length() && ( hadLetter ? sep > cursor : sep > pos ) )
+            in = in.Mid( sep );
+    }
+
+    wxString out;
 
     for( wxUniChar c : in )
     {
+        // Filename rule: strip dots and spaces; map other illegal bytes to underscore.
+        if( c == '.' || c == ' ' || c == '\t' )
+            continue;
+
         if( c.GetValue() < 0x20 || illegal.Find( c ) != wxNOT_FOUND )
             out += '_';
         else
             out += c;
     }
 
-    while( !out.IsEmpty() && ( out.Last() == ' ' || out.Last() == '.' ) )
+    while( !out.IsEmpty() && ( out.Last() == '_' || out.Last() == '-' ) )
         out.RemoveLast();
 
-    while( !out.IsEmpty() && ( out.GetChar( 0 ) == ' ' || out.GetChar( 0 ) == '.' ) )
+    while( !out.IsEmpty() && ( out.GetChar( 0 ) == '_' || out.GetChar( 0 ) == '-' ) )
         out.Remove( 0, 1 );
 
     if( out.IsEmpty() )

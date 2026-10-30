@@ -49,6 +49,10 @@ public:
 
     bool CanReadBoard( const wxString& aFileName ) const override;
 
+    wxString GetImportedDesignRules() const override { return m_importedDesignRules; }
+
+    std::vector<FOOTPRINT*> GetImportedCachedLibraryFootprints() override;
+
     /**
      * Return the automapped layers. Non-static because copper layer mapping depends on the
      * current board, so the callback is bound to a PCB_IO_PADS instance.
@@ -88,6 +92,10 @@ private:
     void        loadBoardOutline();
     void        loadGraphicLines();
     void        clearLoadingState();
+
+    // Retained after the converter is released so callers can save rules with the imported board.
+    wxString m_importedDesignRules;
+    std::vector<std::unique_ptr<FOOTPRINT>> m_importedFootprints;
 
     // Valid only during LoadBoard, cleared by clearLoadingState().
     BOARD*                                      m_loadBoard = nullptr;

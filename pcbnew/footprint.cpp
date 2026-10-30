@@ -195,6 +195,12 @@ FOOTPRINT::FOOTPRINT( BOARD* parent ) :
 }
 
 
+bool FOOTPRINT::IsKemiOnly() const
+{
+    return m_kemiOnly || ( GetBoard() && GetBoard()->IsKemiOnly() );
+}
+
+
 FOOTPRINT::FOOTPRINT( const FOOTPRINT& aFootprint ) :
         BOARD_ITEM_CONTAINER( aFootprint ),
         EMBEDDED_FILES( aFootprint ),
@@ -203,6 +209,11 @@ FOOTPRINT::FOOTPRINT( const FOOTPRINT& aFootprint ) :
     m_transform               = aFootprint.m_transform;
     m_flipped                 = aFootprint.m_flipped;
     m_fpid                    = aFootprint.m_fpid;
+    m_kemiOnly                = aFootprint.IsKemiOnly();
+
+    if( m_kemiOnly )
+        SetKemiOnly();
+
     m_attributes              = aFootprint.m_attributes;
     m_fpStatus                = aFootprint.m_fpStatus;
     m_fileFormatVersionAtLoad = aFootprint.m_fileFormatVersionAtLoad;
@@ -1128,12 +1139,14 @@ bool FOOTPRINT::FixUuids()
 
 FOOTPRINT& FOOTPRINT::operator=( FOOTPRINT&& aOther )
 {
+    const bool restricted = IsKemiOnly() || aOther.IsKemiOnly();
     BOARD_ITEM::operator=( aOther );
 
     m_courtyard_cache.reset();
     m_geometry_cache.reset();
 
     m_fpid          = aOther.m_fpid;
+    m_kemiOnly      = restricted;
     m_attributes    = aOther.m_attributes;
     m_fpStatus      = aOther.m_fpStatus;
     m_transform     = aOther.m_transform;
@@ -1243,6 +1256,9 @@ FOOTPRINT& FOOTPRINT::operator=( FOOTPRINT&& aOther )
 
     EMBEDDED_FILES::operator=( std::move( aOther ) );
 
+    if( m_kemiOnly )
+        SetKemiOnly();
+
     // Copy auxiliary data
     m_3D_Drawings      = aOther.m_3D_Drawings;
     m_height           = aOther.m_height;
@@ -1278,12 +1294,14 @@ FOOTPRINT& FOOTPRINT::operator=( FOOTPRINT&& aOther )
 
 FOOTPRINT& FOOTPRINT::operator=( const FOOTPRINT& aOther )
 {
+    const bool restricted = IsKemiOnly() || aOther.IsKemiOnly();
     BOARD_ITEM::operator=( aOther );
 
     m_courtyard_cache.reset();
     m_geometry_cache.reset();
 
     m_fpid          = aOther.m_fpid;
+    m_kemiOnly      = restricted;
     m_attributes    = aOther.m_attributes;
     m_fpStatus      = aOther.m_fpStatus;
     m_transform     = aOther.m_transform;
@@ -1424,6 +1442,9 @@ FOOTPRINT& FOOTPRINT::operator=( const FOOTPRINT& aOther )
             aOther.m_componentClassCacheProxy->GetStaticComponentClass() );
 
     EMBEDDED_FILES::operator=( aOther );
+
+    if( m_kemiOnly )
+        SetKemiOnly();
 
     return *this;
 }
@@ -3024,8 +3045,8 @@ std::set<wxString> FOOTPRINT::GetUniquePadNumbers() const
             continue;
 
         // Skip pads with no name, because they are usually "mechanical"
-        // pads, not "electrical" pads
-        if( pad->GetNumber().IsEmpty() )
+        // pads, not "electrical" pads.  Numbered NPTH pads are mechanical too.
+        if( pad->GetNumber().IsEmpty() || !pad->CanHaveNumber() )
             continue;
 
         usedNumbers.insert( pad->GetNumber() );

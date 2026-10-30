@@ -77,10 +77,10 @@ static void ensureProjectGitignore( const wxString& aProjectPath )
 static void ensureProjectGitattributes( const wxString& aProjectPath )
 {
     static const std::pair<wxString, wxString> kicadEntries[] = {
-        { wxS( "*.kicad_pcb" ),  wxS( "merge=kicad-pcb" ) },
-        { wxS( "*.kicad_sch" ),  wxS( "merge=kicad-sch" ) },
-        { wxS( "*.kicad_sym" ),  wxS( "merge=kicad-sym-lib" ) },
-        { wxS( "*.kicad_mod" ),  wxS( "merge=kicad-fp" ) },
+        { wxS( "*.kemi_pcb" ),  wxS( "merge=kicad-pcb" ) },
+        { wxS( "*.kemi_sch" ),  wxS( "merge=kicad-sch" ) },
+        { wxS( "*.kemi_sym" ),  wxS( "merge=kicad-sym-lib" ) },
+        { wxS( "*.kemi_mod" ),  wxS( "merge=kicad-fp" ) },
     };
 
     wxFileName attrFile( aProjectPath, wxS( ".gitattributes" ) );
@@ -150,7 +150,7 @@ static void ensureProjectGitattributes( const wxString& aProjectPath )
 // and per-user PATH overrides).
 static wxString resolveKicadCliPath()
 {
-    return PATHS::ResolveSiblingExecutable( wxT( "kicad-cli" ) );
+    return PATHS::ResolveSiblingExecutable( wxT( "kemicad-cli" ) );
 }
 
 
@@ -193,7 +193,7 @@ static void ensureMergeDriverConfig( const wxString& aProjectPath )
     if( cliPath.IsEmpty() )
     {
         wxLogTrace( traceGit,
-                    "kicad-cli not found next to running binary; skipping merge driver "
+                    "kemicad-cli not found next to running binary; skipping merge driver "
                     "config (libgit2 in-process driver still works)." );
         return;
     }
@@ -240,14 +240,14 @@ static void ensureMergeDriverConfig( const wxString& aProjectPath )
 
     static const DRIVER_ENTRY drivers[] = {
         { "merge.kicad-pcb.name", "merge.kicad-pcb.driver", "KiCad PCB merge driver",
-          "git-mergedriver --kind pcb \"%O\" \"%A\" \"%B\" --output \"%A\"" },
+          "git-mergedriver --kind pcb \"%O\" \"%A\" \"%B\" --output \"%A\" --path \"%P\"" },
         { "merge.kicad-sch.name", "merge.kicad-sch.driver", "KiCad schematic merge driver",
-          "git-mergedriver --kind sch \"%O\" \"%A\" \"%B\" --output \"%A\"" },
+          "git-mergedriver --kind sch \"%O\" \"%A\" \"%B\" --output \"%A\" --path \"%P\"" },
         { "merge.kicad-sym-lib.name", "merge.kicad-sym-lib.driver",
           "KiCad symbol library merge driver",
-          "git-mergedriver --kind sym \"%O\" \"%A\" \"%B\" --output \"%A\"" },
+          "git-mergedriver --kind sym \"%O\" \"%A\" \"%B\" --output \"%A\" --path \"%P\"" },
         { "merge.kicad-fp.name", "merge.kicad-fp.driver", "KiCad footprint merge driver",
-          "git-mergedriver --kind fp \"%O\" \"%A\" \"%B\" --output \"%A\"" }
+          "git-mergedriver --kind fp \"%O\" \"%A\" \"%B\" --output \"%A\" --path \"%P\"" }
     };
 
     for( const DRIVER_ENTRY& d : drivers )

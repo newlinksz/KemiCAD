@@ -33,11 +33,15 @@
 
 #include <netlist.h>
 #include "netlist_exporter_orcadpcb2.h"
+#include "netlist_exporter_xml.h"
 
 
 bool NETLIST_EXPORTER_ORCADPCB2::writeNetlist( const wxString& aOutFileName, unsigned /* aNetlistOptions */,
                                                REPORTER& aReporter )
 {
+    if( !ValidateFootprintPadMappings( GNL_NETS, aReporter ) )
+        return false;
+
     FILE* f = nullptr;
     wxString    field;
     wxString    footprint;

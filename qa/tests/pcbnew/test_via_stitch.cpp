@@ -275,7 +275,7 @@ BOOST_AUTO_TEST_CASE( SexprSaveLoad )
     configureStitch( stitch );
     stitch->ExcludePosition( VECTOR2I( pcbIUScale.mmToIU( 6 ), pcbIUScale.mmToIU( 6 ) ) );
 
-    auto path = std::filesystem::temp_directory_path() / "qa_via_stitch_roundtrip.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "qa_via_stitch_roundtrip.kemi_pcb";
 
     ::KI_TEST::DumpBoardToFile( *board, path.string() );
 

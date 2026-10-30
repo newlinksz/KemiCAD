@@ -21,6 +21,7 @@
 
 #include <bitmaps.h>
 #include <brand.h>
+#include <kemi_format_profile.h>
 #include <api/api_handler_common.h>
 #include <api/api_handler_libraries.h>
 #include <api/api_handler_symbol.h>
@@ -1335,12 +1336,29 @@ wxString SYMBOL_EDIT_FRAME::AddLibraryFile( bool aCreateNew )
     wxFileName               fn = m_libMgr->GetUniqueLibraryName();
     bool                     useGlobalTable = true;
     FILEDLG_HOOK_NEW_LIBRARY tableChooser( useGlobalTable );
+    const bool restricted = aCreateNew;
+    const wxString extension = KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB,
+            restricted ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY );
+    if( restricted )
+        fn.SetExt( extension );
 
     if( !LibraryFileBrowser( aCreateNew ? _( "New Symbol Library" ) : _( "Add Symbol Library" ),
-                             !aCreateNew, fn, FILEEXT::KiCadSymbolLibFileWildcard(),
-                             FILEEXT::KiCadSymbolLibFileExtension, false,
+                             !aCreateNew, fn,
+                             restricted ? wxString( wxS( "KemiCAD symbol library (*.kemi_sym)|*.kemi_sym" ) )
+                                        : FILEEXT::KiCadSymbolLibFileWildcard(), extension, false,
                              Pgm().GetSettingsManager().IsProjectOpenNotDummy() ? &tableChooser : nullptr ) )
     {
+        return wxEmptyString;
+    }
+
+    try
+    {
+        if( aCreateNew )
+            fn = KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::SYMBOL_LIB, fn.GetFullPath(), true );
+    }
+    catch( const IO_ERROR& error )
+    {
+        ShowInfoBarError( error.What() );
         return wxEmptyString;
     }
 

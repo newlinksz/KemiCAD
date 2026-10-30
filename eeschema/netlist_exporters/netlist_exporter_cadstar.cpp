@@ -29,6 +29,7 @@
 #include <system_error>
 
 #include "netlist_exporter_cadstar.h"
+#include "netlist_exporter_xml.h"
 
 /* Generate CADSTAR net list. */
 static wxString StartLine( wxT( "." ) );
@@ -36,6 +37,9 @@ static wxString StartLine( wxT( "." ) );
 bool NETLIST_EXPORTER_CADSTAR::writeNetlist( const wxString& aOutFileName, unsigned /* aNetlistOptions */,
                                              REPORTER& aReporter )
 {
+    if( !ValidateFootprintPadMappings( GNL_NETS, aReporter ) )
+        return false;
+
     int ret = 0;
     FILE* f = nullptr;
 

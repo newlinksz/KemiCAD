@@ -35,6 +35,11 @@
 
 class SYMBOL_LIBRARY_ADAPTER;
 
+namespace KEMI_FORMAT
+{
+class KEMI_ONLY_OUTPUT_POLICY;
+}
+
 /**
  * Base class that schematic file and library loading and saving plugins should derive from.
  * Implementations can provide either LoadSchematicFile() or SaveSchematicFile() functions,
@@ -389,6 +394,12 @@ public:
      */
     virtual void SetLibraryManagerAdapter( SYMBOL_LIBRARY_ADAPTER* aAdapter ) {}
 
+    /** Bind import side effects to the caller's output directory; the caller owns the policy. */
+    void SetImportOutputPolicy( const KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY* aPolicy )
+    {
+        m_importOutputPolicy = aPolicy;
+    }
+
     //-----</PUBLIC SCH_IO API>------------------------------------------------
 
 
@@ -405,6 +416,8 @@ protected:
 
     SCH_IO( const wxString& aName ) : IO_BASE( aName )
     {}
+
+    const KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY* m_importOutputPolicy = nullptr;
 };
 
 

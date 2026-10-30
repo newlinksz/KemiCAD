@@ -52,9 +52,11 @@ public:
      * @param aOutputFormatter is the destination of the serialization to text.
      * @param aCtl is bit set composed by OR-ing together enum GNL bits, it allows outputting
      *  a subset of the full document model.
+     * @param aReporter receives physical-pad diagnostics; defaults to the wx log reporter.
+     * @return false if a connected pin would be lost; no output is written in that case.
      * @throw IO_ERROR if any problems.
      */
-    void Format( OUTPUTFORMATTER* aOutputFormatter, int aCtl );
+    bool Format( OUTPUTFORMATTER* aOutputFormatter, int aCtl, REPORTER* aReporter = nullptr );
 };
 
 #endif

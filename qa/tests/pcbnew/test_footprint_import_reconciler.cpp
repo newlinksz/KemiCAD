@@ -519,7 +519,7 @@ BOOST_AUTO_TEST_CASE( BackSideFootprintsMatchTheirCachedCopy )
 
     // the DRC reads the board back from disk, so compare what was saved, not what was imported
     PCB_IO_KICAD_SEXPR     kicad;
-    wxString               boardPath = project.GetProjectPath() + wxS( "backside.kicad_pcb" );
+    wxString               boardPath = project.GetProjectPath() + wxS( "backside.kemi_pcb" );
     kicad.SaveBoard( boardPath, *board );
     std::unique_ptr<BOARD> reloaded( kicad.LoadBoard( boardPath, nullptr, &project ) );
     BOOST_REQUIRE( reloaded );

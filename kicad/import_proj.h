@@ -61,8 +61,9 @@ public:
 
     /**
      * @brief Saves every design an editor imported, so the new project exists on disk.
+     * @return true if at least one design was imported and every editor confirmed its save.
      */
-    void SaveImportedFiles();
+    bool SaveImportedFiles();
 
     wxFileName m_InputFile;
     wxFileName m_TargetProj;

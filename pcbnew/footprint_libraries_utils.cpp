@@ -22,6 +22,7 @@
 #include <wx/ffile.h>
 #include <pgm_base.h>
 #include <kiface_base.h>
+#include <kemi_format_profile.h>
 #include <confirm.h>
 #include <kidialog.h>
 #include <macros.h>
@@ -259,9 +260,14 @@ void FOOTPRINT_EDIT_FRAME::ExportFootprint( FOOTPRINT* aFootprint )
 
     fn.SetName( aFootprint->GetFPID().GetLibItemName() );
 
-    wxString wildcard = FILEEXT::KiCadFootprintLibFileWildcard();
+    const bool restricted = true;
+    const std::string extension = KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::FOOTPRINT,
+            restricted ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY );
+    wxString wildcard = restricted
+            ? _( "KemiCAD footprint files" ) + AddFileExtListToFilter( { extension } )
+            : FILEEXT::KiCadFootprintLibFileWildcard();
 
-    fn.SetExt( FILEEXT::KiCadFootprintFileExtension );
+    fn.SetExt( extension );
 
     if( !cfg->m_LastExportPath.empty() )
         fn.SetPath( cfg->m_LastExportPath );
@@ -276,42 +282,23 @@ void FOOTPRINT_EDIT_FRAME::ExportFootprint( FOOTPRINT* aFootprint )
     if( dlg.ShowModal() == wxID_CANCEL )
         return;
 
-    fn = EnsureFileExtension( dlg.GetPath(), FILEEXT::KiCadFootprintFileExtension );
+    fn = dlg.GetPath();
     cfg->m_LastExportPath = fn.GetPath();
 
     try
     {
-        // Export as *.kicad_pcb format, using a strategy which is specifically chosen
-        // as an example on how it could also be used to send it to the system clipboard.
+        fn.Assign( restricted
+                ? KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::FOOTPRINT,
+                                                     fn.GetFullPath(), true )
+                : EnsureFileExtension( fn.GetFullPath(), extension ) );
 
-        PCB_IO_KICAD_SEXPR  pcb_io(CTL_FOR_LIBRARY );
+        PCB_IO_KICAD_SEXPR pcb_io;
+        FOOTPRINT exportCopy( *aFootprint );
 
-        /*  This footprint should *already* be "normalized" in a way such that
-            orientation is zero, etc., since it came from the Footprint Editor.
+        if( restricted )
+            exportCopy.SetKemiOnly();
 
-            aFootprint->SetParent( 0 );
-            aFootprint->SetOrientation( 0 );
-        */
-
-        pcb_io.Format( aFootprint );
-
-        FILE* fp = wxFopen( fn.GetFullPath(), wxT( "wt" ) );
-
-        if( fp == nullptr )
-        {
-            DisplayErrorMessage( this, wxString::Format( _( "Insufficient permissions to write file '%s'." ),
-                                                         fn.GetFullPath() ) );
-            return;
-        }
-
-        std::string prettyData = pcb_io.GetStringOutput( false );
-        KICAD_FORMAT::Prettify( prettyData, KICAD_FORMAT::FORMAT_MODE::NORMAL );
-
-        if( fprintf( fp, "%s", prettyData.c_str() ) < 0 || fclose( fp ) != 0 )
-        {
-            DisplayErrorMessage( this, wxString::Format( _( "Error writing file '%s'." ), fn.GetFullPath() ) );
-            return;
-        }
+        pcb_io.FootprintSave( fn.GetFullPath(), &exportCopy );
     }
     catch( const IO_ERROR& ioe )
     {

@@ -20,11 +20,15 @@
  */
 
 #include <lset.h>
+#include <kemi_format_profile.h>
+#include <ki_exception.h>
+#include <trace_helpers.h>
 #include <project.h>
 #include <project/project_local_settings.h>
 #include <settings/layer_settings_utils.h>
 #include <settings/json_settings_internals.h>
 #include <settings/parameters.h>
+#include <wx/filename.h>
 
 const int projectLocalSettingsVersion = 7;
 
@@ -581,7 +585,7 @@ bool PROJECT_LOCAL_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce
 {
     wxASSERT( m_project );
 
-    Set( "meta.filename", m_project->GetProjectName() + "." + FILEEXT::ProjectLocalSettingsFileExtension );
+    Set( "meta.filename", wxFileName( GetFullFilename() ).GetFullName() );
 
     // Even if parameters were not modified, we should resave after migration
     bool force = aForce || m_wasMigrated;
@@ -596,8 +600,18 @@ bool PROJECT_LOCAL_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce
 
 bool PROJECT_LOCAL_SETTINGS::SaveAs( const wxString& aDirectory, const wxString& aFile )
 {
-    Set( "meta.filename", aFile + "." + FILEEXT::ProjectLocalSettingsFileExtension );
-    SetFilename( aFile );
+    try
+    {
+        SetFilename( KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::PROJECT_LOCAL,
+                                                      aFile, IsKemiOnly() ) );
+    }
+    catch( const IO_ERROR& error )
+    {
+        m_lastSaveFailed = true;
+        wxLogTrace( traceSettings, wxT( "Refusing local settings Save As: %s" ), error.What() );
+        return false;
+    }
+    Set( "meta.filename", wxFileName( GetFullFilename() ).GetFullName() );
     SetReadOnly( false );
 
     // If we're actually going ahead and doing the save, the flag that keeps code from doing the

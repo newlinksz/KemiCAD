@@ -28,6 +28,7 @@
 #include <sch_line.h>
 #include <sch_io/sch_io.h>
 #include <sch_io/sch_io_mgr.h>
+#include <kemi_format_profile.h>
 #include <io/eagle/eagle_parser.h>
 #include <geometry/seg.h>
 
@@ -36,6 +37,7 @@ class EDA_TEXT;
 class KIWAY;
 class LINE_READER;
 class SCH_SCREEN;
+class SCH_IO_KICAD_SEXPR;
 class SCH_SHEET;
 class SCH_BITMAP;
 class SCH_JUNCTION;
@@ -188,6 +190,7 @@ private:
 
     wxString        getLibName();
     wxFileName      getLibFileName();
+    KEMI_FORMAT::OUTPUT_TARGET getLibOutputTarget();
 
     /// Checks if there are other wires or pins at the position of the tested pin
     bool checkConnections( const SCH_SYMBOL* aSymbol, const SCH_PIN* aPin ) const;
@@ -248,6 +251,7 @@ private:
     wxString    m_version;        ///< Eagle file version.
     wxFileName  m_filename;
     wxString    m_libName;        ///< Library name to save symbols
+    wxString    m_libStoragePath; ///< Staged project library during schematic import.
     SCHEMATIC*  m_schematic;      ///< Passed to Load(), the schematic object being loaded
     std::vector<EMODULE*> m_modules; ///< The current module stack being loaded.
     std::vector<EMODULEINST*> m_moduleInstances;
@@ -259,7 +263,7 @@ private:
 
     std::unordered_map<wxString, bool> m_userValue; ///< deviceset/\@uservalue for device.
 
-    IO_RELEASER<SCH_IO>                m_pi;                ///< PI to create KiCad symbol library.
+    IO_RELEASER<SCH_IO_KICAD_SEXPR>     m_pi;                ///< PI to create KiCad symbol library.
 
     int                                m_sheetIndex;
     std::map<wxString, int>            m_netCounts;

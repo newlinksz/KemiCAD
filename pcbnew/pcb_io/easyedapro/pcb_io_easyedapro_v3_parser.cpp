@@ -111,7 +111,7 @@ wxString PCB_IO_EASYEDAPRO_V3_PARSER::GenerateSafeSpacingRules( const nlohmann::
     wxString rules = wxS( "(version 1)\n\n"
                           "# EasyEDA Pro safeSpacing values.  Values are mils even when the\n"
                           "# source rule context reports unit \"mm\".  Entries without a\n"
-                          "# generated rule are source categories that KiCad's imported item\n"
+                          "# generated rule are source categories that KemiCAD's imported item\n"
                           "# model cannot distinguish; they remain here for lossless reference.\n" );
 
     for( size_t row = 0; row < sizeof( safeSpacingNames ) / sizeof( safeSpacingNames[0] ) && row < aSafeSpacing.size();

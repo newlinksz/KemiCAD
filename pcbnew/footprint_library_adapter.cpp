@@ -26,6 +26,7 @@
 #include <thread_pool.h>
 #include <trace_helpers.h>
 #include <footprint.h>
+#include <kemi_format_profile.h>
 
 #include <magic_enum.hpp>
 #include <wx/hash.h>
@@ -439,7 +440,16 @@ FOOTPRINT_LIBRARY_ADAPTER::SAVE_T FOOTPRINT_LIBRARY_ADAPTER::SaveFootprint( cons
 
         try
         {
-            pcbplugin( *lib )->FootprintSave( getUri( ( *lib )->row ), aFootprint );
+            if( KEMI_FORMAT::HasKemiExt( Manager().Project().GetProjectFullName() ) )
+            {
+                FOOTPRINT nativeCopy( *aFootprint );
+                nativeCopy.SetKemiOnly();
+                pcbplugin( *lib )->FootprintSave( getUri( ( *lib )->row ), &nativeCopy );
+            }
+            else
+            {
+                pcbplugin( *lib )->FootprintSave( getUri( ( *lib )->row ), aFootprint );
+            }
         }
         catch( IO_ERROR& e )
         {

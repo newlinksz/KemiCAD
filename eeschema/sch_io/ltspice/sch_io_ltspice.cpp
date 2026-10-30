@@ -28,10 +28,43 @@
 #include <sch_sheet.h>
 #include <sch_screen.h>
 #include <kiplatform/environment.h>
+#include <wx/ffile.h>
+#include <cctype>
+#include <string>
 
 /**
  * @brief schematic PLUGIN for LTspice (*.asc) and (.asy) format.
  */
+
+bool SCH_IO_LTSPICE::CanReadSchematicFile( const wxString& aFileName ) const
+{
+    if( !SCH_IO::CanReadSchematicFile( aFileName ) )
+        return false;
+
+    wxFFile file( aFileName, wxS( "rb" ) );
+
+    if( !file.IsOpened() )
+        return false;
+
+    char   buffer[64] = {};
+    size_t count = file.Read( buffer, sizeof( buffer ) );
+
+    // LTspice writes ASCII or UTF-16; drop BOM and NUL bytes and look for the "Version" header.
+    std::string header;
+
+    for( size_t i = 0; i < count; ++i )
+    {
+        unsigned char ch = static_cast<unsigned char>( buffer[i] );
+
+        if( ch == 0 || ch >= 0x80 || ( header.empty() && std::isspace( ch ) ) )
+            continue;
+
+        header.push_back( static_cast<char>( ch ) );
+    }
+
+    return header.rfind( "Version", 0 ) == 0;
+}
+
 
 int SCH_IO_LTSPICE::GetModifyHash() const
 {

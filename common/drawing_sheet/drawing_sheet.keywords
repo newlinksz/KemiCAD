@@ -1,6 +1,8 @@
 page_layout
 drawing_sheet
 version
+format_version
+kemi_wks
 kicad_wks
 setup
 left_margin

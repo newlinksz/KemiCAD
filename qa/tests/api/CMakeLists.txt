@@ -35,7 +35,7 @@ add_executable( qa_api
 
 add_dependencies( qa_api
     pcbnew
-    kicad-cli
+    kemicad-cli
     )
 
 target_link_libraries( qa_api
@@ -69,7 +69,7 @@ target_include_directories( qa_api PRIVATE
     )
 
 target_compile_definitions( qa_api PRIVATE
-    QA_KICAD_CLI_PATH="$<TARGET_FILE:kicad-cli>"
+    QA_KICAD_CLI_PATH="$<TARGET_FILE:kemicad-cli>"
     )
 
 kicad_add_boost_test( qa_api qa_api )

@@ -163,7 +163,7 @@ BOOST_AUTO_TEST_CASE( SaveFootprintReadOnlyFilePropagatesError )
 
     BOOST_REQUIRE( adapter.SaveFootprint( nickname, fp ) == FOOTPRINT_LIBRARY_ADAPTER::SAVE_OK );
 
-    std::filesystem::path savedFile = libPath / "readonly_fp.kicad_mod";
+    std::filesystem::path savedFile = libPath / "readonly_fp.kemi_mod";
     BOOST_REQUIRE( std::filesystem::exists( savedFile ) );
 
     // Mark only the file read-only, mirroring the issue; the directory stays writable so the

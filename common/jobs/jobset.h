@@ -21,6 +21,7 @@
 #ifndef JOBS_FILE_H
 #define JOBS_FILE_H
 
+#include <kemi_format_profile.h>
 #include <reporter.h>
 #include <jobs/job.h>
 #include <jobs/jobs_output.h>
@@ -169,6 +170,9 @@ public:
 
     bool SaveToFile( const wxString& aDirectory = "", bool aForce = false ) override;
 
+    /// Save to an explicit destination and adopt its name only on success.
+    bool SaveAs( const wxString& aFilename );
+
     void SetDirty( bool aFlag = true ) { m_dirty = aFlag; }
     bool GetDirty() const { return m_dirty; }
 
@@ -183,6 +187,11 @@ public:
     void RemoveJob( size_t aJobIdx );
 
 protected:
+    std::optional<KEMI_FORMAT::DOC> getDocumentType() const override
+    {
+        return KEMI_FORMAT::DOC::JOBSET;
+    }
+
     wxString getFileExt() const override;
 
 private:

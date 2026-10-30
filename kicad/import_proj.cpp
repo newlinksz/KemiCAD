@@ -23,6 +23,8 @@
 #include <list>
 
 #include <import_proj_properties.h>
+#include <kemi_format_profile.h>
+#include <ki_exception.h>
 #include <confirm.h>
 #include <kidialog.h>
 #include <wildcards_and_files_ext.h>
@@ -46,6 +48,8 @@
 
 #include <sch_io/sch_io_mgr.h>
 #include <pcb_io/pcb_io_mgr.h>
+#include <project.h>
+#include <project/project_file.h>
 #include <project_sch.h>
 #include <project_pcb.h>
 
@@ -176,6 +180,27 @@ void IMPORT_PROJ_HELPER::ImportIndividualFile( KICAD_T aFT, int aImportedFileTyp
 
 void IMPORT_PROJ_HELPER::doImport( const wxString& aFile, FRAME_T aFrameType, int aImportedFileType )
 {
+    // The editors derive their output policy from the shared project.  This also covers
+    // the optional OrCAD/Allegro board and every format-specific handler below.
+    try
+    {
+        KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( m_TargetProj.GetPath() );
+        const KEMI_FORMAT::OUTPUT_TARGET project = policy.Target(
+                KEMI_FORMAT::DOC::PROJECT, m_TargetProj.GetFullPath() );
+
+        if( !KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PROJECT, m_TargetProj.GetExt() )
+            || !wxFileName( project.FinalPath() ).SameAs(
+                    wxFileName( m_frame->Prj().GetProjectFullName() ) ) )
+        {
+            THROW_IO_ERROR( _( "The imported design requires its new KemiCAD destination project." ) );
+        }
+    }
+    catch( const IO_ERROR& error )
+    {
+        DisplayErrorMessage( m_frame, _( "Cannot import into this project." ), error.What() );
+        return;
+    }
+
     if( KIWAY_PLAYER* frame = m_frame->Kiway().Player( aFrameType, true ) )
     {
         std::stringstream ss;
@@ -207,15 +232,51 @@ void IMPORT_PROJ_HELPER::doImport( const wxString& aFile, FRAME_T aFrameType, in
 }
 
 
-void IMPORT_PROJ_HELPER::SaveImportedFiles()
+bool IMPORT_PROJ_HELPER::SaveImportedFiles()
 {
+    const bool paired = m_importedFrames.count( FRAME_SCH ) && m_importedFrames.count( FRAME_PCB_EDITOR );
+
+    if( paired && m_frame->Prj().GetProjectFile().GetBoards().size() > 1 )
+    {
+        wxLogWarning( wxS( "IMPORT_LINK_MULTIBOARD: no unique schematic-to-board pairing; footprint fields were preserved." ) );
+    }
+    else if( paired )
+    {
+        // These editors succeeded in this helper's import into the same new project.
+        // Request project-bound, validated board IDs, never an arbitrary open board.
+        std::string payload = TO_UTF8( m_TargetProj.GetFullPath() );
+        m_frame->Kiway().ExpressMail( FRAME_PCB_EDITOR, MAIL_PCB_GET_FOOTPRINT_IDS, payload, m_frame );
+
+        const auto links = IMPORT_PROJ_PROPS::SplitFootprintLinkData( wxString::FromUTF8( payload ) );
+
+        if( !links )
+            THROW_IO_ERROR( payload.rfind( "error:", 0 ) == 0
+                                    ? wxString::FromUTF8( payload.substr( 6 ) )
+                                    : _( "Could not obtain the paired imported board's footprint links." ) );
+
+        if( !wxFileName( links->projectFile ).SameAs( m_TargetProj ) )
+            THROW_IO_ERROR( _( "The paired imported board belongs to another project." ) );
+
+        m_frame->Kiway().ExpressMail( FRAME_SCH, MAIL_SCH_LINK_FOOTPRINTS, payload, m_frame );
+
+        if( payload != "success" )
+            THROW_IO_ERROR( payload.rfind( "error:", 0 ) == 0
+                                    ? wxString::FromUTF8( payload.substr( 6 ) )
+                                    : _( "Could not link the paired imported schematic to its board footprints." ) );
+    }
+
     for( FRAME_T frameType : m_importedFrames )
     {
         std::string payload;
         MAIL_T      mail = frameType == FRAME_SCH ? MAIL_SCH_SAVE : MAIL_PCB_SAVE;
 
         m_frame->Kiway().ExpressMail( frameType, mail, payload, m_frame );
+
+        if( payload != "success" )
+            return false;
     }
+
+    return !m_importedFrames.empty();
 }
 
 
@@ -226,7 +287,7 @@ void IMPORT_PROJ_HELPER::EasyEDAProProjectHandler( int aImportedSchFileType, int
 
     // Sch/PCB importers both assign FPIDs under ShortenLibName( archive ); advertise that
     // nickname as the source footprint lib so post-import reconciler keeps it (instead of
-    // rewriting schematic Footprint fields onto the generated *-import-fps cache).
+    // rewriting schematic Footprint fields onto the generated project footprint cache).
     wxArrayString sourceFpLibs;
     sourceFpLibs.Add( EASYEDAPRO::ShortenLibName( m_InputFile.GetName() ) );
     m_properties[IMPORT_PROJ_PROPS::SOURCE_FP_LIBS] = IMPORT_PROJ_PROPS::JoinList( sourceFpLibs );
@@ -284,13 +345,18 @@ void IMPORT_PROJ_HELPER::EasyEDAProProjectHandler( int aImportedSchFileType, int
 
 void IMPORT_PROJ_HELPER::setImportCacheNickname()
 {
-    // fresh empty target dir, so a stem-derived name is collision-free; reconciler still guards on-disk
+    // Fresh empty target dir, so a stem-derived name is collision-free; reconciler still guards
+    // on-disk.  Nickname equals the engineering project name (date suffix already stripped).
     wxString stem = m_TargetProj.GetName();
 
     if( stem.IsEmpty() )
         stem = m_InputFile.GetName();
 
+    stem = IMPORT_PROJ_PROPS::StripImportDateSuffix( stem );
+
     m_properties[IMPORT_PROJ_PROPS::FP_CACHE_NICKNAME] = IMPORT_PROJ_PROPS::MakeCacheNickname( stem );
+    m_properties[IMPORT_PROJ_PROPS::SYM_CACHE_NICKNAME] =
+            IMPORT_PROJ_PROPS::MakeSymbolCacheNickname( stem );
 }
 
 
@@ -431,6 +497,7 @@ void IMPORT_PROJ_HELPER::AltiumProjectHandler()
 void IMPORT_PROJ_HELPER::ImportPadsFiles()
 {
     m_properties.clear();
+    setImportCacheNickname();
 
     PADS_COMMON::RELATED_FILES related = PADS_COMMON::FindRelatedPadsFiles( m_InputFile.GetFullPath() );
 

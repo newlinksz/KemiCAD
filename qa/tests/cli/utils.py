@@ -41,7 +41,7 @@ def kicad_cli() -> str:
     if 'KICAD_CLI' in os.environ:
         return os.environ.get('KICAD_CLI')
 
-    return "kicad-cli"
+    return "kemicad-cli"
 
 
 def _get_kicad_major_version() -> int:

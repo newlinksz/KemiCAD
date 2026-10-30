@@ -59,6 +59,7 @@ public:
     int JobUpgrade( JOB* aJob );
     int JobDowngrade( JOB* aJob );
     int JobImport( JOB* aJob );
+    int JobLinkImportedFootprints( JOB* aJob );
     int JobSchDiff( JOB* aJob );
     int JobSymDiff( JOB* aJob );
 

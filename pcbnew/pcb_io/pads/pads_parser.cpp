@@ -1146,7 +1146,9 @@ void PARSER::parseSectionVIA( std::ifstream& aStream )
             bool is_copper = ( effective_layer >= 1
                                && effective_layer <= m_parameters.layer_count );
 
-            if( is_copper )
+            // RA/SA describe plane clearance, not the via's copper diameter or span.
+            // Keep them in the stack above for consumers of the original pad metadata.
+            if( is_copper && !IsAntiPadRow( layer_data ) )
             {
                 if( size > def.size )
                     def.size = size;
@@ -1912,11 +1914,40 @@ void PARSER::parseSectionROUTES( std::ifstream& aStream )
     bool has_pending_arc_center = false;
     ARC_POINT pending_arc_center;
     std::string pending_arc_dir;
+    std::vector<NET_PIN> connection_pins;
+    std::optional<POINT> first_connection_point;
+    std::optional<POINT> last_connection_point;
+
+    // Keep endpoint identity independently of the physical tracks: a layer-0 connection can
+    // still identify a named terminal, and an arc-center record is not an endpoint.
+    auto finishConnection = [&]()
+    {
+        if( current_route && connection_pins.size() == 2
+            && first_connection_point && last_connection_point )
+        {
+            for( size_t i = 0; i < connection_pins.size(); ++i )
+            {
+                const NET_PIN& pin = connection_pins[i];
+
+                if( !pin.ref_des.empty() && !pin.pin_name.empty() )
+                {
+                    current_route->pin_endpoints.push_back(
+                            { pin, i == 0 ? *first_connection_point : *last_connection_point } );
+                }
+            }
+        }
+
+        connection_pins.clear();
+        first_connection_point.reset();
+        last_connection_point.reset();
+    };
 
     while( readLine( aStream, line ) )
     {
         if( line[0] == '*' )
         {
+             finishConnection();
+
              if( line.rfind( "*SIGNAL*", 0 ) == 0 )
              {
                  if( in_track && current_route )
@@ -1963,6 +1994,8 @@ void PARSER::parseSectionROUTES( std::ifstream& aStream )
         // These indicate which pins are connected by the following route segments
         if( !isdigit( line[0] ) && line[0] != '-' && line[0] != '+' )
         {
+            finishConnection();
+
             if( in_track && current_route )
             {
                 current_route->tracks.push_back( current_track );
@@ -1981,10 +2014,10 @@ void PARSER::parseSectionROUTES( std::ifstream& aStream )
                 while( pin_iss >> pin_token )
                 {
                     size_t dot_pos = pin_token.find( '.' );
+                    NET_PIN pin;
 
                     if( dot_pos != std::string::npos )
                     {
-                        NET_PIN pin;
                         pin.ref_des = pin_token.substr( 0, dot_pos );
                         pin.pin_name = pin_token.substr( dot_pos + 1 );
 
@@ -2004,6 +2037,10 @@ void PARSER::parseSectionROUTES( std::ifstream& aStream )
                         if( !found )
                             current_route->pins.push_back( pin );
                     }
+
+                    // Retain an empty entry for an unresolved endpoint instead of shifting the
+                    // other pin to the wrong end of the connection.
+                    connection_pins.push_back( pin );
                 }
             }
 
@@ -2194,6 +2231,11 @@ void PARSER::parseSectionROUTES( std::ifstream& aStream )
             has_pending_arc_center = true;
             continue;
         }
+
+        if( !first_connection_point )
+            first_connection_point = POINT{ pt.x, pt.y };
+
+        last_connection_point = POINT{ pt.x, pt.y };
 
         if( has_pending_arc_center )
         {
@@ -2478,6 +2520,8 @@ void PARSER::parseSectionROUTES( std::ifstream& aStream )
             }
         }
     }
+
+    finishConnection();
 
     if( in_track && current_route )
     {
@@ -3771,7 +3815,7 @@ void PARSER::parseSectionPARTTYPE( std::ifstream& aStream )
     int pendingGates = 0;
     int pendingGatePins = 0;
     int pendingSigPins = 0;
-    int pendingUnusedPins = 0;
+    int pendingAlphanumericPins = 0;
 
     // Helper to parse pin electrical type character
     auto parsePinElecType = []( char c ) -> PIN_ELEC_TYPE {
@@ -3804,6 +3848,57 @@ void PARSER::parseSectionPARTTYPE( std::ifstream& aStream )
             tokens.push_back( token );
 
         return tokens;
+    };
+
+    // A truncated pin list has no terminator. Only a complete header referring to known
+    // decals is strong enough evidence to stop it; a row of numeric names alone is not.
+    auto headerCountsIndex = [&]( const std::vector<std::string>& aTokens ) -> std::optional<size_t>
+    {
+        if( aTokens.size() < 7 )
+            return std::nullopt;
+
+        size_t typeIndex = 2;
+
+        if( aTokens[2] == "I" || aTokens[2] == "M" || aTokens[2] == "U"
+            || aTokens[2] == "D" || aTokens[2] == "MM" )
+        {
+            typeIndex = 3;
+        }
+
+        if( aTokens.size() != typeIndex + 5 && aTokens.size() != typeIndex + 6 )
+            return std::nullopt;
+
+        const std::string& type = aTokens[typeIndex];
+
+        if( type.size() != 3
+            || type.find_first_not_of( "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" )
+                       != std::string::npos )
+        {
+            return std::nullopt;
+        }
+
+        for( size_t ii = typeIndex + 1; ii <= typeIndex + 4; ++ii )
+        {
+            if( !isInteger( aTokens[ii] ) )
+                return std::nullopt;
+        }
+
+        if( aTokens.size() == typeIndex + 6 && aTokens.back() != "Y" && aTokens.back() != "N" )
+            return std::nullopt;
+
+        if( aTokens[1].empty() || aTokens[1].back() == ':' )
+            return std::nullopt;
+
+        std::istringstream decals( aTokens[1] );
+        std::string decal;
+
+        while( std::getline( decals, decal, ':' ) )
+        {
+            if( m_decals.find( decal ) == m_decals.end() )
+                return std::nullopt;
+        }
+
+        return typeIndex + 1;
     };
 
     while( readLine( aStream, line ) )
@@ -3922,12 +4017,22 @@ void PARSER::parseSectionPARTTYPE( std::ifstream& aStream )
             continue;
         }
 
-        // Unused pin names are discarded, but still have to be counted off so a run of bare
-        // pin numbers is not read as the next header
-        if( pendingGates == 0 && pendingSigPins == 0 && pendingUnusedPins > 0 )
+        // Despite the historical UNUSEDPINNMS label in some file headers, this is the complete
+        // alphanumeric map for numeric terminals 1..N, including unconnected pins. Keep all
+        // tokens so an overlong or truncated declaration cannot appear valid to the importer.
+        if( pendingGates == 0 && pendingSigPins == 0 && pendingAlphanumericPins > 0 )
         {
-            pendingUnusedPins -= std::min<int>( pendingUnusedPins, tokens.size() );
-            continue;
+            if( !headerCountsIndex( tokens ) )
+            {
+                currentPartType->alphanumeric_pins.insert( currentPartType->alphanumeric_pins.end(),
+                                                           tokens.begin(), tokens.end() );
+                pendingAlphanumericPins -= std::min<int>( pendingAlphanumericPins, tokens.size() );
+                continue;
+            }
+
+            // Keep the preceding declaration's count and partial names so it is rejected.
+            // This line belongs to the next part type and must be parsed as its header.
+            pendingAlphanumericPins = 0;
         }
 
         // Gate line: G gateswap pins
@@ -3965,8 +4070,8 @@ void PARSER::parseSectionPARTTYPE( std::ifstream& aStream )
             continue;
         }
 
-        // Header is NAME DECALNM [UNITS] TYPE GATES SIGPINS UNUSEDPINNMS FLAGS ECO, and V5.0
-        // and V2005.0 insert UNITS, so the counts start at the first numeric column past the decal
+        // Header is NAME DECALNM [UNITS] TYPE GATES SIGPINS ALPINM FLAGS ECO. Use the
+        // recognized layout where possible, retaining legacy count discovery for other forms.
         PART_TYPE pt;
         pt.name = tokens[0];
 
@@ -3980,9 +4085,11 @@ void PARSER::parseSectionPARTTYPE( std::ifstream& aStream )
         pendingGates = 0;
         pendingGatePins = 0;
         pendingSigPins = 0;
-        pendingUnusedPins = 0;
+        pendingAlphanumericPins = 0;
 
-        for( size_t ii = 2; ii < tokens.size(); ++ii )
+        const auto countsIndex = headerCountsIndex( tokens );
+
+        for( size_t ii = countsIndex.value_or( 2 ); ii < tokens.size(); ++ii )
         {
             if( !isInteger( tokens[ii] ) )
                 continue;
@@ -3993,7 +4100,11 @@ void PARSER::parseSectionPARTTYPE( std::ifstream& aStream )
                 pendingSigPins = PADS_COMMON::ParseInt( tokens[ii + 1], 0, "part type sigpins" );
 
             if( ii + 2 < tokens.size() && isInteger( tokens[ii + 2] ) )
-                pendingUnusedPins = PADS_COMMON::ParseInt( tokens[ii + 2], 0, "part type unused pins" );
+            {
+                pendingAlphanumericPins = PADS_COMMON::ParseInt( tokens[ii + 2], 0,
+                                                                 "part type alphanumeric pins" );
+                currentPartType->alphanumeric_pin_count = pendingAlphanumericPins;
+            }
 
             break;
         }

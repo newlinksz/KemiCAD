@@ -3000,8 +3000,10 @@ void BINARY_PARSER::parseDimensions()
     // A dimension's leader geometry is the sec12 vertex run of its DIM* DRW owner, laid out in
     // sub-piece order: BASPNT1(2v) BASPNT2(2v) ARWLN1(2v) ARWHD1(4v) ARWLN2(2v) ARWHD2(4v)
     // EXTLN1(2v) EXTLN2(2v). The measurement endpoints are the two BASPNT first points (run rows
-    // 0 and 2); the crossbar is the ARWLN1 first point (run row 4). The vertices are absolute
-    // design coords (no owner-origin shift).
+    // 0 and 2); the crossbar is the ARWLN1 first point (run row 4). Like every other DRW owner
+    // (board outline, 2D lines, copper shapes, keepouts) the vertices are relative to the owner's
+    // origin, so the owner ORIGIN_X/Y is added -- the same xloc/yloc + dx/dy the ASCII reader uses.
+    // Without it, imported dimensions land far off the board edge.
     //
     // The value-label text lives in a sec8 record bound to the dimension only by anchor
     // proximity, which is unreliable when title-block notes share the dimension layer and
@@ -3020,6 +3022,10 @@ void BINARY_PARSER::parseDimensions()
             continue;
 
         int32_t startRow = it->second.vertexStart;
+        int32_t ownerX = ringI32( *sec10, DRW_ITEM::ROTATION, DRW_ITEM::SIZE, it->second.ownerIndex,
+                                  DRW_ITEM::ORIGIN_X );
+        int32_t ownerY = ringI32( *sec10, DRW_ITEM::ROTATION, DRW_ITEM::SIZE, it->second.ownerIndex,
+                                  DRW_ITEM::ORIGIN_Y );
 
         int32_t bp1x = 0, bp1y = 0, bp2x = 0, bp2y = 0, arwx = 0, arwy = 0, attr = 0;
 
@@ -3028,6 +3034,13 @@ void BINARY_PARSER::parseDimensions()
         {
             continue;
         }
+
+        bp1x += ownerX;
+        bp1y += ownerY;
+        bp2x += ownerX;
+        bp2y += ownerY;
+        arwx += ownerX;
+        arwy += ownerY;
 
         DIMENSION dim;
         dim.name = name;

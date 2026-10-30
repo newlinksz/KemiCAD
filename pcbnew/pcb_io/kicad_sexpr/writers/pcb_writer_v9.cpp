@@ -27,6 +27,7 @@
 #include <wx/log.h>
 #include <wx/mstream.h>
 #include <board.h>
+#include <kemi_format_profile.h>
 #include <board_design_settings.h>
 #include <callback_gal.h>
 #include <convert_basic_shapes_to_polygon.h> // for enum RECT_CHAMFER_POSITIONS definition
@@ -216,6 +217,12 @@ static void formatBoardStackupV9( OUTPUTFORMATTER* aFormatter, const BOARD* aBoa
 
 void PCB_WRITER_V9::SaveBoard( const wxString& aFileName, BOARD* aBoard )
 {
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PCB, aFileName,
+                                        KEMI_FORMAT::FLAVOR::LEGACY, true );
+
+    if( aBoard->IsKemiOnly() )
+        THROW_IO_ERROR( _( "KemiCAD data cannot be exported to an official KiCad format." ) );
+
     LOCALE_IO toggle;
 
     m_ctl = CTL_FOR_BOARD;
@@ -2375,6 +2382,12 @@ void PCB_WRITER_V9::format( const ZONE* aZone ) const
 
 void PCB_WRITER_V9::SaveFootprintFile( const wxString& aFileName, FOOTPRINT* aFootprint )
 {
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::FOOTPRINT, aFileName,
+                                        KEMI_FORMAT::FLAVOR::LEGACY, true );
+
+    if( aFootprint->IsKemiOnly() )
+        THROW_IO_ERROR( _( "KemiCAD data cannot be exported to an official KiCad format." ) );
+
     LOCALE_IO toggle;
 
     if( aFootprint->GetAreFontsEmbedded() )

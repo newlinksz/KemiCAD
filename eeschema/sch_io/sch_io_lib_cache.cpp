@@ -22,9 +22,78 @@
 #include "sch_io_lib_cache.h"
 
 #include <common.h>
-#include <kiplatform/io.h>
+#include <gestfich.h>
+#include <kemi_format_profile.h>
 #include <lib_symbol.h>
+#include <richio.h>
+#include <wx/dir.h>
 #include <wx_filename.h>
+
+#include <algorithm>
+#include <cstdint>
+
+
+std::vector<wxString> SCH_IO_LIB_CACHE::GetSymbolLibraryFiles( const wxString& aDirectory )
+{
+    std::vector<wxString> files;
+    wxDir                dir( aDirectory );
+    wxString             name;
+
+    if( !dir.IsOpened() )
+        THROW_IO_ERRORF( _( "Cannot read symbol library directory '%s'." ), aDirectory );
+
+    if( dir.GetFirst( &name, wxEmptyString, wxDIR_FILES ) )
+    {
+        do
+        {
+            if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::SYMBOL_LIB, wxFileName( name ).GetExt() ) )
+                files.push_back( wxFileName( aDirectory, name ).GetFullPath() );
+        } while( dir.GetNext( &name ) );
+    }
+
+    std::sort( files.begin(), files.end() );
+    return files;
+}
+
+
+long long SCH_IO_LIB_CACHE::GetSymbolLibraryTimestamp( const wxString& aPath )
+{
+    wxFileName fileName( aPath );
+    WX_FILENAME::ResolvePossibleSymlinks( fileName );
+
+    const wxString path = fileName.GetFullPath();
+    std::vector<wxString> files;
+    const bool isDirectory = wxFileName::DirExists( path );
+
+    if( isDirectory )
+        files = GetSymbolLibraryFiles( path );
+    else if( fileName.FileExists() )
+        files.push_back( path );
+
+    // Include names and sizes as well as high-resolution timestamps.  A rename between
+    // formats must invalidate the cache even when the timestamp and size are unchanged.
+    uint64_t stamp = 14695981039346656037ULL;
+    auto mix = [&]( uint64_t aValue )
+    {
+        stamp = ( stamp ^ aValue ) * 1099511628211ULL;
+    };
+
+    mix( isDirectory ? 1 : fileName.FileExists() ? 2 : 0 );
+
+    for( const wxString& file : files )
+    {
+        for( unsigned char ch : file.utf8_string() )
+            mix( ch );
+
+        std::error_code error;
+        auto time = std::filesystem::last_write_time( ToFsPath( file ), error );
+        mix( error ? 0 : static_cast<uint64_t>( time.time_since_epoch().count() ) );
+        mix( wxFileName( file ).GetSize().GetValue() );
+    }
+
+    // Negative values are reserved for caches that have never been loaded.
+    return static_cast<long long>( stamp & 0x7fffffffffffffffULL );
+}
 
 
 SCH_IO_LIB_CACHE::SCH_IO_LIB_CACHE( const wxString& aFullPathAndFileName ) :
@@ -83,7 +152,6 @@ wxFileName SCH_IO_LIB_CACHE::GetRealFile() const
 long long SCH_IO_LIB_CACHE::GetLibModificationTime()
 {
     wxFileName fn = GetRealFile();
-    wxString wildcard = fn.GetFullName();
 
     // Update the writable flag while we have a wxFileName, in a network this is possibly quite dynamic anyway.
     if( !fn.IsDir() )
@@ -94,9 +162,9 @@ long long SCH_IO_LIB_CACHE::GetLibModificationTime()
     else
     {
         m_isWritable = fn.IsDirWritable();
-        wildcard = wxS( "*." ) + wxString( FILEEXT::KiCadSymbolLibFileExtension );
-        return KIPLATFORM::IO::TimestampDir( fn.GetPath(), wildcard );
     }
+
+    return GetSymbolLibraryTimestamp( fn.GetFullPath() );
 }
 
 
@@ -135,12 +203,10 @@ bool SCH_IO_LIB_CACHE::IsFileChanged() const
 
     if( fn.IsDir() && fn.IsDirReadable() )
     {
-        return KIPLATFORM::IO::TimestampDir( fn.GetPath(),
-                             wxS( "*." ) + wxString( FILEEXT::KiCadSymbolLibFileExtension ) )
-               != m_fileModTime;
+        return GetSymbolLibraryTimestamp( fn.GetFullPath() ) != m_fileModTime;
     }
 
-    return false;
+    return true;
 }
 
 

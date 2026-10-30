@@ -342,7 +342,7 @@ msgstr "设置 (&S)"
 #: 3d-viewer/3d_viewer/eda_3d_viewer_frame.cpp:105
 #: resources/linux/metainfo/org.kicad.kicad.metainfo.xml.in:66
 msgid "KiCad 3D Viewer"
-msgstr "KiCad 3D 查看器"
+msgstr "KemiCAD 3D 查看器"
 
 #: 3d-viewer/3d_viewer/eda_3d_viewer_frame.cpp:182
 #: 3d-viewer/3d_viewer/eda_3d_viewer_frame.cpp:658
@@ -2078,7 +2078,7 @@ msgstr "无法创建输出目录 '%s'。"
 
 #: common/common.cpp:1043
 msgid "This operating system is not supported by KiCad and its dependencies."
-msgstr "KiCad 及其依赖不支持此操作系统。"
+msgstr "KemiCAD 及其依赖不支持此操作系统。"
 
 #: common/common.cpp:1045
 msgid "Unsupported Operating System"
@@ -2088,7 +2088,7 @@ msgstr "不支持的操作系统"
 msgid ""
 "Any issues with KiCad on this system cannot be reported to the official "
 "bugtracker."
-msgstr "无法将此系统上的 KiCad 问题报告至官方 bugtracker。"
+msgstr "无法将此系统上的 KemiCAD 问题报告至官方 bugtracker。"
 
 #: common/confirm.cpp:44 common/confirm.cpp:50
 msgid "File Open Warning"
@@ -2593,7 +2593,7 @@ msgstr "复制版本信息 (&C)"
 
 #: common/dialog_about/dialog_about_base.cpp:55
 msgid "Copy KiCad version info to the clipboard"
-msgstr "复制 KiCad 版本信息到剪贴板"
+msgstr "复制 KemiCAD 版本信息到剪贴板"
 
 #: common/dialog_about/dialog_about_base.cpp:59
 msgid "&Report Bug"
@@ -2601,7 +2601,7 @@ msgstr "报告 Bug (&R)"
 
 #: common/dialog_about/dialog_about_base.cpp:60 common/tool/actions.cpp:1450
 msgid "Report a problem with KiCad"
-msgstr "报告 KiCad 的问题"
+msgstr "报告 KemiCAD 的问题"
 
 #: common/dialog_about/dialog_about_base.cpp:64 common/tool/actions.cpp:1443
 msgid "Donate"
@@ -2672,7 +2672,7 @@ msgstr "自动保存的副本"
 msgid ""
 "KiCad found auto-saved changes from a previous session. This usually means "
 "KiCad closed unexpectedly while you had unsaved work."
-msgstr "KiCad 检测到来自上次会话的自动保存文件。这通常意味着上次的修改尚未保存，KiCad 却意外关闭了。"
+msgstr "KemiCAD 检测到来自上次会话的自动保存文件。这通常意味着上次的修改尚未保存，KemiCAD 却意外关闭了。"
 
 #: common/dialogs/dialog_autosave_recovery_base.cpp:28
 msgid "Restore Auto-saved"
@@ -2813,7 +2813,7 @@ msgid ""
 "this behavior, either rename any conflicting entries or remove\n"
 "the external environment variable(s) from your system."
 msgstr ""
-"下一次启动 KiCad 时，任何已定义的路径都将被保留，路径配置对话框中定义的任何设置都将被忽略。 "
+"下一次启动 KemiCAD 时，任何已定义的路径都将被保留，路径配置对话框中定义的任何设置都将被忽略。 "
 "如果您不希望出现这种行为，请重命名冲突入口，或从系统中删除外部环境变量。"
 
 #: common/dialogs/dialog_configure_paths.cpp:366
@@ -3786,7 +3786,7 @@ msgid ""
 "Choose which one should be imported to KiCad."
 msgstr ""
 "此工程文件包含多个 PCB + 原理图 的组合。\n"
-"请选择一个导入 KiCad。"
+"请选择一个导入 KemiCAD。"
 
 #: common/dialogs/dialog_import_choose_project_base.h:48
 msgid "Choose Project to Import"
@@ -5119,7 +5119,7 @@ msgid ""
 msgstr ""
 "设置画布缩放比例。\n"
 "\n"
-"在某些平台的高 DPI 显示器上, KiCad 无法确定缩放比例。\n"
+"在某些平台的高 DPI 显示器上, KemiCAD 无法确定缩放比例。\n"
 "在这种情况下, 你可能需要将其设置为一个与你的系统 DPI 比例相匹配的值。2.0 是一个常见的值。\n"
 "如果这与系统的 DPI 比例不匹配, 则画布就会与窗口大小和光标位置不匹配。"
 
@@ -5258,7 +5258,7 @@ msgstr "禁用自定义光标"
 #: common/dialogs/panel_common_settings_base.cpp:196
 msgid ""
 "When enabled, KiCad will use default system cursors instead of custom ones"
-msgstr "启用后, KiCad将使用系统默认光标而不是自定义光标"
+msgstr "启用后, KemiCAD将使用系统默认光标而不是自定义光标"
 
 #: common/dialogs/panel_common_settings_base.cpp:203
 msgid "Icon theme:"
@@ -5333,7 +5333,7 @@ msgstr "正常"
 
 #: common/dialogs/panel_common_settings_base.cpp:239
 msgid "Use the default KiCad icon size in the toolbars"
-msgstr "在工具栏中使用默认的 KiCad 图标大小"
+msgstr "在工具栏中使用默认的 KemiCAD 图标大小"
 
 #: common/dialogs/panel_common_settings_base.cpp:243
 #: eeschema/dialogs/panel_setup_formatting_base.cpp:158
@@ -5450,7 +5450,7 @@ msgid ""
 "User: store them in your KiCad user data directory."
 msgstr ""
 "工程: 将备份和自动保存文件存储在工程目录中。\n"
-"用户: 将它们存储在 KiCad 用户数据目录中。"
+"用户: 将它们存储在 KemiCAD 用户数据目录中。"
 
 #: common/dialogs/panel_common_settings_base.cpp:455
 msgid "Maximum total backup size:"
@@ -5474,12 +5474,12 @@ msgid ""
 "\n"
 "If you choose to voluntarily participate, KiCad will automatically handle sending said reports when crashes or events occur. Your design files such as schematic or PCB are never shared in this process."
 msgstr ""
-"允许 KiCad 匿名地向开发者报告崩溃和特殊事件数据, 以便更有效地识别影响用户的关键问题, 并分析功能使用情况以指导改进工作。\n"
+"允许 KemiCAD 匿名地向开发者报告崩溃和特殊事件数据, 以便更有效地识别影响用户的关键问题, 并分析功能使用情况以指导改进工作。\n"
 "\n"
-"为了将来自同一 KiCad 安装的自动报告关联起来, 系统会生成一个完全随机的唯一标识符, 仅用于崩溃报告的目的。不会存储或关联任何个人身份信息 (PII), 包括 IP 地址。\n"
+"为了将来自同一 KemiCAD 安装的自动报告关联起来, 系统会生成一个完全随机的唯一标识符, 仅用于崩溃报告的目的。不会存储或关联任何个人身份信息 (PII), 包括 IP 地址。\n"
 "您可以随时在「偏好设置」的「数据收集」页面重置此标识符。\n"
 "\n"
-"如果您自愿参与, KiCad 会在发生崩溃或特殊事件时自动发送相应报告。您的原理图或 PCB 等设计文件绝不会在此过程中被共享。"
+"如果您自愿参与, KemiCAD 会在发生崩溃或特殊事件时自动发送相应报告。您的原理图或 PCB 等设计文件绝不会在此过程中被共享。"
 
 #: common/dialogs/panel_data_collection_base.cpp:24
 msgid "I agree to provide anonymous reports"
@@ -6956,7 +6956,7 @@ msgid ""
 "\n"
 "Library tables are the configuration files which list the libraries to be loaded. Global libraries are available in every project, and you may also add project-specific libraries if desired."
 msgstr ""
-"KiCad 自带了由 KiCad 库团队维护的大量符号库与封装库。你也可以创建你的自有库, 抑或是从「扩展内容管理器」或其他安装第三方库。\n"
+"KemiCAD 自带了由 KiCad 库团队维护的大量符号库与封装库。你也可以创建你的自有库, 抑或是从「扩展内容管理器」或其他安装第三方库。\n"
 "\n"
 "库表是记录了需要加载的库的配置文件。全局库在每个工程中均可使用, 必要时你也可以添加工程专用库。"
 
@@ -6992,7 +6992,7 @@ msgstr "迁移内置库到最新版本 (推荐)"
 msgid ""
 "When enabled, KiCad will replace any existing references to built-in "
 "libraries with references to the latest version"
-msgstr "启用此功能后, KiCad 会将所有现有的内置库引用替换为最新版本"
+msgstr "启用此功能后, KemiCAD 会将所有现有的内置库引用替换为最新版本"
 
 #: common/dialogs/panel_startwizard_libraries_base.cpp:62
 msgid "Start with no libraries"
@@ -7005,7 +7005,7 @@ msgid ""
 "installing the libraries. You can proceed with setup, but you will need to "
 "install the libraries separately in order for them to be available."
 msgstr ""
-"未在预期位置找到内置库表。这通常意味着你安装了 KiCad 软件, 但没有安装库。你可以继续进行配置, 但需要单独安装这些库后才能生效和使用。"
+"未在预期位置找到内置库表。这通常意味着你安装了 KemiCAD 软件, 但没有安装库。你可以继续进行配置, 但需要单独安装这些库后才能生效和使用。"
 
 #: common/dialogs/panel_startwizard_privacy_base.cpp:21
 msgid "Updates"
@@ -7015,7 +7015,7 @@ msgstr "更新"
 msgid ""
 "Allow connections to the Internet to check for updated versions of KiCad and"
 " packages installed through the Plugin and Content Manager?"
-msgstr "是否允许连接互联网以检查 KiCad 及扩展内容包的更新?"
+msgstr "是否允许连接互联网以检查 KemiCAD 及扩展内容包的更新?"
 
 #: common/dialogs/panel_startwizard_privacy_base.cpp:36
 #: common/eda_base_frame.cpp:1609
@@ -7028,9 +7028,9 @@ msgid ""
 "\n"
 "When data collection is enabled, KiCad will automatically send reports when crashes or other notable events occur. These reports contain technical details about the state of the KiCad software at the time of the report. No personally identifiable information (PII) is collected, and your design files such as schematics, PCBs, and libraries are never shared as part of this process."
 msgstr ""
-"KiCad 可以匿名地向开发团队报告崩溃和其他特殊事件数据，以帮助定位并修复问题、提升性能。\n"
+"KemiCAD 可以匿名地向开发团队报告崩溃和其他特殊事件数据，以帮助定位并修复问题、提升性能。\n"
 "\n"
-"启用数据收集后，KiCad 在发生崩溃或其他特殊事件时会自动发送报告。这些报告包含了报告生成时 KiCad 软件状态的技术细节。我们不会收集任何个人身份信息 (PII),你的设计文件 (如原理图、PCB 和库) 也绝不会在此过程中被共享。"
+"启用数据收集后，KemiCAD 在发生崩溃或其他特殊事件时会自动发送报告。这些报告包含了报告生成时 KemiCAD 软件状态的技术细节。我们不会收集任何个人身份信息 (PII),你的设计文件 (如原理图、PCB 和库) 也绝不会在此过程中被共享。"
 
 #: common/dialogs/panel_startwizard_privacy_base.cpp:42
 msgid "Enable anonymous data collection"
@@ -7050,7 +7050,7 @@ msgstr "启用 KiCad API。 这将允许系统中运行的第三方软件访问 
 
 #: common/dialogs/panel_startwizard_settings_base.cpp:21
 msgid "How would you like to configure KiCad?"
-msgstr "打算如何配置 KiCad?"
+msgstr "打算如何配置 KemiCAD?"
 
 #: common/dialogs/panel_startwizard_settings_base.cpp:25
 msgid "Import settings from a previous version at:"
@@ -8695,7 +8695,7 @@ msgstr "本机安装的封装库(.pretty 文件夹) 的存储路径。"
 
 #: common/env_vars.cpp:129
 msgid "The base path of system footprint 3D shapes (.3Dshapes folders)."
-msgstr "KiCad 自带的 3D 模型库 (.3Dshapes 文件夹) 的存储路径。"
+msgstr "系统 3D 模型库 (.3Dshapes 文件夹) 的存储路径。"
 
 #: common/env_vars.cpp:132
 msgid "The base path of the locally installed symbol libraries."
@@ -8703,7 +8703,7 @@ msgstr "本机安装的原理图符号库的存储路径。"
 
 #: common/env_vars.cpp:135
 msgid "A directory containing project templates installed with KiCad."
-msgstr "KiCad 自带的模板工程的存储路径。"
+msgstr "KemiCAD 自带的模板工程的存储路径。"
 
 #: common/env_vars.cpp:138
 msgid ""
@@ -8725,17 +8725,17 @@ msgid ""
 "For instance, ${KIPRJMOD}/libs/footprints.pretty can be defined as a folder "
 "containing a project specific footprint library named footprints.pretty."
 msgstr ""
-"由 KiCad 内部定义 (不可编辑) 并设置为当前加载的工程文件的绝对路径。这个环境变量可以用来定义相对于当前加载的工程的文件和路径。例如, "
+"由 KemiCAD 内部定义 (不可编辑) 并设置为当前加载的工程文件的绝对路径。这个环境变量可以用来定义相对于当前加载的工程的文件和路径。例如, "
 "${KIPRJMOD}/libs/footprints.pretty 可定义一个文件夹,文件夹中包含一个特定工程的封装库, 名为 "
 "footprints.pretty。"
 
 #: common/env_vars.cpp:150
 msgid "A directory containing system-wide scripts installed with KiCad."
-msgstr "由 KiCad 安装的脚本的目录 (系统级别)。"
+msgstr "由 KemiCAD 安装的脚本的目录 (系统级别)。"
 
 #: common/env_vars.cpp:153
 msgid "A directory containing user-specific scripts installed with KiCad."
-msgstr "由 KiCad 安装的脚本的目录 (特定用户)。"
+msgstr "由 KemiCAD 安装的脚本的目录 (特定用户)。"
 
 #: common/env_vars.cpp:156
 #, c-format
@@ -9433,7 +9433,7 @@ msgstr "历史仓库被 %s@%s 锁定"
 
 #: common/history_lock.cpp:168
 msgid "History repository is locked by an older KiCad instance."
-msgstr "历史仓库被一个较早启动的 KiCad 实例锁定。"
+msgstr "历史仓库被一个较早启动的 KemiCAD 实例锁定。"
 
 #: common/history_lock.cpp:181
 #, c-format
@@ -9524,7 +9524,7 @@ msgstr "快捷操作"
 
 #: common/http_lib/http_lib_connection.cpp:102
 msgid "KiCad received an empty response!"
-msgstr "KiCad 收到了一个空响应!"
+msgstr "KemiCAD 收到了一个空响应!"
 
 #: common/http_lib/http_lib_connection.cpp:115
 #: common/http_lib/http_lib_connection.cpp:174
@@ -10424,10 +10424,8 @@ msgstr "板层映射文件 '%s' 不是有效的 JSON: %s"
 
 #: common/jobs/job_import_utils.cpp:86
 #, c-format
-msgid ""
-"Layer map file '%s' must be a JSON object mapping source layer names to "
-"KiCad layer names"
-msgstr "板层映射文件 '%s' 必须是将源板层名称映射到 KiCad 板层名称的 JSON 对象"
+msgid "Layer map file '%s' must be a JSON object mapping source layer names to KemiCAD layer names"
+msgstr "板层映射文件 '%s' 必须是将源板层名称映射到 KemiCAD 板层名称的 JSON 对象"
 
 #: common/jobs/job_import_utils.cpp:97
 #, c-format
@@ -11477,10 +11475,10 @@ msgid ""
 "2. Make sure no other antivirus software interferes with KiCad\n"
 "3. Make sure you have correct permissions set up"
 msgstr ""
-"KiCad 无法使用 '%s'。\n"
+"KemiCAD 无法使用 '%s'。\n"
 "\n"
 "1. 在 Microsoft Defender 设置中禁用「文件夹限制访问」或在组策略中禁用「配置受控文件夹访问权限」\n"
-"2. 确保没有其他杀毒软件干扰 KiCad\n"
+"2. 确保没有其他杀毒软件干扰 KemiCAD\n"
 "3. 确保你已设置正确的权限"
 
 #: common/pgm_base.cpp:241
@@ -11505,7 +11503,7 @@ msgstr "操作系统不支持此语言。"
 
 #: common/pgm_base.cpp:649 common/pgm_base.cpp:690
 msgid "The KiCad language file for this language is not installed."
-msgstr "未安装此语言的 KiCad 语言文件。"
+msgstr "未安装此语言的 KemiCAD 语言文件。"
 
 #: common/pgm_base.cpp:906 common/pgm_base.cpp:919
 msgid "Loading Design Block Libraries"
@@ -12040,7 +12038,7 @@ msgstr ""
 #: common/startwizard/startwizard.cpp:97
 #, c-format
 msgid "Welcome to KiCad %s"
-msgstr "欢迎使用 KiCad %s"
+msgstr "欢迎使用 KemiCAD %s"
 
 #: common/startwizard/startwizard.cpp:107
 msgid ""
@@ -12048,7 +12046,7 @@ msgid ""
 "\n"
 "Let's take a moment to configure some basic settings.  You can always modify these settings later by opening the Preferences dialog."
 msgstr ""
-"KiCad 首次启动, 或某些配置文件丢失, 需要进行一些基本配置。\n"
+"KemiCAD 首次启动, 或某些配置文件丢失, 需要进行一些基本配置。\n"
 "\n"
 "稍后你可以通过「偏好设置」来修改默认设置。"
 
@@ -12058,13 +12056,13 @@ msgstr "如需帮助, 请访问 "
 
 #: common/startwizard/startwizard.cpp:187
 msgid "KiCad Setup"
-msgstr "KiCad 配置"
+msgstr "KemiCAD 配置"
 
 #: common/startwizard/startwizard.cpp:250
 msgid ""
 "Are you sure?  If you cancel KiCad setup, default settings will be chosen "
 "for you."
-msgstr "确定吗? 如果你取消 KiCad 设置, 将为你选择默认设置。"
+msgstr "确定吗? 如果你取消 KemiCAD 设置, 将为你选择默认设置。"
 
 #: common/startwizard/startwizard_provider_libraries.cpp:162
 msgid "Symbol library table"
@@ -13197,7 +13195,7 @@ msgstr "在 Web 浏览器中打开产品文档"
 
 #: common/tool/actions.cpp:1420
 msgid "About KiCad"
-msgstr "关于 KiCad"
+msgstr "关于 KemiCAD"
 
 #: common/tool/actions.cpp:1429
 msgid "List Hotkeys..."
@@ -13807,7 +13805,7 @@ msgstr "设置快捷键"
 #: common/widgets/widget_hotkey_list.cpp:394
 #, c-format
 msgid "'%s' is a reserved hotkey in KiCad and cannot be assigned."
-msgstr "'%s' 是 KiCad 中的一个保留快捷键, 不能进行分配。"
+msgstr "'%s' 是 KemiCAD 中的一个保留快捷键, 不能进行分配。"
 
 #: common/widgets/widget_hotkey_list.cpp:457
 #: pcbnew/dialogs/panel_setup_via_stacks_base.cpp:52
@@ -14321,7 +14319,7 @@ msgstr "工程文件: '%s'"
 #: gerbview/tools/gerbview_inspection_tool.cpp:183
 #: kicad/project_tree_pane.cpp:1125
 msgid "No text editor selected in KiCad.  Please choose one."
-msgstr "在 KiCad 中未选择任何文本编辑器, 请选择一个。"
+msgstr "在 KemiCAD 中未选择任何文本编辑器, 请选择一个。"
 
 #: cvpcb/dialogs/dialog_config_equfiles.cpp:211
 msgid "Footprint Association File"
@@ -20328,7 +20326,7 @@ msgid ""
 "  If you choose to skip this step, you will be responsible for manually "
 "remapping the symbols."
 msgstr ""
-"此原理图当前使用工程符号库表查找加载库符号的方法。KiCad 将尝试映射现有符号以使用新的符号库表。重新映射将变更某些工程文件, 原理图可能与旧版本的 "
+"此原理图当前使用工程符号库表查找加载库符号的方法。KemiCAD 将尝试映射现有符号以使用新的符号库表。重新映射将变更某些工程文件, 原理图可能与旧版本的 "
 "KiCad 不兼容。如果需要还原任何变更, 则所有变更的文件都将备份到工程文件夹中的  \"rescue_backup \" "
 "文件夹中。如果选择跳过此步骤, 你将负责手动重新映射符号。"
 
@@ -21185,7 +21183,7 @@ msgstr "编辑封装筛选规则"
 msgid ""
 "Install schematic data sources from the Plugin and Content Manager. Data "
 "sources extend KiCad by linking schematic items to external data providers."
-msgstr "从扩展内容管理器安装原理图数据源。数据源通过将原理图项目链接到外部数据源来扩展 KiCad。"
+msgstr "从扩展内容管理器安装原理图数据源。数据源通过将原理图项目链接到外部数据源来扩展 KemiCAD。"
 
 #: eeschema/dialogs/panel_sch_data_sources.cpp:124
 msgid "No data sources are currently installed."
@@ -24643,7 +24641,7 @@ msgstr "从电路板更新设计图块"
 #: eeschema/sch_edit_frame.cpp:182
 #: resources/linux/metainfo/org.kicad.kicad.metainfo.xml.in:56
 msgid "KiCad Schematic Editor"
-msgstr "KiCad 原理图编辑器"
+msgstr "KemiCAD 原理图编辑器"
 
 #: eeschema/sch_edit_frame.cpp:256 eeschema/sch_edit_frame.cpp:2224
 msgid "Schematic Hierarchy"
@@ -24658,7 +24656,7 @@ msgid ""
 "Cannot update the PCB because the Schematic Editor is opened in stand-alone "
 "mode. In order to create/update PCBs from schematics, launch the main KiCad "
 "application and create a project."
-msgstr "无法更新 PCB, 因为原理图编辑器以独立模式打开。要从原理图创建或更新 PCB, 请启动 KiCad 主应用程序并创建工程。"
+msgstr "无法更新 PCB, 因为原理图编辑器以独立模式打开。要从原理图创建或更新 PCB, 请启动 KemiCAD 主应用程序并创建工程。"
 
 #: eeschema/sch_edit_frame.cpp:1486
 msgid "New Schematic"
@@ -25042,10 +25040,10 @@ msgstr "CADSTAR 设计包含重用块, 但在 KiCad 中没有对应的等效项�
 
 #: eeschema/sch_io/cadstar/cadstar_sch_archive_loader.cpp:524
 msgid ""
-"CADSTAR fonts are different to the ones in KiCad. This will likely result in"
+"CADSTAR fonts are different to the ones in KemiCAD. This will likely result in"
 " alignment issues. Please review the imported text elements carefully and "
 "correct manually if required."
-msgstr "CADSTAR 字体不同于 KiCad 中的字体。这可能导致对齐问题。请仔细检查导入的文本元素, 如需要请进行手动更正。"
+msgstr "CADSTAR 字体不同于 KemiCAD 中的字体。这可能导致对齐问题。请仔细检查导入的文本元素, 如需要请进行手动更正。"
 
 #: eeschema/sch_io/cadstar/cadstar_sch_archive_loader.cpp:529
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:166
@@ -25060,13 +25058,13 @@ msgstr ""
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:77
 #, c-format
 msgid ""
-"The design is too large and cannot be imported into KiCad. \n"
+"The design is too large and cannot be imported into KemiCAD. \n"
 "Please reduce the maximum design size in CADSTAR by navigating to: \n"
 "Design Tab -> Properties -> Design Options -> Maximum Design Size. \n"
 "Current Design size: %.2f, %.2f millimeters. \n"
 "Maximum permitted design size: %.2f, %.2f millimeters.\n"
 msgstr ""
-"设计过大, 无法导入到 KiCad 中。\n"
+"设计过大, 无法导入到 KemiCAD 中。\n"
 "请导航到以下位置以减小 CADSTAR 中的最大设计尺寸: \n"
 "\"设计 -> 属性 -> 设计选项 -> 最大设计尺寸\"。\n"
 "当前设计大小: %.2f, %.2f 毫米。\n"
@@ -25084,18 +25082,13 @@ msgstr "CADSTAR 原理图可能已损坏: 没有根图纸。"
 
 #: eeschema/sch_io/cadstar/cadstar_sch_archive_loader.cpp:687
 #, c-format
-msgid ""
-"Part definition '%s' references symbol '%s' (alternate '%s') which could not"
-" be found in the symbol library. The part has not been loaded into the KiCad"
-" library."
-msgstr "元件定义 \"%s\" 引用符号 \"%s\"(替代 \"%s\") , 在符号库中找不到。元件尚未加载到 KiCad 库中。"
+msgid "Part definition '%s' references symbol '%s' (alternate '%s') which could not be found in the symbol library. The part has not been loaded into the KemiCAD library."
+msgstr "元件定义 \"%s\" 引用符号 \"%s\"(替代 \"%s\") , 在符号库中找不到。元件尚未加载到 KemiCAD 库中。"
 
 #: eeschema/sch_io/cadstar/cadstar_sch_archive_loader.cpp:710
 #, c-format
-msgid ""
-"Part definition '%s' has an incomplete definition (no symbol definitions are"
-" associated with it). The part has not been loaded into the KiCad library."
-msgstr "部件定义\"%s\"的定义不完整 (没有与之关联的符号定义)。该部件尚未加载到 KiCad 库中。"
+msgid "Part definition '%s' has an incomplete definition (no symbol definitions are associated with it). The part has not been loaded into the KemiCAD library."
+msgstr "部件定义\"%s\"的定义不完整 (没有与之关联的符号定义)。该部件尚未加载到 KemiCAD 库中。"
 
 #: eeschema/sch_io/cadstar/cadstar_sch_archive_loader.cpp:751
 #, fuzzy, c-format
@@ -25127,12 +25120,9 @@ msgstr "符号标识 '%s' 的类型未知。它既不是符号也不是网络电
 
 #: eeschema/sch_io/cadstar/cadstar_sch_archive_loader.cpp:1015
 #, c-format
-msgid ""
-"Symbol '%s' is scaled in the original CADSTAR schematic but this is not "
-"supported in KiCad. When the symbol is reloaded from the library, it will "
-"revert to the original 1:1 scale."
+msgid "Symbol '%s' is scaled in the original CADSTAR schematic but this is not supported in KemiCAD. When the symbol is reloaded from the library, it will revert to the original 1:1 scale."
 msgstr ""
-"符号 '%s' 在原始 CADSTAR 原理图中按比例缩放, 但 KiCad 不支持。当符号从库中重新加载时, 它将恢复到原来的 1:1 比例。"
+"符号 '%s' 在原始 CADSTAR 原理图中按比例缩放, 但 KemiCAD 不支持。当符号从库中重新加载时, 它将恢复到原来的 1:1 比例。"
 
 #: eeschema/sch_io/cadstar/cadstar_sch_archive_loader.cpp:1479
 #, c-format
@@ -25159,7 +25149,7 @@ msgid ""
 "design but KiCad only supports rotation angles multiples of 90 degrees. The "
 "connecting wires will need manual fixing."
 msgstr ""
-"在原始CADSTAR设计中, 符号 '%s' 旋转了 %.1f 度角, 但 KiCad 仅支持 90 度倍数的旋转角。连接线将需要手动固定。"
+"在原始CADSTAR设计中, 符号 '%s' 旋转了 %.1f 度角, 但 KemiCAD 仅支持 90 度倍数的旋转角。连接线将需要手动固定。"
 
 #: eeschema/sch_io/cadstar/cadstar_sch_archive_loader.cpp:2250
 #, c-format
@@ -25184,12 +25174,9 @@ msgstr "网络 %s 引用未知网络元素 %s。网络未正确加载, 可能需
 
 #: eeschema/sch_io/cadstar/cadstar_sch_archive_loader.cpp:2540
 #, c-format
-msgid ""
-"The block ID %s (Block name: '%s') is drawn on sheet '%s' but is not linked "
-"to another sheet in the design. KiCad requires all sheet symbols to be "
-"associated to a sheet, so the block was not loaded."
+msgid "The block ID %s (Block name: '%s') is drawn on sheet '%s' but is not linked to another sheet in the design. KemiCAD requires all sheet symbols to be associated to a sheet, so the block was not loaded."
 msgstr ""
-"原理图块标识 %s (图块名称: \"%s\") 绘制在图纸\"%s\"上, 但未链接到工程中的另一张图纸。KiCad "
+"原理图块标识 %s (图块名称: \"%s\") 绘制在图纸\"%s\"上, 但未链接到工程中的另一张图纸。KemiCAD "
 "要求将所有图纸符号都与图纸相关联, 因此未加载该图块。"
 
 #: eeschema/sch_io/cadstar/cadstar_sch_archive_loader.cpp:2563
@@ -25670,12 +25657,10 @@ msgstr "文件 \"%s\" 不是一个有效的封装库表文件。"
 
 #: eeschema/sch_io/easypc/sch_io_easypc.cpp:322
 #, fuzzy, c-format
-msgid ""
-"'%s' is a complete Easy-PC schematic and cannot be loaded as a hierarchical "
-"sheet. Use File > Import > Non-KiCad Schematic... instead."
+msgid "'%s' is a complete Easy-PC schematic and cannot be loaded as a hierarchical sheet. Use File > Import > Non-KemiCAD Schematic... instead."
 msgstr ""
-"'%s' 不是一个 KiCad 原理图文件。\n"
-"请使用 \"文件 -> 导入\" 功能导入非KiCad原理图文件。"
+"'%s' 不是一个 KemiCAD 原理图文件。\n"
+"请使用 \"文件 -> 导入\" 功能导入非KemiCAD原理图文件。"
 
 #: eeschema/sch_io/easypc/sch_io_easypc.cpp:345
 #, fuzzy, c-format
@@ -25771,9 +25756,9 @@ msgstr "HTTP 库设置文件 %s 中缺少 API 版本号。"
 #: eeschema/sch_io/http_lib/sch_io_http_lib.cpp:555
 #, c-format
 msgid ""
-"HTTP library settings file %s uses API version %s, but KiCad requires "
+"HTTP library settings file %s uses API version %s, but KemiCAD requires "
 "version %s."
-msgstr "HTTP 库设置文件 %s 使用 API 版本 %s, 但 KiCad 要求版本 %s。"
+msgstr "HTTP 库设置文件 %s 使用 API 版本 %s, 但 KemiCAD 要求版本 %s。"
 
 #: eeschema/sch_io/http_lib/sch_io_http_lib.cpp:563
 #, c-format
@@ -26385,9 +26370,7 @@ msgstr "已添加变体 '%s'。"
 
 #: eeschema/sch_io/orcad/sch_io_orcad.cpp:451
 #, c-format
-msgid ""
-"'%s' contains a complete OrCAD Capture design and cannot be loaded as a "
-"hierarchical sheet. Use File > Import > Non-KiCad Schematic... instead."
+msgid "'%s' contains a complete OrCAD Capture design and cannot be loaded as a hierarchical sheet. Use File > Import > Non-KemiCAD Schematic... instead."
 msgstr ""
 
 #: eeschema/sch_io/orcad/sch_io_orcad.cpp:460
@@ -26484,9 +26467,7 @@ msgstr "BUSSES 第 %llu 行: 不受支持的记录, %s。已跳过该总线。"
 
 #: eeschema/sch_io/pads/sch_io_pads.cpp:374
 #, c-format
-msgid ""
-"'%s' contains a complete PADS Logic schematic and cannot be loaded as a "
-"hierarchical sheet. Use File > Import > Non-KiCad Schematic... instead."
+msgid "'%s' contains a complete PADS Logic schematic and cannot be loaded as a hierarchical sheet. Use File > Import > Non-KemiCAD Schematic... instead."
 msgstr ""
 
 #: eeschema/sch_io/pads/sch_io_pads.cpp:426
@@ -29837,7 +29818,7 @@ msgstr "导出符号为 SVG..."
 
 #: eeschema/symbol_editor/symbol_edit_frame.cpp:177
 msgid "KiCad Symbol Editor"
-msgstr "KiCad 符号编辑器"
+msgstr "KemiCAD 符号编辑器"
 
 #: eeschema/symbol_editor/symbol_edit_frame.cpp:361
 msgid "Library changes are unsaved"
@@ -30328,7 +30309,7 @@ msgstr "(加载失败)"
 
 #: eeschema/symbol_viewer_frame.cpp:112
 msgid "KiCad Symbol Library Browser"
-msgstr "KiCad 符号库浏览器"
+msgstr "KemiCAD 符号库浏览器"
 
 #: eeschema/symbol_viewer_frame.cpp:173
 msgid ""
@@ -30473,7 +30454,7 @@ msgid ""
 "You must launch the KiCad project manager and create a project."
 msgstr ""
 "无法提取 PCB 网表, 因为原理图编辑器是在独立模式下打开的。\n"
-"您必须启动 KiCad 工程管理器并创建一个工程。"
+"您必须启动 KemiCAD 工程管理器并创建一个工程。"
 
 #: eeschema/tools/backannotate.cpp:356
 #, c-format
@@ -33157,7 +33138,7 @@ msgstr "通用设置中文件管理器的参数 '%F' 缺失/不完整。"
 #: eeschema/tools/symbol_editor_control.cpp:522
 #: pcbnew/tools/footprint_editor_control.cpp:843
 msgid "No text editor selected in KiCad. Please choose one."
-msgstr "未在 KiCad 中配置任何文本编辑器, 请选择一个。"
+msgstr "未在 KemiCAD 中配置任何文本编辑器, 请选择一个。"
 
 #: eeschema/tools/symbol_editor_control.cpp:600
 #: eeschema/widgets/panel_symbol_chooser.cpp:782
@@ -34573,7 +34554,7 @@ msgstr "清除最近的 Job 文件"
 #: gerbview/gerbview_frame.cpp:97
 #: resources/linux/launchers/org.kicad.gerbview.desktop.in:11
 msgid "KiCad Gerber Viewer"
-msgstr "KiCad Gerber 查看器"
+msgstr "KemiCAD Gerber 查看器"
 
 #: gerbview/gerbview_frame.cpp:672
 msgid "Drawing layer not in use"
@@ -35140,7 +35121,7 @@ msgstr "阻断"
 
 #: include/dialogs/panel_color_settings.h:50
 msgid "Reset all colors in this theme to the KiCad defaults"
-msgstr "将此主题中的所有配色重置为 KiCad 默认值"
+msgstr "将此主题中的所有配色重置为 KemiCAD 默认值"
 
 #: include/downgrade_copy.h:38
 msgid "An output path is required. Use --output."
@@ -35224,7 +35205,7 @@ msgstr "格式错误的表达式"
 
 #: include/panel_hotkeys_editor.h:53
 msgid "Reset all hotkeys to the built-in KiCad defaults"
-msgstr "将所有快捷键设置为 KiCad 的默认值"
+msgstr "将所有快捷键设置为 KemiCAD 的默认值"
 
 #: include/stroke_params.h:85
 msgid "Leave unchanged"
@@ -37339,11 +37320,11 @@ msgstr "返回"
 #, c-format
 msgid ""
 "KiCad %s is now available (you have %s). Would you like to download it now?"
-msgstr "KiCad 新版本 %s 现已发布 (当前正在使用 %s)。是否立即下载?"
+msgstr "KemiCAD 新版本 %s 现已发布 (当前正在使用 %s)。是否立即下载?"
 
 #: kicad/dialogs/dialog_update_notice_base.cpp:30
 msgid "A new version of KiCad is available!"
-msgstr "KiCad 新版本已发布!"
+msgstr "KemiCAD 新版本已发布!"
 
 #: kicad/dialogs/dialog_update_notice_base.cpp:52
 msgid "&Skip This Version"
@@ -37363,7 +37344,7 @@ msgstr "稍后提醒我 (&R)"
 msgid ""
 "Close this update notice. The update notice will be shown again when you "
 "relaunch KiCad."
-msgstr "关闭更新通知。 重新启动 KiCad 后将再次显示更新通知。"
+msgstr "关闭更新通知。 重新启动 KemiCAD 后将再次显示更新通知。"
 
 #: kicad/dialogs/dialog_update_notice_base.cpp:65
 msgid "&View Details"
@@ -37454,7 +37435,7 @@ msgstr "选择所有作业"
 #: kicad/dialogs/panel_jobset.cpp:704
 #, c-format
 msgid "This version of KiCad does not support the '%s' job type."
-msgstr "此版本的 KiCad 不支持 '%s' 作业类型。"
+msgstr "此版本的 KemiCAD 不支持 '%s' 作业类型。"
 
 #: kicad/dialogs/panel_jobset.cpp:751
 msgid "Job Types"
@@ -37903,7 +37884,7 @@ msgstr "工程 '%s' 已由 '%s' 在 '%s' 中打开。"
 msgid ""
 "KiCad found unsaved changes from your last session that are newer than the "
 "saved project files."
-msgstr "KiCad 检测到上次会话存在未保存的更改, 这些更改比已保存的工程文件内容更新。"
+msgstr "KemiCAD 检测到上次会话存在未保存的更改, 这些更改比已保存的工程文件内容更新。"
 
 #: kicad/kicad_manager_frame.cpp:982
 msgid "Recover Unsaved Changes"
@@ -38088,7 +38069,7 @@ msgstr "在文本编辑器中编辑本地文件"
 
 #: kicad/mergetool_frame.cpp:61 kicad/mergetool_frame.cpp:90
 msgid "KiCad Merge Tool"
-msgstr "KiCad 合并工具"
+msgstr "KemiCAD 合并工具"
 
 #: kicad/mergetool_frame.cpp:86
 #, c-format
@@ -38285,7 +38266,7 @@ msgstr "固定的包不会影响可用的更新通知, 按下\"更新全部\"按
 msgid ""
 "Warning: This plugin only supports the legacy Python API and will not run in"
 " this KiCad version."
-msgstr "警告: 此插件仅支持旧版 Python API, 无法在此 KiCad 版本中运行。"
+msgstr "警告: 此插件仅支持旧版 Python API, 无法在此 KemiCAD 版本中运行。"
 
 #: kicad/pcm/dialogs/panel_package.cpp:152
 msgid "Install Pending"
@@ -38359,7 +38340,7 @@ msgstr "保留已下载文件"
 msgid ""
 "This package version is incompatible with your KiCad version or platform. "
 "Are you sure you want to install it anyway?"
-msgstr "此扩展内容包版本与您的 KiCad 版本或操作系统不兼容。仍要继续安装?"
+msgstr "此扩展内容包版本与您的 KemiCAD 版本或操作系统不兼容。仍要继续安装?"
 
 #: kicad/pcm/dialogs/panel_packages_view.cpp:616
 #: kicad/pcm/pcm_task_manager.cpp:416
@@ -39666,7 +39647,7 @@ msgstr "布局文件为只读。"
 
 #: pagelayout_editor/pl_editor_frame.cpp:106
 msgid "KiCad Drawing Sheet Editor"
-msgstr "KiCad 图框编辑器"
+msgstr "KemiCAD 图框编辑器"
 
 #: pagelayout_editor/pl_editor_frame.cpp:172
 msgid "coord origin: Right Bottom page corner"
@@ -42214,7 +42195,7 @@ msgstr ""
 
 #: pcb_calculator/pcb_calculator_frame.cpp:72
 msgid "KiCad Calculator Tools"
-msgstr "KiCad 计算器"
+msgstr "KemiCAD 计算器"
 
 #: pcb_calculator/pcb_calculator_frame.cpp:166
 msgid "General system design"
@@ -50671,7 +50652,7 @@ msgstr "直接发送工程"
 
 #: pcbnew/dialogs/dialog_produce_pcb_base.cpp:37
 msgid "Sends production files to manufacturer from KiCad"
-msgstr "从 KiCad 发送生产文件到制造商"
+msgstr "从 KemiCAD 发送生产文件到制造商"
 
 #: pcbnew/dialogs/dialog_produce_pcb_base.cpp:41
 msgid "Produce PCB"
@@ -58704,7 +58685,7 @@ msgstr "根据引脚数量筛选 (%d)"
 
 #: pcbnew/footprint_edit_frame.cpp:133
 msgid "KiCad Footprint Editor"
-msgstr "KiCad 封装编辑器"
+msgstr "KemiCAD 封装编辑器"
 
 #: pcbnew/footprint_edit_frame.cpp:399
 msgid "Footprint changes are unsaved"
@@ -58985,7 +58966,7 @@ msgstr "(焊盘 %s 出现在一个以上的 net-tie 焊盘组中)"
 
 #: pcbnew/footprint_viewer_frame.cpp:107
 msgid "KiCad Footprint Library Browser"
-msgstr "KiCad 封装库浏览器"
+msgstr "KemiCAD 封装库浏览器"
 
 #: pcbnew/footprint_viewer_frame.cpp:149
 msgid ""
@@ -60989,7 +60970,7 @@ msgstr "隐藏光标"
 
 #: pcbnew/pcb_edit_frame.cpp:251
 msgid "KiCad PCB Editor"
-msgstr "KiCad PCB 编辑器"
+msgstr "KemiCAD PCB 编辑器"
 
 #: pcbnew/pcb_edit_frame.cpp:258
 msgid "Export netlist used to update schematics"
@@ -61030,7 +61011,7 @@ msgid ""
 "order to create or update PCBs from schematics, you must launch the KiCad "
 "project manager and create a project."
 msgstr ""
-"无法更新 PCB, 因为 PCB 编辑器是在独立模式下打开的。为了从原理图创建或更新 PCB, 你必须启动 KiCad 工程管理器并创建一个工程。"
+"无法更新 PCB, 因为 PCB 编辑器是在独立模式下打开的。为了从原理图创建或更新 PCB, 你必须启动 KemiCAD 工程管理器并创建一个工程。"
 
 #: pcbnew/pcb_edit_frame.cpp:2664 pcbnew/pcbnew_jobs_handler.cpp:2968
 msgid "Eeschema netlist"
@@ -61040,7 +61021,7 @@ msgstr "Eeschema 网表"
 msgid ""
 "Received an error while reading netlist.  Please report this issue to the "
 "KiCad team using the menu Help->Report Bug."
-msgstr "读取网表时收到一个错误。请使用 \"帮助->报告错误\" 菜单向 KiCad 团队报告此问题。"
+msgstr "读取网表时收到一个错误。请使用 \"帮助->报告错误\" 菜单向 KemiCAD 团队报告此问题。"
 
 #: pcbnew/pcb_edit_frame.cpp:2789
 msgid "Edit design rules"
@@ -61328,11 +61309,9 @@ msgstr "正加载元件 3D 模型..."
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:2569
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:2600
 #, c-format
-msgid ""
-"Dimension found on an Altium layer (%d) with no KiCad equivalent. It has "
-"been moved to KiCad layer Eco1_User."
+msgid "Dimension found on an Altium layer (%d) with no KemiCAD equivalent. It has been moved to KemiCAD layer Eco1_User."
 msgstr ""
-"Altium 层 ( %d ) 上存在测量标注, 但在 KiCad 中没有对应的等效项。已将其移至 KiCad 的 Eco1_User 层。"
+"Altium 层 ( %d ) 上存在测量标注, 但在 KemiCAD 中没有对应的等效项。已将其移至 KemiCAD 的 Eco1_User 层。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:2626
 msgid "Loading dimension drawings..."
@@ -61411,10 +61390,8 @@ msgstr "正加载 board regions..."
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:3399
 #, c-format
-msgid ""
-"Dashed outline found on an Altium layer (%d) with no KiCad equivalent. It "
-"has been moved to KiCad layer Eco1_User."
-msgstr "Altium 层 (%d) 上存在虚线外框, 但在 KiCad 中没有对应的等效项。已将其移至 KiCad 的 Eco1_User 层。"
+msgid "Dashed outline found on an Altium layer (%d) with no KemiCAD equivalent. It has been moved to KemiCAD layer Eco1_User."
+msgstr "Altium 层 (%d) 上存在虚线外框, 但在 KemiCAD 中没有对应的等效项。已将其移至 KemiCAD 的 Eco1_User 层。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:3441
 #, c-format
@@ -61423,20 +61400,16 @@ msgstr "忽略类型为 %d 的多边形, 因为尚未实现。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:3516
 #, c-format
-msgid ""
-"Loading library '%s':\n"
-"Footprint %s contains a dashed outline on Altium layer (%d) with no KiCad equivalent. It has been moved to KiCad layer Eco1_User."
+msgid "Loading library '%s':\nFootprint %s contains a dashed outline on Altium layer (%d) with no KemiCAD equivalent. It has been moved to KemiCAD layer Eco1_User."
 msgstr ""
 "正在加载 '%s' 库:\n"
-"在封装 %s 中发现在其 Altium 层 (%d) 上存在虚线外框, 但在 KiCad 中没有对应的等效项。已将其移至 KiCad 的 Eco1_User 层。"
+"在封装 %s 中发现在其 Altium 层 (%d) 上存在虚线外框, 但在 KemiCAD 中没有对应的等效项。已将其移至 KemiCAD 的 Eco1_User 层。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:3530
 #, c-format
-msgid ""
-"Footprint %s contains a dashed outline on Altium layer (%d) with no KiCad "
-"equivalent. It has been moved to KiCad layer Eco1_User."
+msgid "Footprint %s contains a dashed outline on Altium layer (%d) with no KemiCAD equivalent. It has been moved to KemiCAD layer Eco1_User."
 msgstr ""
-"在封装 %s 中发现在其 Altium 层 (%d) 上存在虚线外框, 但在 KiCad 中没有对应的等效项。已将其移至 KiCad 的 "
+"在封装 %s 中发现在其 Altium 层 (%d) 上存在虚线外框, 但在 KemiCAD 中没有对应的等效项。已将其移至 KemiCAD 的 "
 "Eco1_User 层。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:3573
@@ -61495,19 +61468,15 @@ msgstr "封装 %s 焊盘 %s 有一个方孔。(尚未支持)。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:4392
 #, c-format
-msgid ""
-"Loading library '%s':\n"
-"Footprint %s pad %s has a hole-rotation of %d degrees. KiCad only supports 90 degree rotations."
+msgid "Loading library '%s':\nFootprint %s pad %s has a hole-rotation of %d degrees. KemiCAD only supports 90 degree rotations."
 msgstr ""
 "正在加载 '%s' 库:\n"
-"在封装 %s 的焊盘 %s 上有旋转角度为 %d 度的孔。KiCad 只支持旋转角度为 90 度的孔。"
+"在封装 %s 的焊盘 %s 上有旋转角度为 %d 度的孔。KemiCAD 只支持旋转角度为 90 度的孔。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:4407
 #, c-format
-msgid ""
-"Footprint %s pad %s has a hole-rotation of %d degrees. KiCad only supports "
-"90 degree rotations."
-msgstr "封装 %s 的焊盘 %s 具有旋转角度为 %d 度的孔。KiCad 仅支持 90 度旋转。"
+msgid "Footprint %s pad %s has a hole-rotation of %d degrees. KemiCAD only supports 90 degree rotations."
+msgstr "封装 %s 的焊盘 %s 具有旋转角度为 %d 度的孔。KemiCAD 仅支持 90 度旋转。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:4427
 #, c-format
@@ -61539,40 +61508,34 @@ msgstr "封装 %s 的焊盘 %s 使用了未知的焊盘形状。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:4635
 #, c-format
-msgid ""
-"Non-copper pad %s found on an Altium layer (%d) with no KiCad equivalent. It"
-" has been moved to KiCad layer Eco1_User."
+msgid "Non-copper pad %s found on an Altium layer (%d) with no KemiCAD equivalent. It has been moved to KemiCAD layer Eco1_User."
 msgstr ""
-"在 Altium 层 (%2$d) 上存在非铜焊盘 %1$s, 但在 KiCad 中没有对应的等效项。已将其移至 KiCad 的 Eco1_User "
+"在 Altium 层 (%2$d) 上存在非铜焊盘 %1$s, 但在 KemiCAD 中没有对应的等效项。已将其移至 KemiCAD 的 Eco1_User "
 "层。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:4663
 #, c-format
-msgid ""
-"Loading library '%s':\n"
-"Footprint %s non-copper pad %s found on an Altium layer (%d) with no KiCad equivalent. It has been moved to KiCad layer Eco1_User."
+msgid "Loading library '%s':\nFootprint %s non-copper pad %s found on an Altium layer (%d) with no KemiCAD equivalent. It has been moved to KemiCAD layer Eco1_User."
 msgstr ""
 "正在加载 '%1$s' 库:\n"
-"在 Altium 层 (%4$d) 上发现封装 %2$s 中存在非铜焊盘 %3$s, 但在 KiCad 中没有对应的等效项。已将其移至 KiCad 的 Eco1_User 层。"
+"在 Altium 层 (%4$d) 上发现封装 %2$s 中存在非铜焊盘 %3$s, 但在 KemiCAD 中没有对应的等效项。已将其移至 KemiCAD 的 Eco1_User 层。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:4678
 #, c-format
-msgid ""
-"Footprint %s non-copper pad %s found on an Altium layer (%d) with no KiCad "
-"equivalent. It has been moved to KiCad layer Eco1_User."
+msgid "Footprint %s non-copper pad %s found on an Altium layer (%d) with no KemiCAD equivalent. It has been moved to KemiCAD layer Eco1_User."
 msgstr ""
-"在 Altium 层 (%3$d) 上发现封装 %1$s 中存在非铜焊盘 %2$s, 但在 KiCad 中没有对应的等效项。已将其移至 KiCad 的 "
+"在 Altium 层 (%3$d) 上发现封装 %1$s 中存在非铜焊盘 %2$s, 但在 KemiCAD 中没有对应的等效项。已将其移至 KemiCAD 的 "
 "Eco1_User 层。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:4706
 #, c-format
 msgid "Non-copper pad %s is connected to a net, which is not supported."
-msgstr "非铜焊盘 %s 被连接到了某个网络, KiCad 不支持这种行为。"
+msgstr "非铜焊盘 %s 被连接到了某个网络, KemiCAD 不支持这种行为。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:4717
 #, c-format
 msgid "Non-copper pad %s has a hole, which is not supported."
-msgstr "非铜焊盘 %s有一个孔, KiCad 不支持这种情况。"
+msgstr "非铜焊盘 %s有一个孔, KemiCAD 不支持这种情况。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:4727
 #, c-format
@@ -61592,7 +61555,7 @@ msgstr "加载过孔中..."
 #, c-format
 msgid ""
 "Via from layer %d to %d uses a non-copper layer, which is not supported."
-msgstr "来自层 %d <-> %d 的过孔使用非铜层, KiCad 不支持这种情况。"
+msgstr "来自层 %d <-> %d 的过孔使用非铜层, KemiCAD 不支持这种情况。"
 
 #: pcbnew/pcb_io/altium/altium_pcb.cpp:5028
 msgid "Loading tracks..."
@@ -61721,9 +61684,7 @@ msgstr ""
 
 #: pcbnew/pcb_io/autotrax/pcb_io_autotrax.cpp:220
 #, c-format
-msgid ""
-"Autotrax import: %d item(s) on a layer with no KiCad equivalent were "
-"skipped."
+msgid "Autotrax import: %d item(s) on a layer with no KemiCAD equivalent were skipped."
 msgstr ""
 
 #: pcbnew/pcb_io/autotrax/pcb_io_autotrax.cpp:722
@@ -61768,47 +61729,37 @@ msgid ""
 msgstr "无法确定层 '%s' 的填充区填充内容优先级。已进行了最优尝试, 但可能存在 DRC 错误并且需要手动编辑填充区优先级。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:145
-msgid ""
-"The CADSTAR design contains Trunk routing elements, which have no KiCad "
-"equivalent. These elements were not loaded."
-msgstr "CADSTAR 设计包含 Trunk 布线元素, 但在 KiCad 中没有对应的等效项。未加载这些元素。"
+msgid "The CADSTAR design contains Trunk routing elements, which have no KemiCAD equivalent. These elements were not loaded."
+msgstr "CADSTAR 设计包含 Trunk 布线元素, 但在 KemiCAD 中没有对应的等效项。未加载这些元素。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:151
 #, c-format
-msgid ""
-"The CADSTAR design contains variants which has no KiCad equivalent. Only the"
-" variant '%s' was loaded."
-msgstr "CADSTAR 设计包含变体, 但在 KiCad 中没有对应的等效项。仅加载变体 '%s'。"
+msgid "The CADSTAR design contains variants which has no KemiCAD equivalent. Only the variant '%s' was loaded."
+msgstr "CADSTAR 设计包含变体, 但在 KemiCAD 中没有对应的等效项。仅加载变体 '%s'。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:158
-msgid ""
-"The CADSTAR design contains re-use blocks which has no KiCad equivalent. The"
-" re-use block information has been discarded during the import."
-msgstr "CADSTAR 设计包含重用块, 但在 KiCad 中没有对应的等效项。导入时已丢弃重用块信息。"
+msgid "The CADSTAR design contains re-use blocks which has no KemiCAD equivalent. The re-use block information has been discarded during the import."
+msgstr "CADSTAR 设计包含重用块, 但在 KemiCAD 中没有对应的等效项。导入时已丢弃重用块信息。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:162
 msgid ""
-"CADSTAR fonts are different to the ones in KiCad. This will likely result in"
+"CADSTAR fonts are different to the ones in KemiCAD. This will likely result in"
 " alignment issues that may cause DRC errors. Please review the imported text"
 " elements carefully and correct manually if required."
 msgstr ""
-"CADSTAR 字体不同于 KiCad 中的字体。这可能导致对齐问题, 这些问题也许会导致 DRC 错误。请仔细检查导入的文本元素, "
+"CADSTAR 字体不同于 KemiCAD 中的字体。这可能导致对齐问题, 这些问题也许会导致 DRC 错误。请仔细检查导入的文本元素, "
 "如果需要请手动进行更正。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:234
 #, c-format
-msgid ""
-"The CADSTAR layer '%s' has no KiCad equivalent. All elements on this layer "
-"have been mapped to KiCad layer '%s' instead."
+msgid "The CADSTAR layer '%s' has no KemiCAD equivalent. All elements on this layer have been mapped to KemiCAD layer '%s' instead."
 msgstr ""
-"CADSTAR 设计包含层 '%s' , 但在 KiCad 中没有对应的等效项。此层上的所有元素都被映射到了 KiCad 的 '%s' 层。"
+"CADSTAR 设计包含层 '%s' , 但在 KemiCAD 中没有对应的等效项。此层上的所有元素都被映射到了 KemiCAD 的 '%s' 层。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:247
 #, c-format
-msgid ""
-"The CADSTAR layer '%s' has been assumed to be a technical layer. All "
-"elements on this layer have been mapped to KiCad layer '%s'."
-msgstr "CADSTAR 层 '%s' 被假定为工艺层。此层上的所有元素都映射到 KiCad 层 '%s'。"
+msgid "The CADSTAR layer '%s' has been assumed to be a technical layer. All elements on this layer have been mapped to KemiCAD layer '%s'."
+msgstr "CADSTAR 层 '%s' 被假定为工艺层。此层上的所有元素都映射到 KemiCAD 层 '%s'。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:319
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:342
@@ -61830,19 +61781,16 @@ msgstr "找不到设计规则 %s。将被忽略。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:765
 msgid ""
-"KiCad design rules are different from CADSTAR ones. Only the compatible "
+"KemiCAD design rules are different from CADSTAR ones. Only the compatible "
 "design rules were imported. It is recommended that you review the design "
 "rules that have been applied."
-msgstr "KiCad 设计规则与 CADSTAR 设计规则不同。仅导入兼容的设计规则。建议您查看已应用的设计规则。"
+msgstr "KemiCAD 设计规则与 CADSTAR 设计规则不同。仅导入兼容的设计规则。建议您查看已应用的设计规则。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:967
 #, c-format
-msgid ""
-"The CADSTAR area '%s' in library component '%s' does not have a KiCad "
-"equivalent. The area is neither a via nor route keepout area. The area was "
-"not imported."
+msgid "The CADSTAR area '%s' in library component '%s' does not have a KemiCAD equivalent. The area is neither a via nor route keepout area. The area was not imported."
 msgstr ""
-"CADSTAR 设计包含 '%s' 区 (存在于库元件 '%s' 中), 但在 KiCad 中没有对应的等效项。该区既不是过孔也不是布线 keepout"
+"CADSTAR 设计包含 '%s' 区 (存在于库元件 '%s' 中), 但在 KemiCAD 中没有对应的等效项。该区既不是过孔也不是布线 keepout"
 " 区, 因此未被导入。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1310
@@ -61875,19 +61823,14 @@ msgstr "无法在组映射中找到子组 %s (父组 ID = %s, 名称 = %s)。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1469
 #, c-format
-msgid ""
-"Dimension ID %s is an angled dimension, which has no KiCad equivalent. An "
-"aligned dimension was loaded instead."
-msgstr "测量标注 ID %s 是一个角度测量标注, 但在 KiCad 中没有对应的等效项。已使用对齐测量标注取代。"
+msgid "Dimension ID %s is an angled dimension, which has no KemiCAD equivalent. An aligned dimension was loaded instead."
+msgstr "测量标注 ID %s 是一个角度测量标注, 但在 KemiCAD 中没有对应的等效项。已使用对齐测量标注取代。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1478
 #, c-format
-msgid ""
-"Dimension ID %s has 'External' style in CADSTAR. External dimension styles "
-"are not yet supported in KiCad. The dimension object was imported with an "
-"internal dimension style instead."
+msgid "Dimension ID %s has 'External' style in CADSTAR. External dimension styles are not yet supported in KemiCAD. The dimension object was imported with an internal dimension style instead."
 msgstr ""
-"测量标注 ID %s 在 CADSTAR 中具有 '外部' 样式。KiCad 尚未支持外部测量标注样式。软件使用内部测量标注样式导入了该标注对象。"
+"测量标注 ID %s 在 CADSTAR 中具有 '外部' 样式。KemiCAD 尚未支持外部测量标注样式。软件使用内部测量标注样式导入了该标注对象。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1535
 #, c-format
@@ -61896,25 +61839,18 @@ msgstr "'意外' 的测量标注类型 (ID %s)。未被导入。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1670
 #, c-format
-msgid ""
-"Dimension %s is an angular dimension which has no KiCad equivalent. The "
-"object was not imported."
-msgstr "测量标注 %s 是一个角度测量标注, 但在 KiCad 中没有对应的等效项。对象未被导入。"
+msgid "Dimension %s is an angular dimension which has no KemiCAD equivalent. The object was not imported."
+msgstr "测量标注 %s 是一个角度测量标注, 但在 KemiCAD 中没有对应的等效项。对象未被导入。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1710
 #, c-format
-msgid ""
-"The CADSTAR area '%s' is marked as a placement area in CADSTAR. Placement "
-"areas are not supported in KiCad. Only the supported elements for the area "
-"were imported."
-msgstr "CADSTAR '%s' 区在 CADSTAR 中标记为布置区。KiCad 不支持布置区。只有该区中支持的元素被导入了。"
+msgid "The CADSTAR area '%s' is marked as a placement area in CADSTAR. Placement areas are not supported in KemiCAD. Only the supported elements for the area were imported."
+msgstr "CADSTAR '%s' 区在 CADSTAR 中标记为布置区。KemiCAD 不支持布置区。只有该区中支持的元素被导入了。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1718
 #, c-format
-msgid ""
-"The CADSTAR area '%s' does not have a KiCad equivalent. Pure Placement areas"
-" are not supported."
-msgstr "CADSTAR 设计包含 '%s' 区, 但在 KiCad 中没有对应的等效项。不支持纯布置区。"
+msgid "The CADSTAR area '%s' does not have a KemiCAD equivalent. Pure Placement areas are not supported."
+msgstr "CADSTAR 设计包含 '%s' 区, 但在 KemiCAD 中没有对应的等效项。不支持纯布置区。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1745
 #, c-format
@@ -61928,56 +61864,40 @@ msgstr "无法在库中查找文档符号 (符号定义 ID: '%s')"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1934
 #, c-format
-msgid ""
-"The CADSTAR template '%s' has the setting 'Allow in No Routing Areas' "
-"enabled. This setting has no KiCad equivalent, so it has been ignored."
+msgid "The CADSTAR template '%s' has the setting 'Allow in No Routing Areas' enabled. This setting has no KemiCAD equivalent, so it has been ignored."
 msgstr ""
-"CADSTAR 模板 '%s' 启用了 'Allow in No Routing Areas' 设置, 但在 KiCad 中没有对应的等效项, "
+"CADSTAR 模板 '%s' 启用了 'Allow in No Routing Areas' 设置, 但在 KemiCAD 中没有对应的等效项, "
 "因此已被忽略。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1942
 #, c-format
-msgid ""
-"The CADSTAR template '%s' has the setting 'Box Isolated Pins' enabled. This "
-"setting has no KiCad equivalent, so it has been ignored."
+msgid "The CADSTAR template '%s' has the setting 'Box Isolated Pins' enabled. This setting has no KemiCAD equivalent, so it has been ignored."
 msgstr ""
-"CADSTAR 模板 '%s' 启用了 'Box Isolated Pins' 设置, 但在 KiCad 中没有对应的等效项, 因此已被忽略。"
+"CADSTAR 模板 '%s' 启用了 'Box Isolated Pins' 设置, 但在 KemiCAD 中没有对应的等效项, 因此已被忽略。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1950
 #, c-format
-msgid ""
-"The CADSTAR template '%s' has the setting 'Automatic Repour' enabled. This "
-"setting has no KiCad equivalent, so it has been ignored."
+msgid "The CADSTAR template '%s' has the setting 'Automatic Repour' enabled. This setting has no KemiCAD equivalent, so it has been ignored."
 msgstr ""
-"CADSTAR 模板 '%s' 启用了 'Automatic Repour' 设置, 但在 KiCad 中没有对应的等效项, 因此已被忽略。"
+"CADSTAR 模板 '%s' 启用了 'Automatic Repour' 设置, 但在 KemiCAD 中没有对应的等效项, 因此已被忽略。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1961
 #, c-format
-msgid ""
-"The CADSTAR template '%s' has a non-zero value defined for the 'Sliver "
-"Width' setting. There is no KiCad equivalent for this, so this setting was "
-"ignored."
-msgstr "CADSTAR 模板 '%s' 为 'Sliver Width' 设置了非零值, 但在 KiCad 中没有对应的等效项, 因此已被忽略。"
+msgid "The CADSTAR template '%s' has a non-zero value defined for the 'Sliver Width' setting. There is no KemiCAD equivalent for this, so this setting was ignored."
+msgstr "CADSTAR 模板 '%s' 为 'Sliver Width' 设置了非零值, 但在 KemiCAD 中没有对应的等效项, 因此已被忽略。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:1970
 #, c-format
-msgid ""
-"The CADSTAR template '%s' has different settings for 'Retain Poured Copper -"
-" Disjoint' and 'Retain Poured Copper - Isolated'. KiCad does not distinguish"
-" between these two settings. The setting for disjoint copper has been "
-"applied as the minimum island area of the KiCad Zone."
+msgid "The CADSTAR template '%s' has different settings for 'Retain Poured Copper - Disjoint' and 'Retain Poured Copper - Isolated'. KemiCAD does not distinguish between these two settings. The setting for disjoint copper has been applied as the minimum island area of the KemiCAD Zone."
 msgstr ""
-"CADSTAR 模板 '%s' 具有不同的设置, 用于\"保留覆铜- 不相交\"和\"保留覆铜 - 隔离\"。KiCad "
-"不区分这两个设置。不相交覆铜的设置已被应用为 KiCad 覆铜区的最小死铜面积设置。"
+"CADSTAR 模板 '%s' 具有不同的设置, 用于\"保留覆铜- 不相交\"和\"保留覆铜 - 隔离\"。KemiCAD "
+"不区分这两个设置。不相交覆铜的设置已被应用为 KemiCAD 覆铜区的最小死铜面积设置。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:2021
 #, c-format
-msgid ""
-"The CADSTAR template '%s' has different settings for thermal relief in pads "
-"and vias. KiCad only supports one single setting for both. The setting for "
-"pads has been applied."
+msgid "The CADSTAR template '%s' has different settings for thermal relief in pads and vias. KemiCAD only supports one single setting for both. The setting for pads has been applied."
 msgstr ""
-"CADSTAR 模板 '%s' 在焊盘和过孔中具有不同的缓释热焊盘 (花焊盘) 设置。KiCad 仅支持这两种设置的单一设置。已应用焊盘的设置。"
+"CADSTAR 模板 '%s' 在焊盘和过孔中具有不同的缓释热焊盘 (花焊盘) 设置。KemiCAD 仅支持这两种设置的单一设置。已应用焊盘的设置。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:2037
 #, c-format
@@ -61988,7 +61908,7 @@ msgid ""
 " Therefore the minimum thickness has been applied as the new spoke width and"
 " will be applied next time the zones are filled."
 msgstr ""
-"CADSTAR 模板\"%s\"在原始设计中具有散热片, 但引线线宽 (%.2f mm)比填充区的最小厚度 (%.2f mm) 更薄。KiCad "
+"CADSTAR 模板\"%s\"在原始设计中具有散热片, 但引线线宽 (%.2f mm)比填充区的最小厚度 (%.2f mm) 更薄。KemiCAD "
 "要求保留填充区的最小厚度。因此, 已将最小厚度用作新的引线线宽, 并将在下次填充填充区时应用。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:2083
@@ -62000,14 +61920,10 @@ msgid ""
 msgstr "CADSTAR 层 '%s' 被定义为电源层。然而, 不存在具有该名称的网络。已加载层, 但未创建覆铜区。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:2179
-msgid ""
-"The CADSTAR design contains COPPER elements, which have no direct KiCad "
-"equivalent. These have been imported as a KiCad Zone if solid or hatch "
-"filled, or as a KiCad Track if the shape was an unfilled outline (open or "
-"closed)."
+msgid "The CADSTAR design contains COPPER elements, which have no direct KemiCAD equivalent. These have been imported as a KemiCAD Zone if solid or hatch filled, or as a KemiCAD Track if the shape was an unfilled outline (open or closed)."
 msgstr ""
-"CADSTAR 设计包含 COPPER 元素, 但在 KiCad 中没有对应的等效项。如果填充的是实体或栅格图案填充, 则它们已导入为 KiCad "
-"填充区; 如果形状是未填充的外框(开放或闭合), 则它们将导入为 KiCad 走线。"
+"CADSTAR 设计包含 COPPER 元素, 但在 KemiCAD 中没有对应的等效项。如果填充的是实体或栅格图案填充, 则它们已导入为 KemiCAD "
+"填充区; 如果形状是未填充的外框(开放或闭合), 则它们将导入为 KemiCAD 走线。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:2277
 #, c-format
@@ -62035,42 +61951,30 @@ msgstr "CADSTAR 设计包含泪滴。这个导入器还不支持它们, 所以�
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:2601
 #, c-format
-msgid ""
-"The CADSTAR via code '%s' has different shape from a circle defined. KiCad "
-"only supports circular vias so this via type has been changed to be a via "
-"with circular shape of %.2f mm diameter."
+msgid "The CADSTAR via code '%s' has different shape from a circle defined. KemiCAD only supports circular vias so this via type has been changed to be a via with circular shape of %.2f mm diameter."
 msgstr ""
-"通过代码 '%s' 的 CADSTAR 具有与定义的圆不同的形状。KiCad 仅支持圆形过孔, 因此此过孔类型已更改为直径为 %.2f mm "
+"通过代码 '%s' 的 CADSTAR 具有与定义的圆不同的形状。KemiCAD 仅支持圆形过孔, 因此此过孔类型已更改为直径为 %.2f mm "
 "的圆形过孔。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:3619
 #, c-format
-msgid ""
-"The CADSTAR Hatching code '%s' has %d hatches defined. KiCad only supports 2"
-" hatches (crosshatching) 90 degrees apart. The imported hatching is "
-"crosshatched."
+msgid "The CADSTAR Hatching code '%s' has %d hatches defined. KemiCAD only supports 2 hatches (crosshatching) 90 degrees apart. The imported hatching is crosshatched."
 msgstr ""
-"CADSTAR Hatching 代码 '%s' 定义了 %d 个Hatch。KiCad 仅支持相距 90 度的两个 Hatch。导入的 Hatch "
+"CADSTAR Hatching 代码 '%s' 定义了 %d 个Hatch。KemiCAD 仅支持相距 90 度的两个 Hatch。导入的 Hatch "
 "为交叉线。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:3629
 #, c-format
-msgid ""
-"The CADSTAR Hatching code '%s' has different line widths for each hatch. "
-"KiCad only supports one width for the hatching. The imported hatching uses "
-"the width defined in the first hatch definition, i.e. %.2f mm."
+msgid "The CADSTAR Hatching code '%s' has different line widths for each hatch. KemiCAD only supports one width for the hatching. The imported hatching uses the width defined in the first hatch definition, i.e. %.2f mm."
 msgstr ""
-"CADSTAR Hatching 代码\"%s\"的每个 Hatch 具有不同的线宽。KiCad 仅支持一种宽度的 Hatch。导入的 Hatching"
+"CADSTAR Hatching 代码\"%s\"的每个 Hatch 具有不同的线宽。KemiCAD 仅支持一种宽度的 Hatch。导入的 Hatching"
 " 使用第一个 Hatch 定义中定义的宽度, 即 %.2f mm。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:3639
 #, c-format
-msgid ""
-"The CADSTAR Hatching code '%s' has different step sizes for each hatch. "
-"KiCad only supports one step size for the hatching. The imported hatching "
-"uses the step size defined in the first hatching definition, i.e. %.2f mm."
+msgid "The CADSTAR Hatching code '%s' has different step sizes for each hatch. KemiCAD only supports one step size for the hatching. The imported hatching uses the step size defined in the first hatching definition, i.e. %.2f mm."
 msgstr ""
-"CADSTAR Hatching 代码\"%s\"的每个 Hatch 具有不同的步长。KiCad 仅支持一种 Hatch 步长。导入的 Hatch "
+"CADSTAR Hatching 代码\"%s\"的每个 Hatch 具有不同的步长。KemiCAD 仅支持一种 Hatch 步长。导入的 Hatch "
 "使用第一个 Hatch 定义中定义的步长, 即 %.2f mm。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:3649
@@ -62081,34 +61985,30 @@ msgid ""
 "hatching has two hatches 90 degrees apart, oriented %.1f degrees from "
 "horizontal."
 msgstr ""
-"CADSTAR Hatching 代码 '%s' 中的 Hatch 具有 %.1f 度的角度差。KiCad 仅支持相隔 90 度的 Hatch。导入的 "
+"CADSTAR Hatching 代码 '%s' 中的 Hatch 具有 %.1f 度的角度差。KemiCAD 仅支持相隔 90 度的 Hatch。导入的 "
 "Hatch 有两个相距 90 度的 Hatch, 方向与水平方向成 %.1f 度。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:3718
 #, c-format
 msgid ""
-"Dimension ID %s uses a type of unit that is not supported in KiCad. "
+"Dimension ID %s uses a type of unit that is not supported in KemiCAD. "
 "Millimeters were applied instead."
-msgstr "测量标注 ID %s 使用了 KiCad 不支持的单位。已将其单位改为毫米。"
+msgstr "测量标注 ID %s 使用了 KemiCAD 不支持的单位。已将其单位改为毫米。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:3997
 msgid ""
-"The CADSTAR design contains nets with a 'Net Class' assigned. KiCad does not"
+"The CADSTAR design contains nets with a 'Net Class' assigned. KemiCAD does not"
 " have an equivalent to CADSTAR's Net Class so these elements were not "
-"imported. Note: KiCad's version of 'Net Class' is closer to CADSTAR's 'Net "
+"imported. Note: KemiCAD's version of 'Net Class' is closer to CADSTAR's 'Net "
 "Route Code' (which has been imported for all nets)."
 msgstr ""
-"CADSTAR 设计包含关联了\"网络类\"的网络。但在 KiCad 中没有对应的等效项, 因此没有导入这些元素。注: KiCad "
+"CADSTAR 设计包含关联了\"网络类\"的网络。但在 KemiCAD 中没有对应的等效项, 因此没有导入这些元素。注: KemiCAD "
 "的\"网络类\"版本更接近 CADSTAR 的\"网络路线编码\"(已为所有网络导入)。"
 
 #: pcbnew/pcb_io/cadstar/cadstar_pcb_archive_loader.cpp:4006
-msgid ""
-"The CADSTAR design contains nets with a 'Spacing Class' assigned. KiCad does"
-" not have an equivalent to CADSTAR's Spacing Class so these elements were "
-"not imported. Please review the design rules as copper pours may be affected"
-" by this."
+msgid "The CADSTAR design contains nets with a 'Spacing Class' assigned. KemiCAD does not have an equivalent to CADSTAR's Spacing Class so these elements were not imported. Please review the design rules as copper pours may be affected by this."
 msgstr ""
-"CADSTAR 设计包含分配了 '间距类' 的网络。KiCad 没有与 CADSTAR 间距类等效的功能, 因此未导入这些元素。请检查设计规则, "
+"CADSTAR 设计包含分配了 '间距类' 的网络。KemiCAD 没有与 CADSTAR 间距类等效的功能, 因此未导入这些元素。请检查设计规则, "
 "因为覆铜可能会受影响。"
 
 #: pcbnew/pcb_io/cadstar/pcb_io_cadstar_archive.h:37
@@ -63380,7 +63280,7 @@ msgstr "ODB++ 生产文件"
 #: pcbnew/pcb_io/pads/pads_pcb_converter.cpp:220
 #, c-format
 msgid ""
-"The PADS file declares %d copper layers; KiCad supports %d, so the layers "
+"The PADS file declares %d copper layers; KemiCAD supports %d, so the layers "
 "past that share the last inner layer."
 msgstr ""
 
@@ -63493,8 +63393,8 @@ msgid "Undefined P-CAD layer %u substituted with the drawings layer."
 msgstr ""
 
 #: pcbnew/pcb_io/pcad/pcad_pcb.cpp:885
-msgid "KiCad only supports 32 signal layers."
-msgstr "KiCad 最多支持 32 个信号层。"
+msgid "KemiCAD only supports 32 signal layers."
+msgstr "KemiCAD 最多支持 32 个信号层。"
 
 #: pcbnew/pcb_io/pcad/pcad_via.cpp:89
 msgid "Unable to find library section."
@@ -64922,9 +64822,7 @@ msgstr "保存合并后的工程文件失败: %s\n"
 
 #: pcbnew/pcbnew_jobs_handler.cpp:3984
 #, c-format
-msgid ""
-"Layer map entry '%s' -> '%s' names an unknown KiCad layer; using automatic "
-"mapping instead"
+msgid "Layer map entry '%s' -> '%s' names an unknown KemiCAD layer; using automatic mapping instead"
 msgstr ""
 
 #: pcbnew/pcbnew_jobs_handler.cpp:3991
@@ -65744,7 +65642,7 @@ msgid ""
 "Cannot update schematic because Pcbnew is opened in stand-alone mode. In "
 "order to create or update PCBs from schematics, you must launch the KiCad "
 "project manager and create a project."
-msgstr "无法更新原理图, 因为 Pcbnew 在独立模式下打开。为了从原理图创建或更新 PCB, 您必须启动 KiCad 工程管理器并创建项目。"
+msgstr "无法更新原理图, 因为 Pcbnew 在独立模式下打开。为了从原理图创建或更新 PCB, 您必须启动 KemiCAD 工程管理器并创建项目。"
 
 #: pcbnew/tools/board_editor_control.cpp:947
 #, c-format
@@ -72575,11 +72473,17 @@ msgstr ""
 msgid ""
 "KemiCAD was unable to open this file because it was created with a more recent version than the one you are running.\n"
 "\n"
-"To open it you will need to upgrade KemiCAD (created by %s, file format dated %s or later)."
+"To open it you will need to upgrade KemiCAD (created by KemiCAD %s, file format dated %s or later)."
 msgstr ""
 "KemiCAD 无法打开此文件，因为它是由比当前更新的版本创建的。\n"
 "\n"
-"要打开它，需要升级 KemiCAD（创建程序 %s，文件格式日期须为 %s 或更新）。"
+"该文件由 KemiCAD %s 创建，请升级 KemiCAD 后再打开（文件格式日期须为 %s 或更新）。"
+
+msgid "Invalid or unsupported KemiCAD format_version %d (supported range %d-%d)."
+msgstr "KemiCAD 格式版本 %d 无效或不受支持（支持范围 %d-%d）。"
+
+msgid "This file uses KemiCAD format_version %d; this version of KemiCAD only supports up to %d.  Please upgrade KemiCAD."
+msgstr "此文件使用 KemiCAD 格式版本 %d，当前 KemiCAD 最高只支持 %d。请升级 KemiCAD。"
 
 msgid "History repository is locked by an older KemiCAD instance."
 msgstr "历史仓库已被旧版 KemiCAD 实例锁定。"

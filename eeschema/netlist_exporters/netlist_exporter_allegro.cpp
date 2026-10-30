@@ -33,6 +33,9 @@
 bool NETLIST_EXPORTER_ALLEGRO::writeNetlist( const wxString& aOutFileName, unsigned /* aNetlistOptions */,
                                              REPORTER& aReporter )
 {
+    if( !ValidateFootprintPadMappings( GNL_NETS, aReporter ) )
+        return false;
+
     m_f = nullptr;
     bool success = true;
 

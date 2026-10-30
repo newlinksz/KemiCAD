@@ -36,6 +36,7 @@
 
 #include <base_units.h>
 #include <board.h>
+#include <kemi_format_profile.h>
 #include <board_design_settings.h>
 #include <footprint.h>
 #include <constraints/pcb_constraint.h>
@@ -3120,6 +3121,9 @@ DOWNGRADE_FILE_RESULT DowngradeFootprintFileToTemp( const wxString& aSrcFile, co
     if( !owned )
         return DOWNGRADE_FILE_RESULT::SKIPPED;
 
+    if( owned->IsKemiOnly() )
+        return DOWNGRADE_FILE_RESULT::REFUSED;
+
     // The scratch board lets the block rules decide, so this stays in step with the rule
     // table instead of repeating a subset of it.
     BOARD scratch;
@@ -3149,16 +3153,39 @@ bool ExportBoardToOlderVersion( const wxString& aSrcFile, const wxString& aDestF
     if( aUnsupportedToken )
         aUnsupportedToken->clear();
 
-    SETTINGS_MANAGER projectSettings;
-    wxFileName       projectFile( aSrcFile );
+    wxFileName nativeProject( aSrcFile );
+    nativeProject.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT,
+                                           KEMI_FORMAT::FLAVOR::KEMI ) );
+
+    if( KEMI_FORMAT::HasKemiExt( aSrcFile ) || nativeProject.FileExists() )
+        return false;
+
+    wxFileName projectFile( aSrcFile );
     projectFile.SetExt( FILEEXT::ProjectFileExtension );
     projectFile.MakeAbsolute();
+
+    try
+    {
+        KEMI_FORMAT::CheckLegacyExportSource( aSrcFile );
+
+        if( projectFile.FileExists() )
+            KEMI_FORMAT::CheckLegacyExportSource( projectFile.GetFullPath() );
+    }
+    catch( const IO_ERROR& )
+    {
+        return false;
+    }
+
+    SETTINGS_MANAGER projectSettings;
     projectSettings.LoadProject( projectFile.GetFullPath(), false );
 
     PCB_IO_KICAD_SEXPR     pi;
     std::unique_ptr<BOARD> board( pi.LoadBoard( aSrcFile, nullptr ) );
 
     if( !board )
+        return false;
+
+    if( board->IsKemiOnly() )
         return false;
 
     // Resolve project variables before replacing dynamic items with fixed geometry.

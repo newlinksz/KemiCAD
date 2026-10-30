@@ -22,6 +22,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <api/api_handler_sch.h>
+#include <api/api_handler_symbol.h>
+#include <api/headless_symbol_editor_context.h>
 #include <api/api_utils.h>
 #include <api/common/commands/editor_commands.pb.h>
 #include <api/common/envelope.pb.h>
@@ -31,6 +33,11 @@
 #include <settings/settings_manager.h>
 
 #include <schematic.h>
+#include <lib_symbol.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
+#include <qa_utils/file_utils.h>
+#include <wx/ffile.h>
+#include <wx/filename.h>
 #include <advanced_config.h>
 #include <connection_graph.h>
 #include <sch_label.h>
@@ -434,4 +441,115 @@ BOOST_AUTO_TEST_CASE( NetlistReportsRebuildFailureAndAllowsRetry )
     BOOST_CHECK_GT( response.nets_size(), 0 );
 }
 
+
+BOOST_AUTO_TEST_CASE( SaveCopyUsesNativeTargetsAndHonorsOverwrite )
+{
+    SCHEMATIC* schematic = loadSchematic( wxS( "api_kitchen_sink" ) );
+    const wxString source = m_context->GetCurrentFileName();
+    const std::string original = KI_TEST::LoadStringData( source );
+    KI_TEST::SCOPED_TEMP_DIR output( wxS( "api-sch-native-copy" ) );
+    const wxString native = output.ChildPathStr( wxS( "copy.kemi_sch" ) );
+    const wxString official = output.ChildPathStr( wxS( "copy.kicad_sch" ) );
+    API_HANDLER_SCH handler( m_context );
+
+    auto saveCopy = [&]( const wxString& aPath, bool aOverwrite )
+    {
+        kiapi::common::commands::SaveCopyOfDocument command;
+        *command.mutable_document() = makeDocument( *schematic );
+        command.set_path( aPath.ToStdString() );
+        command.mutable_options()->set_include_project( false );
+        command.mutable_options()->set_overwrite( aOverwrite );
+        kiapi::common::ApiRequest request;
+        request.mutable_header()->set_client_name( "kicad.qa" );
+        BOOST_REQUIRE( request.mutable_message()->PackFrom( command ) );
+        return handler.Handle( request );
+    };
+
+    API_RESULT result = saveCopy( official, true );
+    BOOST_REQUIRE( !result.has_value() );
+    BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::AS_BAD_REQUEST );
+    BOOST_CHECK( !wxFileExists( official ) );
+    result = saveCopy( source, true );
+    BOOST_REQUIRE( !result.has_value() );
+    BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::AS_BAD_REQUEST );
+    result = saveCopy( native, false );
+    BOOST_REQUIRE( result.has_value() );
+    BOOST_REQUIRE( wxFileExists( native ) );
+    const std::string firstCopy = KI_TEST::LoadStringData( native );
+    result = saveCopy( native, false );
+    BOOST_REQUIRE( !result.has_value() );
+    BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::AS_BAD_REQUEST );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( native ), firstCopy );
+    result = saveCopy( native, true );
+    BOOST_REQUIRE( result.has_value() );
+
+    SCH_IO_KICAD_SEXPR io;
+    SCHEMATIC restored( &m_settingsManager.Prj() );
+    std::unique_ptr<SCH_SHEET> reopened( io.LoadSchematicFile( native, &restored ) );
+    BOOST_REQUIRE( reopened );
+    BOOST_REQUIRE( reopened->GetScreen() );
+    BOOST_CHECK( reopened->GetScreen()->IsKemiOnly() );
+    BOOST_CHECK_EQUAL( m_context->GetCurrentFileName(), source );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( source ), original );
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
+
+
+BOOST_AUTO_TEST_CASE( SymbolHandlerCopiesToNativeLibrary )
+{
+    SETTINGS_MANAGER settings;
+    KI_TEST::SCOPED_TEMP_PROJECT project( settings, wxS( "api-symbol-native-copy" ), wxS( "source" ) );
+    const wxString source = wxFileName( project.DirStr(), wxS( "source.kicad_sym" ) ).GetFullPath();
+    {
+        wxFFile file( source, wxS( "wb" ) );
+        BOOST_REQUIRE( file.IsOpened() );
+        BOOST_REQUIRE( file.Write( wxS( "(kicad_symbol_lib (version 20241209)"
+                                       " (generator kicad_symbol_editor) (symbol \"Part\"))" ),
+                                   wxConvUTF8 ) );
+    }
+
+    const std::string original = KI_TEST::LoadStringData( source );
+    SCH_IO_KICAD_SEXPR io;
+    LIB_SYMBOL* symbol = io.LoadSymbol( source, wxS( "Part" ) );
+    BOOST_REQUIRE( symbol );
+    auto context = std::make_shared<HEADLESS_SYMBOL_EDITOR_CONTEXT>(
+            std::make_unique<LIB_SYMBOL>( *symbol ), LIB_ID( wxS( "source" ), wxS( "Part" ) ),
+            &project.Project(), nullptr );
+    API_HANDLER_SYMBOL handler( context );
+    const wxString native = wxFileName( project.DirStr(), wxS( "copy.kemi_sym" ) ).GetFullPath();
+
+    auto saveCopy = [&]( const wxString& aPath, bool aOverwrite )
+    {
+        kiapi::common::commands::SaveCopyOfDocument command;
+        command.mutable_document()->set_type( kiapi::common::types::DOCTYPE_SYMBOL );
+        command.set_path( aPath.ToStdString() );
+        command.mutable_options()->set_overwrite( aOverwrite );
+        kiapi::common::ApiRequest request;
+        request.mutable_header()->set_client_name( "kicad.qa" );
+        BOOST_REQUIRE( request.mutable_message()->PackFrom( command ) );
+        return handler.Handle( request );
+    };
+
+    API_RESULT result = saveCopy( source, true );
+    BOOST_REQUIRE( !result.has_value() );
+    BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::AS_BAD_REQUEST );
+    result = saveCopy( native, false );
+    BOOST_REQUIRE( result.has_value() );
+    const std::string firstCopy = KI_TEST::LoadStringData( native );
+    result = saveCopy( native, false );
+    BOOST_REQUIRE( !result.has_value() );
+    BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::AS_BAD_REQUEST );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( native ), firstCopy );
+    result = saveCopy( native, true );
+    BOOST_REQUIRE( result.has_value() );
+    SCH_IO_KICAD_SEXPR reader;
+    BOOST_REQUIRE( reader.LoadSymbol( native, wxS( "Part" ) ) );
+    BOOST_CHECK_EQUAL( context->GetLoadedLibId().GetUniStringLibNickname(), wxS( "source" ) );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( source ), original );
+
+    const wxString noExtension = wxFileName( project.DirStr(), wxS( "default" ) ).GetFullPath();
+    BOOST_REQUIRE( SaveSymbolCopyToFile( *symbol, noExtension, false ) );
+    BOOST_CHECK( wxFileExists( noExtension + wxS( ".kemi_sym" ) ) );
+}

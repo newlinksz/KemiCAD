@@ -54,6 +54,7 @@
 #include <dialogs/rule_editor_dialog_base.h>
 #include <dialogs/dialog_find_by_properties.h>
 #include <kiface_base.h>
+#include <kemi_project_paths.h>
 #include <kiway.h>
 #include <netlist_reader/pcb_netlist.h>
 #include <origin_viewitem.h>
@@ -912,7 +913,7 @@ int BOARD_EDITOR_CONTROL::UpdateSchematicFromPCB( const TOOL_EVENT& aEvent )
 
     KIWAY_PLAYER* frame = m_frame->Kiway().Player( FRAME_SCH, false );
 
-    if( frame )
+    if( frame && frame->IsVisible() )
     {
         std::string payload;
 
@@ -930,8 +931,9 @@ int BOARD_EDITOR_CONTROL::ShowEeschema( const TOOL_EVENT& aEvent )
     wxString        msg;
     PCB_EDIT_FRAME* boardFrame = m_frame;
     PROJECT&        project = boardFrame->Prj();
-    wxFileName      schematic( project.GetProjectPath(), project.GetProjectName(),
-                               FILEEXT::KiCadSchematicFileExtension );
+    wxFileName      schematic( KEMI_FORMAT::RelatedDocumentPath(
+            KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::DOC::SCHEMATIC,
+            project.GetProjectFullName() ) );
 
     if( !schematic.FileExists() )
     {
@@ -993,7 +995,12 @@ int BOARD_EDITOR_CONTROL::ShowEeschema( const TOOL_EVENT& aEvent )
                     if( !frame->IsShownOnScreen() ) // the frame exists, (created by the dialog field editor)
                                                     // but no project loaded.
                     {
-                        frame->OpenProjectFiles( std::vector<wxString>( 1, schematic.GetFullPath() ) );
+                        if( !frame->OpenProjectFiles(
+                                    std::vector<wxString>( 1, schematic.GetFullPath() ) ) )
+                        {
+                            return;
+                        }
+
                         frame->Show( true );
                     }
 

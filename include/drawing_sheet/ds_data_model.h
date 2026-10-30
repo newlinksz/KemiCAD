@@ -24,6 +24,7 @@
 #include <math/vector2d.h>
 #include <eda_text.h>
 #include <bitmap_base.h>
+#include <kemi_format_profile.h>
 
 class DS_DATA_ITEM;
 class PAGE_INFO;
@@ -60,6 +61,9 @@ public:
 
     const wxString& GetGenerator() const { return m_generator; }
     void SetGenerator( const wxString& aGenerator ) { m_generator = aGenerator; }
+
+    bool IsKemiOnlyOutput() const { return m_kemiOnlyOutput; }
+    void RequireKemiOutput() { m_kemiOnlyOutput = true; }
 
     double GetLeftMargin() { return m_leftMargin; }
     void SetLeftMargin( double aMargin ) { m_leftMargin = aMargin; }
@@ -99,6 +103,9 @@ public:
      * @param aFullFileName the filename of the file to created.
      */
     void Save( const wxString& aFullFileName );
+
+    /** Save through a temporary file using the final destination's format. */
+    void Save( const wxString& aFullFileName, KEMI_FORMAT::FLAVOR aFlavor );
 
     /**
      * Save the description in a buffer.
@@ -175,6 +182,7 @@ public:
      *                      sheet.
      * @param aMsg [optional] if non-null, will be filled with any error messages.
      * @param aAppend if true: do not delete old layout, and load only \a aFullFileName.
+     *                On failure, leave the existing layout and its settings unchanged.
      */
     bool LoadDrawingSheet( const wxString& aFullFileName, wxString* aMsg, bool aAppend = false );
 
@@ -208,7 +216,11 @@ public:
                                       // displayed "as this"
 
 private:
+    /** Parse into a temporary model and transfer data and native provenance only on success. */
+    void parsePageLayout( const char* aPageLayout, bool aAppend, const wxString& aSource );
+
     std::vector <DS_DATA_ITEM*> m_list;
+    bool     m_kemiOnlyOutput = false;
     bool     m_allowVoidList;         // If false, the default drawing sheet will be loaded the
                                       // first time DS_DRAW_ITEM_LIST::BuildDrawItemsList is run
                                       // (useful mainly for drawing sheet editor)

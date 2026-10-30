@@ -47,10 +47,10 @@ target_include_directories( qa_diff_merge PRIVATE
 )
 
 target_compile_definitions( qa_diff_merge PRIVATE
-    QA_KICAD_CLI_PATH="$<TARGET_FILE:kicad-cli>"
+    QA_KICAD_CLI_PATH="$<TARGET_FILE:kemicad-cli>"
 )
 
-add_dependencies( qa_diff_merge kicad-cli )
+add_dependencies( qa_diff_merge kemicad-cli )
 
 target_link_libraries( qa_diff_merge
     common
@@ -77,11 +77,11 @@ if( UNIX )
     add_test(
         NAME qa_diff_merge_mergetool_e2e
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/mergetool_e2e.sh
-                $<TARGET_FILE:kicad-cli>
+                $<TARGET_FILE:kemicad-cli>
     )
 
     set_tests_properties( qa_diff_merge_mergetool_e2e PROPERTIES
-        DEPENDS kicad-cli
+        DEPENDS kemicad-cli
     )
 
     setup_qa_env( qa_diff_merge_mergetool_e2e )
@@ -91,12 +91,12 @@ if( UNIX )
     add_test(
         NAME qa_diff_merge_mergetool_workflow_e2e
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/mergetool_workflow_e2e.sh
-                $<TARGET_FILE:kicad-cli>
+                $<TARGET_FILE:kemicad-cli>
                 ${CMAKE_SOURCE_DIR}/qa/data
     )
 
     set_tests_properties( qa_diff_merge_mergetool_workflow_e2e PROPERTIES
-        DEPENDS "kicad-cli;kicad"
+        DEPENDS "kemicad-cli;kicad"
         TIMEOUT 600
     )
 

@@ -19,6 +19,7 @@
 
 
 #include <board.h>
+#include <limits>
 #include <zones.h>
 #include <drc/drc_rule_parser.h>
 #include <drc/drc_rule_condition.h>
@@ -28,6 +29,7 @@
 #include <component_classes/component_class_assignment_rule.h>
 #include <properties/property.h>
 #include <properties/property_mgr.h>
+#include <kemi_format_profile.h>
 
 using namespace DRCRULE_T;
 
@@ -172,18 +174,90 @@ wxString DRC_RULES_PARSER::parseExpression()
 void DRC_RULES_PARSER::Parse( std::vector<std::shared_ptr<DRC_RULE>>& aRules, REPORTER* aReporter )
 {
     bool     haveVersion = false;
+    bool     firstStatement = true;
+    bool     inKemiWrapper = false;
+    bool     closedKemiWrapper = false;
 
     m_reporter = aReporter;
 
     for( T token = NextTok(); token != T_EOF; token = NextTok() )
     {
+        if( closedKemiWrapper )
+        {
+            reportError( _( "Unexpected content after KemiCAD rules container." ) );
+            break;
+        }
+
         if( checkUnresolvedTextVariable() )
             continue;
+
+        // Closing paren of the optional (kemi_dru (format_version N) ...) wrapper.
+        if( inKemiWrapper && token == T_RIGHT )
+        {
+            if( !haveVersion )
+                reportError( _( "Missing version statement." ) );
+
+            inKemiWrapper = false;
+            closedKemiWrapper = true;
+            continue;
+        }
 
         if( token != T_LEFT )
             reportError( _( "Missing '('." ) );
 
         token = NextTok();
+
+        if( firstStatement )
+        {
+            firstStatement = false;
+
+            wxString kemiError = KEMI_FORMAT::CheckRootForSource( KEMI_FORMAT::DOC::DESIGN_RULES,
+                                                                  CurSource(),
+                                                                  token == T_kemi_dru );
+
+            if( !kemiError.IsEmpty() )
+                reportError( kemiError );
+
+            if( token == T_kemi_dru )
+            {
+                inKemiWrapper = true;
+
+                if( NextTok() != T_LEFT || NextTok() != T_format_version )
+                {
+                    expected( wxT( "format_version" ) );
+                }
+                else if( (int) NextTok() != DSN_NUMBER )
+                {
+                    expected( _( "format version number" ) );
+                }
+                else
+                {
+                    long formatVersion = 0;
+
+                    // Reject overflowing numbers instead of truncating on LP64.
+                    if( !FromUTF8().ToLong( &formatVersion )
+                            || formatVersion < std::numeric_limits<int>::min()
+                            || formatVersion > std::numeric_limits<int>::max() )
+                    {
+                        reportError( _( "Unrecognizable KemiCAD format_version." ) );
+                    }
+                    else
+                    {
+                        kemiError = KEMI_FORMAT::CheckFormatVersion(
+                                KEMI_FORMAT::DOC::DESIGN_RULES,
+                                static_cast<int>( formatVersion ) );
+
+                        if( !kemiError.IsEmpty() )
+                            reportError( kemiError );
+                    }
+
+                    if( (int) NextTok() != DSN_RIGHT )
+                        reportError( _( "Missing ')'." ) );
+                }
+
+                continue;
+            }
+        }
 
         if( !haveVersion && token != T_version )
         {
@@ -227,6 +301,18 @@ void DRC_RULES_PARSER::Parse( std::vector<std::shared_ptr<DRC_RULE>>& aRules, RE
         default:
             expected( wxT( "rule or version" ) );
         }
+    }
+
+    if( inKemiWrapper )
+        reportError( _( "Unclosed KemiCAD rules container." ) );
+
+    if( firstStatement )
+    {
+        wxString error = KEMI_FORMAT::CheckRootForSource( KEMI_FORMAT::DOC::DESIGN_RULES,
+                                                        CurSource(), false );
+
+        if( !error.IsEmpty() )
+            reportError( error );
     }
 
     if( m_reporter && !m_reporter->HasMessage() )

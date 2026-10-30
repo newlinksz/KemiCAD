@@ -22,6 +22,7 @@
 #ifndef KICAD_PROJECT_FILE_H
 #define KICAD_PROJECT_FILE_H
 
+#include <kemi_format_profile.h>
 #include <common.h> // needed for wxstring hash template
 #include <kiid.h>
 #include <project/board_project_settings.h>
@@ -166,6 +167,11 @@ public:
     bool ShouldAutoSave() const { return !m_wasMigrated && !m_isFutureFormat; }
 
 protected:
+    std::optional<KEMI_FORMAT::DOC> getDocumentType() const override
+    {
+        return KEMI_FORMAT::DOC::PROJECT;
+    }
+
     wxString getFileExt() const override;
 
     wxString getLegacyFileExt() const override;

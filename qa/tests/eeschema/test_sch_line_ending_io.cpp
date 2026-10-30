@@ -47,7 +47,7 @@ public:
         wxRemoveFile( m_dir );
         wxFileName::Mkdir( m_dir );
 
-        m_path = wxFileName( m_dir, wxS( "line_ending_roundtrip.kicad_sym" ) ).GetFullPath();
+        m_path = wxFileName( m_dir, wxS( "line_ending_roundtrip.kemi_sym" ) ).GetFullPath();
     }
 
     ~TEMP_SYMBOL_LIBRARY()

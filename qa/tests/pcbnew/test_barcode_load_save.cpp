@@ -54,7 +54,7 @@ BOOST_AUTO_TEST_CASE( BarcodeWriteRead )
     board->Add( barcode, ADD_MODE::APPEND, true );
 
     KI_TEST::SCOPED_TEMP_DIR    tempDir( "kicad_qa_barcode_roundtrip" );
-    const std::filesystem::path savePath = tempDir.Path() / "barcode_roundtrip.kicad_pcb";
+    const std::filesystem::path savePath = tempDir.Path() / "barcode_roundtrip.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *board, savePath.string() );
     std::unique_ptr<BOARD> board2 = KI_TEST::ReadBoardFromFileOrStream( savePath.string() );

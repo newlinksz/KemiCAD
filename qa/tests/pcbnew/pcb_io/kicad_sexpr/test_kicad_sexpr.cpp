@@ -47,6 +47,9 @@
 #include <pcb_shape.h>
 #include <pcb_track.h>
 #include <zone.h>
+#include <brand.h>
+#include <kemi_format_profile.h>
+#include <ki_exception.h>
 
 
 #define CHECK_ENUM_CLASS_EQUAL( L, R )                                                      \
@@ -91,7 +94,7 @@ BOOST_AUTO_TEST_CASE( Issue19775_ZoneLayerWildcards )
 
     BOOST_TEST_CONTEXT( "Round trip layers" )
     {
-        auto tmpBoard = std::filesystem::temp_directory_path() / "Issue19775_RoundTrip.kicad_pcb";
+        auto tmpBoard = std::filesystem::temp_directory_path() / "Issue19775_RoundTrip.kemi_pcb";
 
         // Load and save the board from above to test how we write the zones into it
         {
@@ -167,7 +170,7 @@ BOOST_AUTO_TEST_CASE( CoincidentDrawingsSurviveSave )
     BOOST_REQUIRE_EQUAL( board.Drawings().size(), 2u );
 
     const wxString path =
-            ( std::filesystem::temp_directory_path() / "qa_coincident_drawings.kicad_pcb" ).string();
+            ( std::filesystem::temp_directory_path() / "qa_coincident_drawings.kemi_pcb" ).string();
 
     kicadPlugin.SaveBoard( path, board );
 
@@ -516,7 +519,7 @@ BOOST_AUTO_TEST_CASE( Issue24642_AppendBoardPromptsOnlyOnNameMismatch )
  * any downstream code reading m_netinfo lands on the board-independent ORPHANED singleton.
  *
  * This test exercises the library-save path with a footprint whose pad, copper shape and
- * copper zone all reference a real net on a locally-built board.  The emitted .kicad_mod
+ * copper zone all reference a real net on a locally-built board.  The emitted .kemi_mod
  * must contain no "(net " tokens, and ClearAllNets() must orphan every connected item.
  */
 BOOST_AUTO_TEST_CASE( FootprintSave_OmitsNetsOnAllBoardConnectedItems )
@@ -559,7 +562,7 @@ BOOST_AUTO_TEST_CASE( FootprintSave_OmitsNetsOnAllBoardConnectedItems )
     // Save into the scratch library via the public library-save API.  Must not throw.
     BOOST_REQUIRE_NO_THROW( kicadPlugin.FootprintSave( tmpLib.Path().string(), fp ) );
 
-    auto savedFile = tmpLib.Path() / "test_fp_save_netinfo.kicad_mod";
+    auto savedFile = tmpLib.Path() / "test_fp_save_netinfo.kemi_mod";
     BOOST_REQUIRE( std::filesystem::exists( savedFile ) );
 
     std::ifstream in( savedFile );
@@ -649,7 +652,7 @@ BOOST_AUTO_TEST_CASE( CopperThievingZone_RoundTrip )
     writeBoard->Add( zone );
 
     std::filesystem::path tmpPath = std::filesystem::temp_directory_path()
-                                    / "copper_thieving_roundtrip.kicad_pcb";
+                                    / "copper_thieving_roundtrip.kemi_pcb";
 
     PCB_IO_KICAD_SEXPR writer;
     writer.SaveBoard( tmpPath.string(), *writeBoard );
@@ -710,7 +713,7 @@ BOOST_AUTO_TEST_CASE( CopperThievingZone_AllPatternsRoundTrip )
             writeBoard->Add( zone );
 
             std::filesystem::path tmpPath = std::filesystem::temp_directory_path()
-                                            / "copper_thieving_pattern.kicad_pcb";
+                                            / "copper_thieving_pattern.kemi_pcb";
             PCB_IO_KICAD_SEXPR writer;
             writer.SaveBoard( tmpPath.string(), *writeBoard );
 
@@ -1056,6 +1059,118 @@ BOOST_AUTO_TEST_CASE( ParseWarningDoesNotFailTheLibrary )
     names.clear();
 
     BOOST_CHECK_THROW( kicadPlugin.FootprintEnumerate( names, libPath.string(), false ), IO_ERROR );
+}
+
+// ---------------------------------------------------------------------------------------
+// KemiCAD version wording regression (format_version / file date / generator_version)
+// ---------------------------------------------------------------------------------------
+
+namespace
+{
+const char* kMinimalBoardBody = " (general (thickness 1.6)) (paper \"A4\")"
+                                " (layers (0 \"F.Cu\" signal) (31 \"B.Cu\" signal)))";
+}
+
+
+BOOST_AUTO_TEST_CASE( KemiVersion_FutureDateRejectedWithKemiWording )
+{
+    KI_TEST::SCOPED_TEMP_DIR tempDir( "kemi_qa_future_date" );
+
+    for( const char* gen : { "10.99", "1.2.0" } )
+    {
+        std::filesystem::path path = tempDir.Path() / "future.kicad_pcb";
+        {
+            std::ofstream out( path );
+            out << "(kicad_pcb (version 99991231) (generator \"pcbnew\") (generator_version \""
+                << gen << "\")" << kMinimalBoardBody;
+        }
+
+        PCB_IO_KICAD_SEXPR reader;
+        bool               thrown = false;
+
+        try
+        {
+            reader.LoadBoard( path.string() );
+        }
+        catch( const FUTURE_FORMAT_ERROR& e )
+        {
+            thrown = true;
+            BOOST_CHECK( e.Problem().Contains( wxS( "upgrade KemiCAD" ) ) );
+            BOOST_CHECK( !e.Problem().Contains( wxS( "10.99" ) ) );
+
+            if( std::string( gen ) == "1.2.0" )
+                BOOST_CHECK( e.Problem().Contains( wxS( "KemiCAD 1.2.0" ) ) );
+        }
+
+        BOOST_CHECK_MESSAGE( thrown, "future-dated board must be rejected" );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( KemiVersion_NewerFormatVersionRejected )
+{
+    KI_TEST::SCOPED_TEMP_DIR tempDir( "kemi_qa_format_version" );
+    std::filesystem::path    path = tempDir.Path() / "newer.kemi_pcb";
+    {
+        std::ofstream out( path );
+        out << "(kemi_pcb (format_version " << ( KEMI_FORMAT::FORMAT_VERSION + 1 ) << ")"
+            << " (version 20241229) (generator \"pcbnew\") (generator_version \"1.2.0\")"
+            << kMinimalBoardBody;
+    }
+
+    PCB_IO_KICAD_SEXPR reader;
+    bool               thrown = false;
+
+    try
+    {
+        reader.LoadBoard( path.string() );
+    }
+    catch( const IO_ERROR& e )
+    {
+        thrown = true;
+        BOOST_CHECK( e.Problem().Contains( wxS( "KemiCAD" ) ) );
+        BOOST_CHECK( !e.Problem().Contains( wxS( "KiCad" ) ) );
+    }
+
+    BOOST_CHECK_MESSAGE( thrown, "format_version newer than supported must be rejected" );
+}
+
+
+BOOST_AUTO_TEST_CASE( KemiVersion_OldUpstreamGeneratorVersionStillLoads )
+{
+    KI_TEST::SCOPED_TEMP_DIR tempDir( "kemi_qa_old_generator" );
+    std::filesystem::path    path = tempDir.Path() / "old.kicad_pcb";
+    {
+        std::ofstream out( path );
+        out << "(kicad_pcb (version 20241229) (generator \"pcbnew\") (generator_version \"10.99\")"
+            << kMinimalBoardBody;
+    }
+
+    PCB_IO_KICAD_SEXPR     reader;
+    std::unique_ptr<BOARD> board;
+    BOOST_REQUIRE_NO_THROW( board = reader.LoadBoard( path.string() ) );
+    BOOST_CHECK( board );
+}
+
+
+BOOST_AUTO_TEST_CASE( KemiVersion_SavedGeneratorVersionIsBrandVersion )
+{
+    KI_TEST::SCOPED_TEMP_DIR tempDir( "kemi_qa_saved_generator" );
+
+    for( const char* name : { "saved.kemi_pcb" } )
+    {
+        std::filesystem::path path = tempDir.Path() / name;
+        BOARD                 board;
+        PCB_IO_KICAD_SEXPR    writer;
+        writer.SaveBoard( path.string(), board );
+
+        std::ifstream     in( path, std::ios::binary );
+        const std::string text( ( std::istreambuf_iterator<char>( in ) ), std::istreambuf_iterator<char>() );
+        const std::string expected = std::string( "(generator_version \"" ) + BRAND_VERSION + "\")";
+        BOOST_CHECK_MESSAGE( text.find( expected ) != std::string::npos,
+                             name << " must carry " << expected );
+        BOOST_CHECK( text.find( "(generator_version \"10.99\")" ) == std::string::npos );
+    }
 }
 
 

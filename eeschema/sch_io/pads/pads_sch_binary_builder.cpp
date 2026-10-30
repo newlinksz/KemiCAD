@@ -38,8 +38,10 @@
 #include <sch_io/pads/pads_sch_symbol_builder.h>
 #include <stroke_params.h>
 #include <title_block.h>
+#include <wx/filename.h>
 
 #include <ki_exception.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 
 #include <algorithm>
@@ -1155,7 +1157,9 @@ namespace
         std::ostringstream output;
         output.imbue( std::locale::classic() );
         output.precision( 8 );
-        output << "(kicad_wks (version 20220228) (generator pads_import)\n"
+        output << '(' << KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::DRAWING_SHEET, KEMI_FORMAT::FLAVOR::KEMI )
+               << " (format_version " << KEMI_FORMAT::FORMAT_VERSION
+               << ") (version 20220228) (generator pads_import)\n"
                   "  (setup (textsize 1.27 1.27) (linewidth 0) (textlinewidth 0)"
                   " (left_margin 0) (right_margin 0) (top_margin 0) (bottom_margin 0))\n";
 
@@ -1287,21 +1291,39 @@ namespace
 
     wxString sanitizedFilename( const wxString& aName, size_t aOrdinal, std::set<wxString>& aUsed )
     {
-        wxString stem = aName;
+        const wxString illegal( wxS( "<>:\"/\\|?*" ) );
+        wxString       stem;
 
-        for( wxUniChar character : wxS( "<>:\"/\\|?*" ) )
-            stem.Replace( wxString( character ), wxS( "_" ) );
+        for( wxUniChar c : aName )
+        {
+            // Match OrCAD import: drop dots and spaces from sheet file stems.
+            if( c == '.' || c == ' ' || c == '\t' )
+                continue;
 
-        stem.Trim( true ).Trim( false );
+            if( c.GetValue() < 0x20 || illegal.Find( c ) != wxNOT_FOUND )
+                stem += '_';
+            else
+                stem += c;
+        }
+
+        while( !stem.IsEmpty() && ( stem.Last() == '_' || stem.Last() == '-' ) )
+            stem.RemoveLast();
+
+        while( !stem.IsEmpty() && ( stem.GetChar( 0 ) == '_' || stem.GetChar( 0 ) == '-' ) )
+            stem.Remove( 0, 1 );
 
         if( stem.IsEmpty() )
             stem = wxString::Format( wxS( "pads_sheet_%zu" ), aOrdinal + 1 );
 
-        wxString candidate = stem + wxS( "." ) + FILEEXT::KiCadSchematicFileExtension;
-        size_t   suffix = 2;
+        // "02-PageName.kemi_sch" — ordinal is 0-based.
+        stem = wxString::Format( wxS( "%02zu-%s" ), aOrdinal + 1, stem );
+
+        const char* extension = KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt;
+        wxString    candidate = stem + wxS( "." ) + extension;
+        size_t      suffix = 2;
 
         while( aUsed.contains( candidate.Lower() ) )
-            candidate = wxString::Format( wxS( "%s_%zu.%s" ), stem, suffix++, FILEEXT::KiCadSchematicFileExtension );
+            candidate = wxString::Format( wxS( "%s_%zu.%s" ), stem, suffix++, extension );
 
         aUsed.insert( candidate.Lower() );
         return candidate;
@@ -1368,7 +1390,7 @@ namespace
         {
             if( replacementEmbeddedFiles
                 && ( aAppending || replacementDrawingSheet.IsEmpty()
-                     || !replacementEmbeddedFiles->HasFile( wxS( "pads_import.kicad_wks" ) ) ) )
+                     || !replacementEmbeddedFiles->HasFile( wxS( "pads_import.kemi_wks" ) ) ) )
             {
                 THROW_IO_ERROR( wxS( "embedded worksheet staging is incomplete" ) );
             }
@@ -1919,7 +1941,7 @@ namespace
                     aStaged.result.diagnostics.push_back( MakePropertyDiagnostic(
                             RPT_SEVERITY_WARNING, label.source, wxS( "unsupported_offpage_decal" ),
                             PROPERTY_DISPOSITION::UNSUPPORTED,
-                            wxS( "PADS unsupported label has no KiCad schematic representation" ) ) );
+                            wxS( "PADS unsupported label has no KemiCAD schematic representation" ) ) );
                 }
 
                 continue;
@@ -2036,7 +2058,7 @@ BUILD_RESULT PADS_SCH_BINARY_BUILDER::Build( const PADS_SCH_MODEL& aModel, SCHEM
 
         const std::string serialized = serializeWorksheet( *worksheet, *sourceSheet );
         auto              embeddedWorksheet = std::make_shared<EMBEDDED_FILES::EMBEDDED_FILE>();
-        embeddedWorksheet->name = wxS( "pads_import.kicad_wks" );
+        embeddedWorksheet->name = wxS( "pads_import.kemi_wks" );
         embeddedWorksheet->type = EMBEDDED_FILES::EMBEDDED_FILE::FILE_TYPE::WORKSHEET;
         embeddedWorksheet->decompressedData.assign( serialized.begin(), serialized.end() );
 
@@ -2119,8 +2141,8 @@ BUILD_RESULT PADS_SCH_BINARY_BUILDER::Build( const PADS_SCH_MODEL& aModel, SCHEM
                 sheet->SetScreen( screen );
                 sheet->SyncUuidToScreen();
                 sheet->SetParent( &aSchematic->Root() );
-                sheet->GetField( FIELD_T::SHEET_NAME )->SetText( sourceSheet.name.text );
                 wxString filename = sanitizedFilename( sourceSheet.name.text, index, usedFilenames );
+                sheet->GetField( FIELD_T::SHEET_NAME )->SetText( wxFileName( filename ).GetName() );
                 sheet->GetField( FIELD_T::SHEET_FILENAME )->SetText( filename );
                 screen->SetFileName( filename );
                 screen->SetPageNumber( wxString::Format( wxS( "%zu" ), index + 1 ) );
@@ -2179,8 +2201,8 @@ BUILD_RESULT PADS_SCH_BINARY_BUILDER::Build( const PADS_SCH_MODEL& aModel, SCHEM
                     aAppendToMe, position, VECTOR2I( schIUScale.MilsToIU( 2000 ), schIUScale.MilsToIU( 1500 ) ) );
             auto childScreen = new SCH_SCREEN( aSchematic );
             child->SetScreen( childScreen );
-            child->GetField( FIELD_T::SHEET_NAME )->SetText( sourceSheet.name.text );
             wxString filename = sanitizedFilename( sourceSheet.name.text, index, usedFilenames );
+            child->GetField( FIELD_T::SHEET_NAME )->SetText( wxFileName( filename ).GetName() );
             child->GetField( FIELD_T::SHEET_FILENAME )->SetText( filename );
             childScreen->SetFileName( filename );
             childScreen->SetPageNumber( wxString::Format( wxS( "%zu" ), firstChildPage + index ) );

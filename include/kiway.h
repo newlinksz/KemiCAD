@@ -106,12 +106,12 @@
 class KICAD_API_SERVER;
 
 
-#define KIFACE_VERSION      1
-#define KIFACE_GETTER       KIFACE_1
+#define KIFACE_VERSION      2
+#define KIFACE_GETTER       KIFACE_2
 
 // The KIFACE acquisition function is declared extern "C" so its name should not
 // be mangled.
-#define KIFACE_INSTANCE_NAME_AND_VERSION   "KIFACE_1"
+#define KIFACE_INSTANCE_NAME_AND_VERSION   "KIFACE_2"
 
 #if defined(__linux__) || defined(__FreeBSD__)
  #define LIB_ENV_VAR    wxT( "LD_LIBRARY_PATH" )
@@ -253,6 +253,12 @@ struct KIFACE
      * @return the requested object which must be cast into the known type.
      */
     virtual void* IfaceOrAddress( int aDataId ) = 0;
+
+    /** Load an import source and write a native document without changing its project. */
+    virtual bool SaveNativeDocument( const wxString& aSource, const wxString& aTarget )
+    {
+        return false;
+    }
 
     /**
      * Append this Kiface's registered actions to the given list.

@@ -260,7 +260,7 @@ BOOST_FIXTURE_TEST_CASE( ReferenceImagePpiScaleMigration, REFERENCE_IMAGE_BOARD_
     image.SetLayer( F_Cu );
 
     const std::string path = ( std::filesystem::temp_directory_path()
-                               / "issue23575_ppi_migration.kicad_pcb" ).string();
+                               / "issue23575_ppi_migration.kemi_pcb" ).string();
     KI_TEST::DumpBoardToFile( board, path );
 
     std::ifstream     in( path );

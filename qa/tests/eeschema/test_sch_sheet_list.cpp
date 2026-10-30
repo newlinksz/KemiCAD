@@ -18,6 +18,7 @@
  */
 
 #include <qa_utils/wx_utils/unit_test_utils.h>
+#include <qa_utils/file_utils.h>
 #include "eeschema_test_utils.h"
 
 #include <sch_io/sch_io.h>
@@ -109,9 +110,16 @@ BOOST_AUTO_TEST_CASE( TestEditPageNumbersInSharedDesign )
 
         prjFn.SetExt( FILEEXT::ProjectFileExtension );
 
-        rootFn.AppendDir( "temp" );
-        if( !rootFn.DirExists() )
-            BOOST_CHECK( rootFn.Mkdir() );
+        KI_TEST::SCOPED_TEMP_DIR output( wxS( "sheet-list-save" ) );
+        rootFn.SetPath( output.PathStr() );
+        rootFn.SetExt( wxS( "kemi_sch" ) );
+
+        for( SCH_SHEET_PATH& path : sheets )
+        {
+            wxFileName reference( path.Last()->GetFileName() );
+            reference.SetExt( wxS( "kemi_sch" ) );
+            path.Last()->SetFileName( reference.GetFullPath() );
+        }
 
         wxFileName newPrjFn = rootFn;
         newPrjFn.SetExt( FILEEXT::ProjectFileExtension );
@@ -132,7 +140,7 @@ BOOST_AUTO_TEST_CASE( TestEditPageNumbersInSharedDesign )
         subSheetFn.SetName( "filter" );
         m_pi->SaveSchematicFile( subSheetFn.GetFullPath(), sheets.at( 2 ).Last(), m_schematic.get() );
 
-        LoadSchematic( SchematicQAPath( "complex_hierarchy_shared/temp/complex_hierarchy" ) );
+        LoadSchematic( rootFn );
 
         sheets = m_schematic->BuildSheetListSortedByPageNumbers();
 

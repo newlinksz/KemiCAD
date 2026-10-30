@@ -58,6 +58,8 @@
 #include <pcb_point.h>
 #include <kiway.h>
 #include <drc/drc_item.h>
+#include <drc/rule_editor/drc_re_rule_loader.h>
+#include <drc/rule_editor/drc_re_rule_saver.h>
 #include <jobs/job_export_pcb_3d.h>
 #include <jobs/job_export_pcb_dxf.h>
 #include <jobs/job_export_pcb_drill.h>
@@ -84,6 +86,7 @@
 #include <netlist_reader/board_netlist_updater.h>
 #include <netlist_reader/pcb_netlist.h>
 #include <project.h>
+#include <kemi_format_profile.h>
 #include <project/project_file.h>
 #include <tool/actions.h>
 #include <string_utils.h>
@@ -275,12 +278,27 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSaveDocument(
         return tl::unexpected( e );
     }
 
+    wxFileName oldBoardFile( pcbContext()->GetCurrentFileName() );
+    oldBoardFile.MakeAbsolute();
+
     if( !pcbContext()->SaveBoard() )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_INTERNAL_ERROR );
         e.set_error_message( "board could not be saved" );
         return tl::unexpected( e );
+    }
+
+    wxFileName newBoardFile( pcbContext()->GetCurrentFileName() );
+    newBoardFile.MakeAbsolute();
+
+    if( oldBoardFile.GetFullPath() != newBoardFile.GetFullPath() )
+    {
+        if( KICAD_API_SERVER* server = apiServer() )
+        {
+            server->NotifyDocumentRenamed( thisDocumentType(), oldBoardFile.GetFullPath(),
+                                           newBoardFile.GetFullPath() );
+        }
     }
 
     return Empty();
@@ -325,8 +343,8 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSaveDocumentAs( const HANDLER_CONTE
 
     if( KICAD_API_SERVER* server = apiServer() )
     {
-        wxFileName newBoardFile( pathStr );
-        newBoardFile.SetExt( FILEEXT::KiCadPcbFileExtension );
+        wxFileName newBoardFile( pcbContext()->GetCurrentFileName() );
+        newBoardFile.MakeAbsolute();
 
         server->NotifyDocumentRenamed( thisDocumentType(), oldBoardFile.GetFullPath(), newBoardFile.GetFullPath() );
     }
@@ -365,11 +383,12 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSaveCopyOfDocument(
         return tl::unexpected( e );
     }
 
-    if( boardPath.GetExt() != FILEEXT::KiCadPcbFileExtension )
+    if( !KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PCB, boardPath.GetExt() ) )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-        e.set_error_message( fmt::format( "save path '{}' must have a kicad_pcb extension",
+        e.set_error_message( fmt::format( "save path '{}' must have a kemi_pcb extension; "
+                                          "official KiCad files are import-only",
                                           boardPath.GetFullPath().ToStdString() ) );
         return tl::unexpected( e );
     }
@@ -1243,27 +1262,24 @@ HANDLER_RESULT<CustomRulesResponse> API_HANDLER_PCB::handleSetCustomDesignRules(
         return response;
     }
 
-    wxFFile file( rulesPath, "w" );
+    DRC_RULE_LOADER loader;
 
-    if( !file.IsOpened() )
+    if( wxFileName::FileExists( rulesPath ) )
+        loader.LoadFile( rulesPath );
+
+    const DRC_RE_FILE_TRIVIA& trivia = loader.GetFileTrivia();
+    rulesPath = board()->GetDesignRulesWritePath( trivia.kemiOnly );
+    DRC_RULE_SAVER saver;
+    wxString saveError;
+
+    if( !saver.SaveTextFile( rulesPath, rulesText, board(), trivia, &saveError ) )
     {
         CustomRulesResponse response;
         response.set_status( CRS_INVALID );
-        response.set_error_text( "Failed to open custom rules file for writing" );
+        response.set_error_text( saveError.IsEmpty() ? "Failed to write custom rules file"
+                                                    : saveError.ToStdString( wxConvUTF8 ) );
         return response;
     }
-
-    if( !file.Write( rulesText ) )
-    {
-        file.Close();
-
-        CustomRulesResponse response;
-        response.set_status( CRS_INVALID );
-        response.set_error_text( "Failed to write custom rules file" );
-        return response;
-    }
-
-    file.Close();
 
     HANDLER_CONTEXT<GetCustomDesignRules> getCtx = { aCtx.ClientName, GetCustomDesignRules() };
     *getCtx.Request.mutable_board() = aCtx.Request.board();

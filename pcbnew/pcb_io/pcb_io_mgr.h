@@ -185,6 +185,9 @@ public:
      */
     static PCB_FILE_T FindPluginTypeFromBoardPath( const wxString& aFileName, int aCtl = 0 );
 
+    /** Resolve a vendor import choice, including the PADS ASCII/binary dialect, by content. */
+    static PCB_FILE_T ResolveImportFileType( const wxString& aFileName, PCB_FILE_T aFileType );
+
     /**
      * Return true when importing \a aFileType should materialize a project footprint library.
      *

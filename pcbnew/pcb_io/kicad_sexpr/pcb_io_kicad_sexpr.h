@@ -26,8 +26,10 @@
 #include <ctl_flags.h>
 
 #include <richio.h>
+#include <kemi_format_profile.h>
 #include <string>
 #include <optional>
+#include <set>
 #include <layer_ids.h>
 #include <zone_settings.h>
 #include <lset.h>
@@ -260,13 +262,16 @@ class FP_CACHE_ENTRY
 {
     WX_FILENAME                m_filename;
     std::unique_ptr<FOOTPRINT> m_footprint;
+    KEMI_FORMAT::FLAVOR        m_writeFlavor;
 
 public:
-    FP_CACHE_ENTRY( FOOTPRINT* aFootprint, const WX_FILENAME& aFileName );
+    FP_CACHE_ENTRY( FOOTPRINT* aFootprint, const WX_FILENAME& aFileName,
+                    KEMI_FORMAT::FLAVOR aWriteFlavor );
 
     const WX_FILENAME& GetFileName() const { return m_filename; }
     void SetFilePath( const wxString& aFilePath ) { m_filename.SetPath( aFilePath ); }
     std::unique_ptr<FOOTPRINT>& GetFootprint() { return m_footprint; }
+    KEMI_FORMAT::FLAVOR GetWriteFlavor() const { return m_writeFlavor; }
 };
 
 class FP_CACHE
@@ -282,6 +287,9 @@ class FP_CACHE
                                    // m_cache_timestamp against all the files.
     long long m_cache_timestamp;   // A hash of the timestamps for all the footprint
                                    // files.
+    wxString m_loadError;
+    std::set<wxString> m_rejectedFootprints;
+    std::set<wxString> m_nativeConversions; ///< Successful first saves in this cache session.
 
 public:
     FP_CACHE( PCB_IO_KICAD_SEXPR* aOwner, const wxString& aLibraryPath );
@@ -306,6 +314,18 @@ public:
     void Save( FOOTPRINT* aFootprintFilter = nullptr );
 
     void Load();
+
+    /** Rethrow a failed scan, including when the cached filesystem timestamp is unchanged. */
+    void CheckLoadError() const;
+
+    /** Permit best-effort use of valid entries, but never an invalid or ambiguous entry. */
+    void CheckFootprintError( const wxString& aFootprintName ) const;
+
+    /** Validate native output while permitting an untouched official import source. */
+    void CheckSaveTarget( const wxFileName& aFileName ) const;
+
+    bool WasConvertedToNative( const wxString& aName ) const;
+    void MarkNativeConversion( const wxString& aName );
 
     void Remove( const wxString& aFootprintName );
 
@@ -352,17 +372,20 @@ public:
         // but to be pure, a plugin should not assume that it will always be linked
         // with the core of the Pcbnew code. (Might someday be a DLL/DSO.)  Besides,
         // file extension policy should be controlled by the plugin.
-        return IO_BASE::IO_FILE_DESC( _HKI( "KemiCAD printed circuit board files" ), { "kicad_pcb" } );
+        return IO_BASE::IO_FILE_DESC( _HKI( "KemiCAD printed circuit board files" ),
+                                      KEMI_FORMAT::ReadableExts( KEMI_FORMAT::DOC::PCB ) );
     }
 
     const IO_BASE::IO_FILE_DESC GetLibraryFileDesc() const override
     {
-        return IO_BASE::IO_FILE_DESC( _HKI( "KemiCAD footprint file" ), { "kicad_mod" } );
+        return IO_BASE::IO_FILE_DESC( _HKI( "KemiCAD footprint file" ),
+                                      KEMI_FORMAT::ReadableExts( KEMI_FORMAT::DOC::FOOTPRINT ) );
     }
 
     const IO_BASE::IO_FILE_DESC GetLibraryDesc() const override
     {
-        return IO_BASE::IO_FILE_DESC( _HKI( "KemiCAD footprint files" ), {}, { "kicad_mod" }, false );
+        return IO_BASE::IO_FILE_DESC( _HKI( "KemiCAD footprint files" ), {},
+                                      KEMI_FORMAT::ReadableExts( KEMI_FORMAT::DOC::FOOTPRINT ), false );
     }
 
     void SetQueryUserCallback( std::function<bool( wxString aTitle, int aIcon, wxString aMessage,
@@ -376,6 +399,11 @@ public:
     void SaveBoard( const wxString& aFileName, BOARD& aBoard,
                     const std::map<std::string, UTF8>* aProperties = nullptr ) override;
 
+    /// Write an import target using its explicit flavor, including through a staging path.
+    void SaveBoard( const wxString& aStoragePath, BOARD& aBoard,
+                    const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+                    const std::map<std::string, UTF8>* aProperties = nullptr );
+
     /**
      * Serialize a #BOARD to an #OUTPUTFORMATTER without file I/O or Prettify.
      *
@@ -383,7 +411,8 @@ public:
      * The caller owns the formatter and is responsible for flushing/closing it.
      * Skips GroupsSanityCheck (no UI interaction allowed from timer callbacks). */
     void FormatBoardToFormatter( OUTPUTFORMATTER* aOut, BOARD* aBoard,
-                                 const std::map<std::string, UTF8>* aProperties = nullptr );
+                                 const std::map<std::string, UTF8>* aProperties = nullptr,
+                                 KEMI_FORMAT::FLAVOR aFlavor = KEMI_FORMAT::FLAVOR::LEGACY );
 
     void DoLoad( LINE_READER& aReader, BOARD& aBoard, bool aIsNewLoad, const std::map<std::string, UTF8>* aProperties,
                  PROGRESS_REPORTER* aProgressReporter, unsigned aLineCount );
@@ -409,6 +438,10 @@ public:
                                               const std::map<std::string, UTF8>* aProperties = nullptr ) override;
 
     void FootprintSave( const wxString& aLibraryPath, const FOOTPRINT* aFootprint,
+                        const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+
+    void FootprintSave( const wxString& aStoragePath, const FOOTPRINT* aFootprint,
+                        const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
                         const std::map<std::string, UTF8>* aProperties = nullptr ) override;
 
     void FootprintDelete( const wxString& aLibraryPath, const wxString& aFootprintName,
@@ -450,6 +483,9 @@ public:
 
     void SetOutputFormatter( OUTPUTFORMATTER* aFormatter ) { m_out = aFormatter; }
 
+    /// Root flavor used when Format() writes a standalone footprint (see KEMI_FORMAT).
+    void SetFootprintWriteFlavor( KEMI_FORMAT::FLAVOR aFlavor ) { m_fpWriteFlavor = aFlavor; }
+
     BOARD_ITEM* Parse( const wxString& aClipboardSourceInput );
 
 protected:
@@ -486,6 +522,13 @@ protected:
     void formatTeardropParameters( const TEARDROP_PARAMETERS& tdParams ) const;
 
 private:
+    void saveBoard( const wxString& aFileName, BOARD& aBoard,
+                    const std::map<std::string, UTF8>* aProperties, KEMI_FORMAT::FLAVOR aFlavor );
+
+    void footprintSave( const wxString& aLibraryPath, const FOOTPRINT* aFootprint,
+                        const std::map<std::string, UTF8>* aProperties,
+                        const KEMI_FORMAT::OUTPUT_TARGET* aTarget );
+
     void format( const BOARD* aBoard ) const;
 
     void format( const PCB_DIMENSION_BASE* aDimension ) const;
@@ -556,6 +599,7 @@ protected:
     STRING_FORMATTER       m_sf;
     OUTPUTFORMATTER*       m_out;        ///< output any Format()s to this, no ownership
     int                    m_ctl;
+    KEMI_FORMAT::FLAVOR    m_fpWriteFlavor = KEMI_FORMAT::FLAVOR::LEGACY;    ///< standalone footprint root flavor
 
     std::function<bool( wxString aTitle, int aIcon, wxString aMsg, wxString aAction )> m_queryUserCallback;
 };

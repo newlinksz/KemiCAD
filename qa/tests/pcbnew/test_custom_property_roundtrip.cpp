@@ -178,7 +178,7 @@ BOOST_AUTO_TEST_CASE( EveryBoardItemKeepsItsCustomProperty )
             RECURSE_MODE::RECURSE );
 
     KI_TEST::SCOPED_TEMP_DIR    tempDir( "kicad_qa_custom_property" );
-    const std::filesystem::path path = tempDir.Path() / "custom_property.kicad_pcb";
+    const std::filesystem::path path = tempDir.Path() / "custom_property.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( board, path );
     std::unique_ptr<BOARD> restored = KI_TEST::ReadBoardFromFileOrStream( path.string() );

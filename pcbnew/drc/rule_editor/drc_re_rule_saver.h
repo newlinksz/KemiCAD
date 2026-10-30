@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <wx/string.h>
+#include <kemi_format_profile.h>
 
 #include "drc_re_loaded_rule.h"
 
@@ -31,7 +32,7 @@ class BOARD;
 
 
 /**
- * Saves DRC panel entries back to .kicad_dru files.
+ * Saves DRC panel entries back to design-rule files using their persistent format profile.
  *
  * This class handles the conversion of graphical panel entries back to text-based
  * DRC rules. It supports round-trip preservation, meaning unedited rules will be
@@ -56,17 +57,27 @@ public:
                    const BOARD*                                  aBoard = nullptr,
                    const DRC_RE_FILE_TRIVIA&                     aTrivia = {} );
 
+    /// Save the text editor's exact content, adding a native container only when absent.
+    bool SaveTextFile( const wxString& aPath, const wxString& aText,
+                       const BOARD* aBoard = nullptr, const DRC_RE_FILE_TRIVIA& aTrivia = {},
+                       wxString* aError = nullptr );
+
+    /// Detect the actual leading expression, ignoring comments and quoted rule text.
+    static bool IsKemiText( const wxString& aText );
+
     /**
      * Generate rule text from panel entries.
      *
      * @param aEntries Vector of panel entries to convert.
      * @param aBoard Optional board for layer name resolution.
      * @param aTrivia Text outside the rules of the loaded file, reproduced around them.
+     * @param aFlavor Output profile; native data cannot be emitted as legacy rules.
      * @return String containing all rules in DRC file format.
      */
     wxString GenerateRulesText( const std::vector<DRC_RE_LOADED_PANEL_ENTRY>& aEntries,
                                 const BOARD*                                  aBoard = nullptr,
-                                const DRC_RE_FILE_TRIVIA&                     aTrivia = {} );
+                                const DRC_RE_FILE_TRIVIA&                     aTrivia = {},
+                                KEMI_FORMAT::FLAVOR aFlavor = KEMI_FORMAT::FLAVOR::LEGACY );
 
 private:
     /**

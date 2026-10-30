@@ -19,6 +19,7 @@
 
 #include <project/project_file_downgrade.h>
 #include <common.h>
+#include <kemi_format_profile.h>
 #include <settings/bom_settings.h>
 
 #include <nlohmann/json.hpp>
@@ -966,6 +967,13 @@ void downgradeBoardSettings( nlohmann::json& aDoc, bool aPreTen, COMPATIBILITY_R
 
 void DowngradeProjectFileJson( nlohmann::json& aDoc, const DOWNGRADE_TARGET& aTarget, COMPATIBILITY_REPORT& aReport )
 {
+    if( aDoc.contains( KEMI_FORMAT::JSON_MARKER_KEY ) )
+    {
+        aReport.Add( DOWNGRADE_BUCKET::BLOCK, _( "KemiCAD project" ),
+                     _( "KemiCAD documents cannot be exported to official KiCad formats or older versions." ) );
+        return;
+    }
+
     auto knownSchema = [&]( const nlohmann::json& aSettings, int aMaximum, const wxString& aName )
     {
         if( aSettings.is_object() && aSettings.contains( "meta" ) && aSettings["meta"].is_object()

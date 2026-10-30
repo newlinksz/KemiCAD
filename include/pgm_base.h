@@ -270,7 +270,7 @@ public:
     virtual ENV_VAR_MAP& GetLocalEnvVariables() const;
 
     /**
-     * Return a bare naked wxApp which may come from wxPython, SINGLE_TOP, or kicad.exe.
+     * Return a bare naked wxApp which may come from wxPython, SINGLE_TOP, or kemicad.exe.
      *
      * This should return what wxGetApp() returns.
      */

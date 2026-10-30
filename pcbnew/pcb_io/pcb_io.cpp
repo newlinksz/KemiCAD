@@ -20,7 +20,10 @@
 
 #include <pcb_io/pcb_io.h>
 #include <pcb_io/pcb_io_mgr.h>
+#include <kemi_format_profile.h>
 #include <ki_exception.h>
+#include <wx/file.h>
+#include <wx/filefn.h>
 #include <wx/log.h>
 #include <wx/filename.h>
 #include <wx/translation.h>
@@ -102,6 +105,50 @@ std::vector<FOOTPRINT*> PCB_IO::GetImportedCachedLibraryFootprints()
 }
 
 
+void PCB_IO::WriteImportedDesignRules( KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY& aPolicy,
+                                      const wxString& aName ) const
+{
+    // Validate even an empty import: an official output request must never succeed silently.
+    aPolicy.Target( KEMI_FORMAT::DOC::DESIGN_RULES, aName );
+
+    const wxString rules = GetImportedDesignRules();
+
+    if( rules.IsEmpty() )
+        return;
+
+    aPolicy.Write( KEMI_FORMAT::DOC::DESIGN_RULES, aName,
+            [&]( const wxString& aPath, const KEMI_FORMAT::OUTPUT_TARGET& aTarget )
+            {
+                const wxString content = wxString::Format( wxS( "(%s (format_version %d)\n" ),
+                        wxString::FromUTF8( KEMI_FORMAT::RootToken(
+                                aTarget.Document(), aTarget.Flavor() ) ),
+                        KEMI_FORMAT::FORMAT_VERSION ) + rules + wxS( "\n)\n" );
+
+                // Imported rules must not overwrite an existing user rule file.
+                wxFile rulesFile;
+
+                {
+                    wxLogNull noLog;
+                    rulesFile.Open( aPath, wxFile::write_excl );
+                }
+
+                if( !rulesFile.IsOpened() )
+                    return false;
+
+                bool written = rulesFile.Write( content, wxConvUTF8 );
+
+                if( !rulesFile.Close() )
+                    written = false;
+
+                // Remove only the partial file this call created, so a retry can succeed.
+                if( !written )
+                    wxRemoveFile( aPath );
+
+                return written;
+            } );
+}
+
+
 void PCB_IO::SaveBoard( const wxString& aFileName, BOARD& aBoard, const std::map<std::string, UTF8>* aProperties )
 {
     // not pure virtual so that plugins only have to implement subset of the PLUGIN interface.
@@ -170,6 +217,15 @@ void PCB_IO::FootprintSave( const wxString& aLibraryPath, const FOOTPRINT* aFoot
                             const std::map<std::string, UTF8>* aProperties )
 {
     // not pure virtual so that plugins only have to implement subset of the PLUGIN interface.
+    NOT_IMPLEMENTED( __FUNCTION__ );
+}
+
+
+void PCB_IO::FootprintSave( const wxString& aStoragePath, const FOOTPRINT* aFootprint,
+                            const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+                            const std::map<std::string, UTF8>* aProperties )
+{
+    // An importer must never silently fall back to a writer that ignores the output contract.
     NOT_IMPLEMENTED( __FUNCTION__ );
 }
 

@@ -325,7 +325,7 @@ BOOST_AUTO_TEST_CASE( ApiSaveCopyWritesTheTopLevelSheet )
     wxFileName destFile( m_baseDir );
     destFile.AppendDir( wxS( "apicopy" ) );
     destFile.SetName( wxS( "copy" ) );
-    destFile.SetExt( FILEEXT::KiCadSchematicFileExtension );
+    destFile.SetExt( wxS( "kemi_sch" ) );
 
     wxFileName destDir( destFile );
     destDir.SetFullName( wxEmptyString );

@@ -552,7 +552,7 @@ void SCH_IO_HTTP_LIB::ensureSettings( const wxString& aSettingsPath )
 
                 if( m_settings->getSupportedAPIVersion() != m_settings->m_Source.api_version )
                 {
-                    THROW_IO_ERRORF( _( "HTTP library settings file %s uses API version %s, but KiCad requires "
+                    THROW_IO_ERRORF( _( "HTTP library settings file %s uses API version %s, but KemiCAD requires "
                                         "version %s." ),
                                      aSettingsPath,
                                      m_settings->m_Source.api_version,

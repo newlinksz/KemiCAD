@@ -75,8 +75,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE( UPDATE_RESPONSE, version, release_date, deta
                                     downloads_url )
 
 // KemiCAD: query the latest GitHub release and compare its vX.Y.Z tag with BRAND_VERSION.
-#define UPDATE_QUERY_ENDPOINT wxS( "https://api.github.com/repos/newlinksz/KemiCAD/releases/latest" )
-#define UPDATE_RELEASES_URL wxS( "https://github.com/newlinksz/KemiCAD/releases" )
+#define UPDATE_QUERY_ENDPOINT wxS( BRAND_URL_API_REPO "/releases/latest" )
+#define UPDATE_RELEASES_URL wxS( BRAND_URL_RELEASES )
 
 #include <brand.h>
 #include <wx/tokenzr.h>

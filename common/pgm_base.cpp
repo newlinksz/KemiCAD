@@ -373,6 +373,11 @@ bool PGM_BASE::InitPgm( bool aHeadless, bool aIsUnitTest )
     else
         pgm_name = wxFileName( App().argv[0] ).GetName().Lower();
 
+    // KemiCAD ships the project manager as kemicad.exe; keep the internal program name "kicad" so
+    // the app name, settings, single-instance lock and desktop app id stay as before the rename.
+    if( pgm_name == wxT( "kemicad" ) )
+        pgm_name = wxT( "kicad" );
+
     APP_MONITOR::SENTRY::Instance()->AddTag( "kicad.app", pgm_name );
 
     wxInitAllImageHandlers();

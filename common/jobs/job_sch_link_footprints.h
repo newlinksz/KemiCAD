@@ -21,6 +21,7 @@
 #define JOB_SCH_LINK_FOOTPRINTS_H
 
 #include <map>
+#include <set>
 
 #include <kicommon.h>
 #include "job.h"
@@ -41,6 +42,12 @@ public:
 
     /// Board reference to the LIB_ID of its footprint.
     std::map<wxString, wxString> m_footprintsByRef;
+
+    /// Exact destination project that owns both successful imports.
+    wxString m_projectFile;
+
+    /// Numbered pads of each real board footprint, validated against its project-library item.
+    std::map<wxString, std::set<wxString>> m_padNumbersByRef;
 };
 
 #endif

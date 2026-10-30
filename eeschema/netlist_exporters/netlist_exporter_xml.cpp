@@ -52,6 +52,9 @@ static bool sortPinsByNumber( SCH_PIN* aPin1, SCH_PIN* aPin2 );
 bool NETLIST_EXPORTER_XML::writeNetlist( const wxString& aOutFileName, unsigned aNetlistOptions,
                                          REPORTER& aReporter )
 {
+    if( !ValidateFootprintPadMappings( GNL_ALL | aNetlistOptions, aReporter ) )
+        return false;
+
     // output the XML format netlist.
 
     // declare the stream ourselves to use the buffered FILE api

@@ -30,6 +30,7 @@
 #include <wx/log.h>
 #include <wx/dir.h>
 #include <wx/tokenzr.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 #include <sch_sheet.h>
 #include <sch_sheet_pin.h>
@@ -90,7 +91,7 @@ wxString LTSPICE_SCHEMATIC::GetSchematicFileName( const wxString& aAscKey ) cons
 
     ReplaceIllegalFileNameChars( name, '_' );
 
-    return name + '.' + FILEEXT::KiCadSchematicFileExtension;
+    return name + '.' + KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt;
 }
 
 

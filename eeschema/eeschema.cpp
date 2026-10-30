@@ -31,11 +31,14 @@
 #include <api/headless_symbol_editor_context.h>
 #include <core/json_serializers.h>
 #include <pgm_base.h>
+#include <kemi_project_paths.h>
+#include <kemi_format_profile.h>
 #include <kiface_base.h>
 #include <background_jobs_monitor.h>
 #include <cli_progress_reporter.h>
 #include <confirm.h>
 #include <gestfich.h>
+#include <eeschema_save_file_as.h>
 #include "eeschema_jobs_handler.h"
 #include "eeschema_helpers.h"
 #include <diff_merge/diff_doc_kind.h>
@@ -74,6 +77,7 @@
 #include <wildcards_and_files_ext.h>
 
 #include <schematic.h>
+#include <project.h>
 #include <connection_graph.h>
 #include <panel_template_fieldnames.h>
 #include <panel_eeschema_color_settings.h>
@@ -92,6 +96,9 @@
 #include <toolbars_symbol_editor.h>
 
 #include <sch_io/sch_io.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
+#include <sch_screen.h>
+#include <sch_sheet.h>
 #include <sch_io/sch_io_mgr.h>
 
 #include <wx/crt.h>
@@ -190,7 +197,11 @@ static std::unique_ptr<SCHEMATIC> readSchematicFromFile( const std::string& aFil
 // TODO: This should move out of this file
 bool generateSchematicNetlist( const wxString& aFilename, std::string& aNetlist, KIWAY* aKiway )
 {
-    std::unique_ptr<SCHEMATIC> schematic = readSchematicFromFile( aFilename.ToStdString() );
+    // Use the same loader as the eeschema CLI jobs: it resolves the schematic's own flavor
+    // (.kemi_sch -> .kemi_pro) and the matching IO plugin.  This path is only taken when no
+    // schematic frame is open, so the returned schematic is ours to own.
+    std::unique_ptr<SCHEMATIC> schematic(
+            EESCHEMA_HELPERS::LoadSchematic( aFilename, false, false, nullptr, true ) );
 
     if( !schematic )
         return false;
@@ -198,7 +209,8 @@ bool generateSchematicNetlist( const wxString& aFilename, std::string& aNetlist,
     NETLIST_EXPORTER_KICAD exporter( schematic.get(), aKiway );
     STRING_FORMATTER       formatter;
 
-    exporter.Format( &formatter, GNL_ALL | GNL_OPT_KICAD );
+    if( !exporter.Format( &formatter, GNL_ALL | GNL_OPT_KICAD, &WXLOG_REPORTER::GetInstance() ) )
+        return false;
     aNetlist = formatter.GetString();
 
     return true;
@@ -519,6 +531,33 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
     {}
 
     bool OnKifaceStart( PGM_BASE* aProgram, int aCtlBits, KIWAY* aKiway ) override;
+
+    bool SaveNativeDocument( const wxString& aSource, const wxString& aTarget ) override
+    {
+        PROJECT project;
+        SCHEMATIC schematic( &project );
+        SCH_IO_KICAD_SEXPR io;
+
+        if( KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SYMBOL_LIB, wxFileName( aTarget ).GetExt() ) )
+        {
+            wxArrayString names;
+            io.EnumerateSymbolLib( names, aSource );
+            io.SaveLibrary( aTarget );
+            return true;
+        }
+
+        SCH_SHEET* sheet = io.LoadSchematicFile( aSource, &schematic );
+
+        if( !sheet )
+            return false;
+
+        schematic.SetTopLevelSheets( { sheet } );
+
+        if( !sheet->GetScreen() || sheet->GetScreen()->HasLoadError() )
+            return false;
+        io.SaveSchematicFile( aTarget, sheet, &schematic );
+        return true;
+    }
 
     void Reset() override;
 
@@ -1078,139 +1117,8 @@ void IFACE::SaveFileAs( const wxString& aProjectBasePath, const wxString& aProje
                         const wxString& aNewProjectBasePath, const wxString& aNewProjectName,
                         const wxString& aSrcFilePath, wxString& aErrors )
 {
-    wxFileName destFile( aSrcFilePath );
-    wxString   destPath = destFile.GetPathWithSep();
-    wxUniChar  pathSep = wxFileName::GetPathSeparator();
-    wxString   ext = destFile.GetExt();
-
-    if( destPath.StartsWith( aProjectBasePath + pathSep ) )
-        destPath.Replace( aProjectBasePath, aNewProjectBasePath, false );
-
-    destFile.SetPath( destPath );
-
-    if( ext == FILEEXT::LegacySchematicFileExtension
-        || ext == FILEEXT::LegacySchematicFileExtension + FILEEXT::BackupFileSuffix
-        || ext == FILEEXT::KiCadSchematicFileExtension
-        || ext == FILEEXT::KiCadSchematicFileExtension + FILEEXT::BackupFileSuffix )
-    {
-        if( destFile.GetName() == aProjectName )
-        {
-            destFile.SetName( aNewProjectName  );
-        }
-        else if( destFile.GetName() == aNewProjectName )
-        {
-            wxString msg;
-
-            if( !aErrors.empty() )
-                aErrors += wxS( "\n" );
-
-            msg.Printf( _( "Cannot copy file '%s' as it will be overwritten by the new root "
-                           "sheet file." ), destFile.GetFullPath() );
-            aErrors += msg;
-            return;
-        }
-
-        CopySexprFile( aSrcFilePath, destFile.GetFullPath(),
-                [&]( const std::string& token, wxString& value ) -> bool
-                {
-                    if( token == "project" && value == aProjectName )
-                    {
-                        value = aNewProjectName;
-                        return true;
-                    }
-
-                    return false;
-                },
-                aErrors );
-    }
-    else if( ext == FILEEXT::SchematicSymbolFileExtension )
-    {
-        // Symbols are not project-specific.  Keep their source names.
-        KiCopyFile( aSrcFilePath, destFile.GetFullPath(), aErrors );
-    }
-    else if( ext == FILEEXT::LegacySymbolLibFileExtension
-             || ext == FILEEXT::LegacySymbolDocumentFileExtension
-             || ext == FILEEXT::KiCadSymbolLibFileExtension )
-    {
-        if( destFile.GetName() == aProjectName + wxS( "-cache" ) )
-            destFile.SetName( aNewProjectName + wxS( "-cache" ) );
-
-        if( destFile.GetName() == aProjectName + wxS( "-rescue" ) )
-            destFile.SetName( aNewProjectName + wxS( "-rescue" ) );
-
-        KiCopyFile( aSrcFilePath, destFile.GetFullPath(), aErrors );
-    }
-    else if( ext == FILEEXT::NetlistFileExtension )
-    {
-        if( destFile.GetName() == aProjectName )
-            destFile.SetName( aNewProjectName );
-
-        CopySexprFile( aSrcFilePath, destFile.GetFullPath(),
-                [&]( const std::string& token, wxString& value ) -> bool
-                {
-                    if( token == "source" )
-                    {
-                        for( const wxString& extension : { wxString( wxT( ".sch" ) ), wxString( wxT( ".kicad_sch" ) ) } )
-                        {
-                            if( value == aProjectName + extension )
-                            {
-                                value = aNewProjectName + extension;
-                                return true;
-                            }
-                            else if( value == aProjectBasePath + "/" + aProjectName + extension )
-                            {
-                                value = aNewProjectBasePath + "/" + aNewProjectName + extension;
-                                return true;
-                            }
-                            else if( value.StartsWith( aProjectBasePath ) )
-                            {
-                                value.Replace( aProjectBasePath, aNewProjectBasePath, false );
-                                return true;
-                            }
-                        }
-                    }
-
-                    return false;
-                },
-                aErrors );
-    }
-    else if( destFile.GetName() == FILEEXT::SymbolLibraryTableFileName )
-    {
-        wxFileName    libTableFn( aSrcFilePath );
-        LIBRARY_TABLE libTable( libTableFn, LIBRARY_TABLE_SCOPE::PROJECT );
-        libTable.SetPath( destFile.GetFullPath() );
-        libTable.SetType( LIBRARY_TABLE_TYPE::SYMBOL );
-
-        for( LIBRARY_TABLE_ROW& row : libTable.Rows() )
-        {
-            wxString uri = row.URI();
-
-            uri.Replace( wxS( "/" ) + aProjectName + wxS( "-cache.lib" ),
-                         wxS( "/" ) + aNewProjectName + wxS( "-cache.lib" ) );
-            uri.Replace( wxS( "/" ) + aProjectName + wxS( "-rescue.lib" ),
-                         wxS( "/" ) + aNewProjectName +  wxS( "-rescue.lib" ) );
-            uri.Replace( wxS( "/" ) + aProjectName + wxS( ".lib" ),
-                         wxS( "/" ) + aNewProjectName + wxS( ".lib" ) );
-
-            row.SetURI( uri );
-        }
-
-        libTable.Save().map_error(
-                [&]( const LIBRARY_ERROR& aError )
-                {
-                        wxString msg;
-
-                        if( !aErrors.empty() )
-                            aErrors += wxT( "\n" );
-
-                        msg.Printf( _( "Cannot copy file '%s'." ), destFile.GetFullPath() );
-                        aErrors += msg;
-                } );
-    }
-    else
-    {
-        wxFAIL_MSG( wxS( "Unexpected filetype for Eeschema::SaveFileAs()" ) );
-    }
+    EESCHEMA_SaveFileAs( aProjectBasePath, aProjectName, aNewProjectBasePath, aNewProjectName,
+                         aSrcFilePath, aErrors );
 }
 
 
@@ -1282,12 +1190,12 @@ bool IFACE::HandleApiOpenDocument( const DOCUMENT_SPEC& aSpec,
         return false;
     }
 
-    wxFileName projectPath( aSpec.path );
-
-    if( projectPath.GetExt() == FILEEXT::KiCadSchematicFileExtension )
-        projectPath.SetExt( FILEEXT::ProjectFileExtension );
-    else if( projectPath.GetExt() != FILEEXT::ProjectFileExtension )
-        projectPath.SetExt( FILEEXT::ProjectFileExtension );
+    wxFileName inputFile( aSpec.path );
+    const bool isDocument = KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SCHEMATIC, inputFile.GetExt() )
+            || KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::SCHEMATIC, inputFile.GetExt() );
+    wxFileName projectPath( KEMI_FORMAT::RelatedDocumentPath(
+            isDocument ? KEMI_FORMAT::DOC::SCHEMATIC : KEMI_FORMAT::DOC::PROJECT,
+            KEMI_FORMAT::DOC::PROJECT, aSpec.path ) );
 
     projectPath.MakeAbsolute();
 
@@ -1316,8 +1224,10 @@ bool IFACE::HandleApiOpenDocument( const DOCUMENT_SPEC& aSpec,
         return false;
     }
 
-    wxFileName schPath( projectPath );
-    schPath.SetExt( FILEEXT::KiCadSchematicFileExtension );
+    wxFileName schPath( isDocument ? inputFile.GetFullPath()
+            : KEMI_FORMAT::RelatedDocumentPath( KEMI_FORMAT::DOC::PROJECT,
+                                                KEMI_FORMAT::DOC::SCHEMATIC, projectPath.GetFullPath() ) );
+    schPath.MakeAbsolute();
 
     if( !schPath.FileExists() )
     {
@@ -1372,7 +1282,8 @@ bool IFACE::handleCreateSchematic( const wxString& aPath, KICAD_API_SERVER* aSer
     schPath.MakeAbsolute();
 
     wxFileName projectPath( schPath );
-    projectPath.SetExt( FILEEXT::ProjectFileExtension );
+    projectPath.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT,
+                                         KEMI_FORMAT::FLAVOR::KEMI ) );
 
     if( m_openSchematic && m_openSchematic->HasHierarchy() )
     {

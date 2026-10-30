@@ -453,6 +453,14 @@ struct PART_TYPE
     std::map<std::string, std::string> attributes; ///< From {...} block
     std::vector<SIGPIN> signal_pins;
     std::vector<GATE_DEF> gates;
+    int alphanumeric_pin_count = 0;
+    std::vector<std::string> alphanumeric_pins;  ///< Complete names in numeric terminal 1..N order
+};
+
+struct ROUTE_PIN_ENDPOINT
+{
+    NET_PIN pin;
+    POINT position;                       ///< First or last vertex of its pin-pair connection
 };
 
 struct ROUTE
@@ -461,6 +469,7 @@ struct ROUTE
     std::vector<TRACK> tracks;
     std::vector<VIA> vias;
     std::vector<NET_PIN> pins;             ///< From pin pair lines
+    std::vector<ROUTE_PIN_ENDPOINT> pin_endpoints;
     std::vector<TEARDROP> teardrops;
     std::vector<JUMPER_MARKER> jumpers;
 };

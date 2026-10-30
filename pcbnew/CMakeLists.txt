@@ -480,6 +480,7 @@ set( PCBNEW_CLASS_SRCS
     pcb_plotter.cpp
     pcbnew_config.cpp
     pcbnew_jobs_handler.cpp
+    pcbnew_save_file_as.cpp
     pcbnew_printout.cpp
     pcbnew_settings.cpp
     pcbplot.cpp

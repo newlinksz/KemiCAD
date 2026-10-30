@@ -22,7 +22,6 @@
 #include <advanced_config.h>
 #include <base_units.h>
 #include <kiplatform/environment.h>
-#include <kiplatform/io.h>
 #include <wildcards_and_files_ext.h>
 #include <background_jobs_monitor.h>
 #include <kiway.h>
@@ -43,14 +42,18 @@
 #include <sch_shape.h>
 #include <settings/color_settings.h>
 #include <settings/settings_manager.h>
+#include <sch_io/sch_io_lib_cache.h>
 #include <widgets/wx_infobar.h>
 #include <string_utils.h>
 #include <confirm.h>
 #include <preview_items/selection_area.h>
 #include <project_sch.h>
+#include <kemi_format_profile.h>
 #include <libraries/legacy_symbol_library.h>
 #include <libraries/symbol_library_adapter.h>
 #include <sch_base_frame.h>
+#include <sch_edit_frame.h>
+#include <schematic.h>
 #include <tools/sch_actions.h>
 #include <dialogs/dialog_sch_find.h>
 #include <design_block.h>
@@ -766,9 +769,29 @@ wxString SCH_BASE_FRAME::SelectLibrary( const wxString& aDialogTitle, const wxSt
             bool                     useGlobalTable = false;
             FILEDLG_HOOK_NEW_LIBRARY tableChooser( useGlobalTable );
 
-            if( !LibraryFileBrowser( _( "Create New Library" ), false, fn, FILEEXT::KiCadSymbolLibFileWildcard(),
-                                     FILEEXT::KiCadSymbolLibFileExtension, false, &tableChooser ) )
+            const SCH_EDIT_FRAME* editor = dynamic_cast<SCH_EDIT_FRAME*>( this );
+            const bool restricted = KEMI_FORMAT::HasKemiExt( Prj().GetProjectFullName() )
+                    || ( editor && editor->Schematic().IsKemiOnly() );
+            const wxString extension = KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                    restricted ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY );
+            if( restricted )
+                fn.SetExt( extension );
+
+            if( !LibraryFileBrowser( _( "Create New Library" ), false, fn,
+                    restricted ? wxString( wxS( "KemiCAD symbol library (*.kemi_sym)|*.kemi_sym" ) )
+                               : FILEEXT::KiCadSymbolLibFileWildcard(), extension, false, &tableChooser ) )
             {
+                break;
+            }
+
+            try
+            {
+                fn = KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                                        fn.GetFullPath(), restricted );
+            }
+            catch( const IO_ERROR& error )
+            {
+                DisplayError( this, error.What() );
                 break;
             }
 
@@ -836,8 +859,6 @@ void SCH_BASE_FRAME::setSymWatcher( const LIB_ID* aID )
     {
         m_watcherFileName.AssignDir( tmp );
         m_watcherIsDir = true;
-        m_watcherTimestamp = KIPLATFORM::IO::TimestampDir( m_watcherFileName.GetPath(),
-                                                           std::string( "*." ) + FILEEXT::KiCadSymbolLibFileExtension );
     }
     else
     {
@@ -846,9 +867,16 @@ void SCH_BASE_FRAME::setSymWatcher( const LIB_ID* aID )
 
         if( !m_watcherFileName.FileExists() )
             return;
+    }
 
-        wxLogNull silence;
-        m_watcherTimestamp = m_watcherFileName.GetModificationTime().GetValue().GetValue();
+    try
+    {
+        m_watcherTimestamp = SCH_IO_LIB_CACHE::GetSymbolLibraryTimestamp( tmp );
+    }
+    catch( const IO_ERROR& error )
+    {
+        wxLogTrace( traceLibWatch, "Cannot read watched library: %s", error.What() );
+        return;
     }
 
     // File system watcher requires an active event loop. If we're being called during
@@ -950,20 +978,16 @@ void SCH_BASE_FRAME::OnSymChangeDebounceTimer( wxTimerEvent& aEvent )
 
     long long currentTimestamp = 0;
 
-    if( m_watcherIsDir )
-    {
-        currentTimestamp = KIPLATFORM::IO::TimestampDir( m_watcherFileName.GetPath(),
-                                                         std::string( "*." ) + FILEEXT::KiCadSymbolLibFileExtension );
-    }
-    else
+    try
     {
         wxLogNull silence;
-        wxDateTime lastModified = m_watcherFileName.GetModificationTime();
-
-        if( !lastModified.IsValid() )
-            return;
-
-        currentTimestamp = lastModified.GetValue().GetValue();
+        currentTimestamp = SCH_IO_LIB_CACHE::GetSymbolLibraryTimestamp(
+                m_watcherFileName.GetFullPath() );
+    }
+    catch( const IO_ERROR& error )
+    {
+        wxLogTrace( traceLibWatch, "Cannot read watched library: %s", error.What() );
+        return;
     }
 
     if( currentTimestamp == m_watcherTimestamp )

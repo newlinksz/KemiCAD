@@ -32,6 +32,7 @@
 #include <sch_sheet_path.h>
 #include <sch_screen.h>
 #include <schematic.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 
 
@@ -85,7 +86,7 @@ SCH_SHEET* SCH_IO_DIPTRACE::LoadSchematicFile( const wxString& aFileName,
         rootSheet = new SCH_SHEET( aSchematic );
 
         wxFileName newFilename( aFileName );
-        newFilename.SetExt( FILEEXT::KiCadSchematicFileExtension );
+        newFilename.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
         rootSheet->SetFileName( newFilename.GetFullPath() );
 
         SCH_SCREEN* screen = new SCH_SCREEN( aSchematic );
@@ -100,7 +101,7 @@ SCH_SHEET* SCH_IO_DIPTRACE::LoadSchematicFile( const wxString& aFileName,
         SCH_SCREEN* screen = new SCH_SCREEN( aSchematic );
 
         wxFileName newFilename( aFileName );
-        newFilename.SetExt( FILEEXT::KiCadSchematicFileExtension );
+        newFilename.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
         screen->SetFileName( newFilename.GetFullPath() );
 
         rootSheet->SetScreen( screen );

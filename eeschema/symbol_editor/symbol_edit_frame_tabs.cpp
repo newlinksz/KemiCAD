@@ -28,6 +28,7 @@
 #include <symbol_edit_frame.h>
 
 #include <kidialog.h>
+#include <confirm.h>
 #include <lib_symbol.h>
 #include <lib_symbol_library_manager.h>
 #include <sch_screen.h>
@@ -161,6 +162,34 @@ void SYMBOL_EDIT_FRAME::activateSymbolTab( SYMBOL_EDITOR_TAB_CONTEXT* aContext )
         return;
     }
 
+    // A clean inactive tab owns a private clone, which may predate a library-tree refresh.
+    // Refresh it before resetting the watcher baseline, retaining modified tabs verbatim.
+    if( !aContext->IsTransient() && !aContext->IsModified() && m_libMgr )
+    {
+        try
+        {
+            SYMBOL_BUFFER* buffer = m_libMgr->GetBuffer( aContext->GetName(), aContext->GetLibrary(), true );
+
+            if( !buffer )
+                THROW_IO_ERROR( _( "Symbol not found." ) );
+
+            if( !aContext->MatchesLibrarySymbol( buffer->GetSymbol() ) )
+            {
+                clearSymbolTabUndoRedo( *aContext );
+                *aContext->GetSymbol() = buffer->GetSymbol();
+                aContext->SavedSelection().clear();
+            }
+        }
+        catch( const IO_ERROR& error )
+        {
+            if( m_activeTab && m_tabsPanel )
+                m_tabsPanel->SelectTab( m_tabsPanel->FindTab( m_activeTab->GetTabKey() ) );
+
+            DisplayErrorMessage( this, _( "Error updating library buffer." ), error.What() );
+            return;
+        }
+    }
+
     detachActiveSymbolTab();
     m_activeTab = aContext;
 
@@ -228,6 +257,12 @@ void SYMBOL_EDIT_FRAME::activateSymbolTab( SYMBOL_EDITOR_TAB_CONTEXT* aContext )
     updateInfoBar();
     UpdateSymbolMsgPanelInfo();
     GetCanvas()->Refresh();
+
+    if( !aContext->IsTransient() && m_symbol )
+    {
+        const LIB_ID libId = m_symbol->GetLibId();
+        setSymWatcher( &libId );
+    }
 }
 
 

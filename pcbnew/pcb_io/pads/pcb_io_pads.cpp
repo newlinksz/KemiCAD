@@ -26,6 +26,7 @@
 #include <cmath>
 #include <fstream>
 #include <functional>
+#include <set>
 
 #include <board.h>
 #include <pcb_track.h>
@@ -116,6 +117,9 @@ void PCB_IO_PADS::loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsN
 {
     LOCALE_IO setlocale;
 
+    m_importedDesignRules.clear();
+    m_importedFootprints.clear();
+
     if( m_reporter )
         m_reporter->Report( _( "Starting PADS PCB import" ), RPT_SEVERITY_INFO );
 
@@ -166,16 +170,52 @@ void PCB_IO_PADS::loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsN
         m_converter->LoadDimensions( m_parser->GetDimensions() );
         m_converter->LoadKeepouts( m_parser->GetKeepouts() );
         loadGraphicLines();
-        m_converter->WriteDiffPairRules( aFileName, m_parser->GetDiffPairs() );
         m_converter->ReportStatistics();
+
+        // Appending must not replace the destination board's own design rules.
+        if( aIsNewLoad )
+        {
+            // Retain the imported settings when the editor replaces its initial empty board:
+            // detaching that board writes defaults into the project before SetProject() runs.
+            aBoard.m_LegacyDesignSettingsLoaded = true;
+
+            // PADS supplies this clearance directly; do not infer it from legacy edge widths.
+            aBoard.m_LegacyCopperEdgeClearanceLoaded = true;
+
+            m_importedDesignRules = m_converter->GenerateDiffPairRules( m_parser->GetDiffPairs() );
+
+            // Retain independent definitions after the parser and converter are released.
+            for( FOOTPRINT* footprint : aBoard.Footprints() )
+            {
+                std::unique_ptr<FOOTPRINT> definition( static_cast<FOOTPRINT*>( footprint->Clone() ) );
+                definition->SetParent( nullptr );
+                definition->SetParentGroup( nullptr );
+                definition->ClearAllNets();
+                m_importedFootprints.push_back( std::move( definition ) );
+            }
+        }
     }
     catch( ... )
     {
+        m_importedDesignRules.clear();
+        m_importedFootprints.clear();
         clearLoadingState();
         throw;
     }
 
     clearLoadingState();
+}
+
+
+std::vector<FOOTPRINT*> PCB_IO_PADS::GetImportedCachedLibraryFootprints()
+{
+    std::vector<FOOTPRINT*> result;
+    result.reserve( m_importedFootprints.size() );
+
+    for( const std::unique_ptr<FOOTPRINT>& footprint : m_importedFootprints )
+        result.push_back( static_cast<FOOTPRINT*>( footprint->Clone() ) );
+
+    return result;
 }
 
 
@@ -239,10 +279,29 @@ void PCB_IO_PADS::loadFootprints()
     const auto& partInstanceAttrs = m_parser->GetPartInstanceAttrs();
     const auto& parts = m_parser->GetParts();
 
+    struct PIN_ENDPOINT
+    {
+        VECTOR2I position;
+        std::string netName;
+    };
+
+    std::map<std::string, std::map<std::string, std::vector<PIN_ENDPOINT>>> routePins;
+
+    for( const PADS_IO::ROUTE& route : m_parser->GetRoutes() )
+    {
+        for( const PADS_IO::ROUTE_PIN_ENDPOINT& endpoint : route.pin_endpoints )
+        {
+            routePins[endpoint.pin.ref_des][endpoint.pin.pin_name].push_back(
+                    { VECTOR2I( scaleCoord( endpoint.position.x, true ),
+                                scaleCoord( endpoint.position.y, false ) ), route.net_name } );
+        }
+    }
+
     for( const auto& pads_part : parts )
     {
         FOOTPRINT* footprint = new FOOTPRINT( m_loadBoard );
         footprint->SetReference( pads_part.name );
+        std::map<PAD*, std::string> decalPadNumbers;
 
         // Generate deterministic UUID for cross-probe linking between schematic and PCB.
         // The schematic importer uses the same algorithm, enabling selection sync.
@@ -377,7 +436,7 @@ void PCB_IO_PADS::loadFootprints()
         // Look up custom attribute values from part type and per-instance overrides.
         // Per-instance attributes (from PART <refdes> {...} in *PARTTYPE*) take priority.
         const PADS_IO::PART_TYPE* partType = nullptr;
-        auto ptIt = part_types.find( pads_part.decal );
+        auto ptIt = part_types.find( pads_part.explicit_decal ? pads_part.part_type : pads_part.decal );
 
         if( ptIt != part_types.end() )
             partType = &ptIt->second;
@@ -662,6 +721,7 @@ void PCB_IO_PADS::loadFootprints()
                 footprint->Add( pad );
 
                 pad->SetNumber( term.name );
+                decalPadNumbers.emplace( pad, term.name );
 
                 VECTOR2I pad_pos( decalScaler( term.x ), -decalScaler( term.y ) );
                 RotatePoint( pad_pos, part_orient );
@@ -1226,6 +1286,231 @@ void PCB_IO_PADS::loadFootprints()
 
         if( pads_part.bottom_layer )
             footprint->Flip( footprint->GetPosition(), FLIP_DIRECTION::LEFT_RIGHT );
+
+        auto partPins = routePins.find( pads_part.name );
+
+        // The tolerance covers independent decimal rounding of decal and route coordinates.
+        const int tolerance = pcbIUScale.mmToIU( 0.001 );
+        auto isAtEndpoint = [&]( const PAD* aPad, const PIN_ENDPOINT& aEndpoint )
+        {
+            const long long dx = static_cast<long long>( aPad->GetPosition().x ) - aEndpoint.position.x;
+            const long long dy = static_cast<long long>( aPad->GetPosition().y ) - aEndpoint.position.y;
+
+            return aPad->GetAttribute() != PAD_ATTRIB::NPTH
+                   && std::abs( dx ) <= tolerance && std::abs( dy ) <= tolerance
+                   && dx * dx + dy * dy <= static_cast<long long>( tolerance ) * tolerance;
+        };
+
+        if( partType && partType->alphanumeric_pin_count > 0 )
+        {
+            // PADS ASCII's alpinm declaration maps every numeric terminal 1..N to a name.
+            // Validate the whole declaration before changing anything, and index by terminal
+            // number rather than the order of T records in the decal.
+            const auto& names = partType->alphanumeric_pins;
+            bool valid = names.size() == static_cast<size_t>( partType->alphanumeric_pin_count )
+                         && names.size() == decalPadNumbers.size();
+            std::map<std::string, PAD*> declaredPins;
+
+            if( valid )
+            {
+                std::vector<PAD*> slots( names.size(), nullptr );
+
+                for( const auto& [pad, number] : decalPadNumbers )
+                {
+                    const int slot = PADS_COMMON::ParseInt( number, 0, "alphanumeric terminal" );
+
+                    if( slot <= 0 || static_cast<size_t>( slot ) > slots.size()
+                        || number != std::to_string( slot ) || slots[slot - 1] )
+                    {
+                        valid = false;
+                        break;
+                    }
+
+                    slots[slot - 1] = pad;
+                }
+
+                for( size_t ii = 0; valid && ii < slots.size(); ++ii )
+                {
+                    const std::string& name = names[ii];
+
+                    if( !slots[ii] || name.empty() || name.size() > 7
+                        || !declaredPins.emplace( name, slots[ii] ).second )
+                    {
+                        valid = false;
+                    }
+                }
+            }
+
+            // Net declarations and route endpoints must agree with the complete map. A
+            // conflicting declaration must not fall through to geometric name recovery.
+            const std::string prefix = pads_part.name + ".";
+
+            for( auto it = m_pinToNetMap.lower_bound( prefix ); valid && it != m_pinToNetMap.end(); ++it )
+            {
+                if( it->first.compare( 0, prefix.size(), prefix ) != 0 )
+                    break;
+
+                const auto declared = declaredPins.find( it->first.substr( prefix.size() ) );
+
+                if( declared == declaredPins.end() || declared->second->GetAttribute() == PAD_ATTRIB::NPTH )
+                    valid = false;
+            }
+
+            if( valid && partPins != routePins.end() )
+            {
+                for( const auto& [pinName, endpoints] : partPins->second )
+                {
+                    const auto declared = declaredPins.find( pinName );
+                    const auto net = m_pinToNetMap.find( prefix + pinName );
+
+                    if( declared == declaredPins.end() || net == m_pinToNetMap.end() )
+                    {
+                        valid = false;
+                        break;
+                    }
+
+                    for( const PIN_ENDPOINT& endpoint : endpoints )
+                    {
+                        const size_t matches = std::count_if( footprint->Pads().begin(),
+                                footprint->Pads().end(),
+                                [&]( const PAD* aPad ) { return isAtEndpoint( aPad, endpoint ); } );
+
+                        if( matches != 1 || !isAtEndpoint( declared->second, endpoint )
+                            || endpoint.netName != net->second )
+                        {
+                            valid = false;
+                            break;
+                        }
+                    }
+
+                    if( !valid )
+                        break;
+                }
+            }
+
+            if( valid )
+            {
+                for( const auto& [name, pad] : declaredPins )
+                {
+                    if( pad->GetAttribute() == PAD_ATTRIB::NPTH )
+                        continue;
+
+                    // The complete map may permute numeric names. Discard any net assigned
+                    // using the original decal number before assigning the final pin's net.
+                    pad->SetNumber( PADS_COMMON::ConvertText( name ) );
+                    pad->SetNetCode( 0 );
+                    const auto netIt = m_pinToNetMap.find( prefix + name );
+
+                    if( netIt != m_pinToNetMap.end() )
+                    {
+                        NETINFO_ITEM* net = m_loadBoard->FindNet(
+                                PADS_COMMON::ConvertInvertedNetName( netIt->second ) );
+
+                        if( net )
+                            pad->SetNet( net );
+                    }
+                }
+            }
+            else if( m_reporter )
+            {
+                m_reporter->Report( wxString::Format(
+                        _( "Could not apply PADS alphanumeric pin mapping for '%s': incomplete or "
+                           "conflicting declaration; keeping the decal pad numbers." ),
+                        PADS_COMMON::ConvertText( pads_part.name ) ), RPT_SEVERITY_WARNING );
+            }
+
+            continue;
+        }
+
+        if( partPins == routePins.end() )
+            continue;
+
+        // Some PADS files use logical names in routes but numeric decal terminals. Recover
+        // names only from unique endpoint geometry after rotation and bottom-side placement.
+        std::map<std::string, PAD*> resolvedPins;
+        std::map<PAD*, std::set<std::string>> namesByPad;
+        std::set<std::string> unresolvedPins;
+
+        for( const auto& [pinName, endpoints] : partPins->second )
+        {
+            const wxString number = PADS_COMMON::ConvertText( pinName );
+            const auto existing = std::find_if( footprint->Pads().begin(), footprint->Pads().end(),
+                    [&]( const PAD* aPad ) { return aPad->GetNumber() == number; } );
+
+            if( existing != footprint->Pads().end() )
+                continue;
+
+            PAD* candidate = nullptr;
+            const auto netIt = m_pinToNetMap.find( pads_part.name + "." + pinName );
+            bool consistent = netIt != m_pinToNetMap.end();
+
+            for( const PIN_ENDPOINT& endpoint : endpoints )
+            {
+                PAD* match = nullptr;
+                size_t matches = 0;
+
+                for( PAD* pad : footprint->Pads() )
+                {
+                    if( isAtEndpoint( pad, endpoint ) )
+                    {
+                        match = pad;
+                        ++matches;
+                        namesByPad[pad].insert( pinName );
+                    }
+                }
+
+                if( matches != 1 )
+                {
+                    consistent = false;
+                    continue;
+                }
+
+                if( candidate && candidate != match )
+                    consistent = false;
+
+                candidate = match;
+
+                if( netIt == m_pinToNetMap.end() || endpoint.netName != netIt->second )
+                    consistent = false;
+            }
+
+            // An explicitly connected decal number is not an unnamed terminal to repurpose.
+            if( consistent && candidate
+                && !m_pinToNetMap.count( pads_part.name + "." + decalPadNumbers.at( candidate ) ) )
+            {
+                resolvedPins.emplace( pinName, candidate );
+            }
+            else
+            {
+                unresolvedPins.insert( pinName );
+            }
+        }
+
+        for( const auto& [pinName, pad] : resolvedPins )
+        {
+            NETINFO_ITEM* net = m_loadBoard->FindNet( PADS_COMMON::ConvertInvertedNetName(
+                    m_pinToNetMap.at( pads_part.name + "." + pinName ) ) );
+
+            if( namesByPad[pad].size() != 1 || !net )
+            {
+                unresolvedPins.insert( pinName );
+                continue;
+            }
+
+            pad->SetNumber( PADS_COMMON::ConvertText( pinName ) );
+            pad->SetNet( net );
+        }
+
+        if( m_reporter )
+        {
+            for( const std::string& pinName : unresolvedPins )
+            {
+                m_reporter->Report( wxString::Format(
+                        _( "Could not map PADS pin '%s.%s' uniquely to a footprint pad; keeping the "
+                           "decal pad numbers." ), PADS_COMMON::ConvertText( pads_part.name ),
+                        PADS_COMMON::ConvertText( pinName ) ), RPT_SEVERITY_WARNING );
+            }
+        }
     }
 }
 
@@ -1513,8 +1798,9 @@ void PCB_IO_PADS::loadTracksAndVias()
 
                 if( startLayer != UNDEFINED_LAYER && endLayer != UNDEFINED_LAYER )
                 {
-                    via->SetLayerPair( startLayer, endLayer );
+                    // SetLayerPair sanitizes the span using the type, initially THROUGH.
                     via->SetViaType( viaType );
+                    via->SetLayerPair( startLayer, endLayer );
                 }
                 else
                 {
@@ -1976,6 +2262,10 @@ void PCB_IO_PADS::loadZones()
 
         if( allVoids.OutlineCount() > 0 )
             fillPoly.BooleanSubtract( allVoids );
+
+        // Native filled polygons store outlines only. Fracture the holes into the outlines so
+        // clearance voids survive saving and rebuilding connectivity after reopening.
+        fillPoly.Fracture();
 
         zone->SetFilledPolysList( pourLayer, fillPoly );
         zone->SetIsFilled( true );

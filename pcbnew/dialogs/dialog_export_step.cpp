@@ -34,6 +34,9 @@
 #include <board.h>
 #include <confirm.h>
 #include <kidialog.h>
+#include <json_common.h>
+#include <kemi_format_profile.h>
+#include <richio.h>
 #include <widgets/std_bitmap_button.h>
 #include <footprint.h>
 #include <kiface_base.h>
@@ -55,6 +58,8 @@
 #include <paths.h>
 
 #include <wx/filefn.h>
+#include <wx/wfstream.h>
+#include <wx/stdstream.h>
 
 
 // Maps m_choiceFormat selection to extension (and kicad-cli command)
@@ -482,8 +487,10 @@ wxString DIALOG_EXPORT_STEP::StageBoardForExport( const wxString& aBoardPath, bo
         return _( "Failed to reserve a temporary filename for STEP export." );
 
     wxFileName stemFn( reserved );
-    wxFileName tempBoardFn( boardFn.GetPath(), stemFn.GetName(), FILEEXT::KiCadPcbFileExtension );
-    wxFileName tempProjectFn( boardFn.GetPath(), stemFn.GetName(), FILEEXT::ProjectFileExtension );
+    wxFileName tempBoardFn( boardFn.GetPath(), stemFn.GetName(),
+                            KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, KEMI_FORMAT::FLAVOR::KEMI ) );
+    wxFileName tempProjectFn( boardFn.GetPath(), stemFn.GetName(),
+                              KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) );
 
     // Schedule the placeholder for cleanup. If this initial delete fails the later sweep will
     // retry; we keep it registered in aTempFiles regardless so it never leaks.
@@ -503,18 +510,50 @@ wxString DIALOG_EXPORT_STEP::StageBoardForExport( const wxString& aBoardPath, bo
 
     aTempFiles.push_back( tempBoardFn.GetFullPath() );
 
-    wxFileName srcProjectFn = boardFn;
-    srcProjectFn.SetExt( FILEEXT::ProjectFileExtension );
-
-    if( srcProjectFn.FileExists() )
+    // Prefer the native sibling, but import an official project when that is all we have.
+    for( KEMI_FORMAT::FLAVOR flavor : { KEMI_FORMAT::FLAVOR::KEMI, KEMI_FORMAT::FLAVOR::LEGACY } )
     {
-        if( !wxCopyFile( srcProjectFn.GetFullPath(), tempProjectFn.GetFullPath(), true ) )
+        wxFileName srcProjectFn = boardFn;
+        srcProjectFn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, flavor ) );
+
+        if( !srcProjectFn.FileExists() )
+            continue;
+
+        try
         {
-            wxRemoveFile( tempBoardFn.GetFullPath() );
+            wxFFileInputStream input( srcProjectFn.GetFullPath() );
+
+            if( !input.IsOk() )
+                THROW_IO_ERROR( _( "Could not read the project file." ) );
+
+            wxStdInputStream stream( input );
+            nlohmann::json document = nlohmann::json::parse( stream, nullptr, true, true );
+            const wxString error = KEMI_FORMAT::ValidateJsonMarker(
+                    document, KEMI_FORMAT::DOC::PROJECT, srcProjectFn.GetFullPath() );
+
+            if( !error.IsEmpty() )
+                THROW_IO_ERROR( error );
+
+            KEMI_FORMAT::StampJsonMarker( document, KEMI_FORMAT::DOC::PROJECT );
+            KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PROJECT,
+                    tempProjectFn.GetFullPath(), KEMI_FORMAT::FLAVOR::KEMI, true );
+            FILE_OUTPUTFORMATTER output( tempProjectFn.GetFullPath() );
+            output.Print( "%s\n", document.dump( 2 ).c_str() );
+            output.Finish();
+            aTempFiles.push_back( tempProjectFn.GetFullPath() );
+        }
+        catch( const IO_ERROR& error )
+        {
+            aErrorDetail = error.What();
+            return _( "Failed to stage the project file for STEP export." );
+        }
+        catch( const std::exception& error )
+        {
+            aErrorDetail = wxString::FromUTF8( error.what() );
             return _( "Failed to stage the project file for STEP export." );
         }
 
-        aTempFiles.push_back( tempProjectFn.GetFullPath() );
+        break;
     }
 
     aInputPath = tempBoardFn.GetFullPath();
@@ -602,7 +641,7 @@ void DIALOG_EXPORT_STEP::onExportButton( wxCommandEvent& aEvent )
         }
     #endif
 
-        appK2S.SetName( wxT( "kicad-cli" ) );
+        appK2S.SetName( wxT( "kemicad-cli" ) );
         appK2S.Normalize( FN_NORMALIZE_FLAGS );
 
         wxString cmdK2S = wxT( "\"" );

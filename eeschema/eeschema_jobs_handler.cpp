@@ -35,6 +35,8 @@
 #include <jobs/job_export_sch_plot.h>
 #include <jobs/job_sch_erc.h>
 #include <jobs/job_sch_import.h>
+#include <jobs/job_sch_link_footprints.h>
+#include <link_imported_footprints.h>
 #include <jobs/job_sch_upgrade.h>
 #include <jobs/job_sch_downgrade.h>
 #include <downgrade_target.h>
@@ -52,6 +54,7 @@
 #include <jobs/job_sym_upgrade.h>
 #include <schematic.h>
 #include <import_net_map.h>
+#include <import_proj_properties.h>
 #include <schematic_settings.h>
 #include <sch_screen.h>
 #include <sch_sheet.h>
@@ -75,6 +78,7 @@
 #include <erc/erc_report.h>
 #include <erc/erc_settings.h>
 #include <wildcards_and_files_ext.h>
+#include <kemi_format_profile.h>
 #include <plotters/plotters_pslike.h>
 #include <drawing_sheet/ds_data_model.h>
 #include <paths.h>
@@ -212,6 +216,9 @@ EESCHEMA_JOBS_HANDLER::EESCHEMA_JOBS_HANDLER( KIWAY* aKiway ) :
               {
                   return true;
               } );
+    Register( "sch_link_footprints", std::bind( &EESCHEMA_JOBS_HANDLER::JobLinkImportedFootprints,
+                                               this, std::placeholders::_1 ),
+              []( JOB*, wxWindow* ) -> bool { return true; } );
 }
 
 
@@ -238,9 +245,23 @@ SCHEMATIC* EESCHEMA_JOBS_HANDLER::getSchematic( const wxString& aPath, bool aReq
         if( schPath.IsEmpty() )
         {
             wxFileName path = project.GetProjectFullName();
-            path.SetExt( FILEEXT::KiCadSchematicFileExtension );
+            const KEMI_FORMAT::FLAVOR flavor =
+                    KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PROJECT, path.GetFullPath() );
+            path.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC, flavor ) );
             path.MakeAbsolute();
             schPath = path.GetFullPath();
+
+            if( !wxFileExists( schPath ) )
+            {
+                const KEMI_FORMAT::FLAVOR other = ( flavor == KEMI_FORMAT::FLAVOR::KEMI )
+                                                          ? KEMI_FORMAT::FLAVOR::LEGACY
+                                                          : KEMI_FORMAT::FLAVOR::KEMI;
+                wxFileName alt( path );
+                alt.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC, other ) );
+
+                if( wxFileExists( alt.GetFullPath() ) )
+                    schPath = alt.GetFullPath();
+            }
         }
 
         if( m_cliSchematic && aRequireRoot && !m_cliSchematicRootValidated )
@@ -1275,20 +1296,34 @@ int EESCHEMA_JOBS_HANDLER::JobSymUpgrade( JOB* aJob )
 
     SCH_IO_MGR::SCH_FILE_T fileType = SCH_IO_MGR::GuessPluginTypeFromLibPath( fn.GetFullPath() );
 
-    if( !upgradeJob->m_outputLibraryPath.IsEmpty() )
-    {
-        if( wxFile::Exists( upgradeJob->m_outputLibraryPath ) )
-        {
-            m_reporter->Report( _( "Output path must not conflict with existing path\n" ), RPT_SEVERITY_ERROR );
+    wxString outputPath;
 
-            return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+    try
+    {
+        if( upgradeJob->m_outputLibraryPath.IsEmpty() )
+        {
+            if( fileType != SCH_IO_MGR::SCH_KICAD )
+            {
+                m_reporter->Report( _( "Output path must be specified to convert legacy and non-KiCad libraries\n" ),
+                                    RPT_SEVERITY_ERROR );
+                return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+            }
+
+            outputPath = KEMI_FORMAT::ResolveNativeSaveTarget(
+                    KEMI_FORMAT::DOC::SYMBOL_LIB, fn.GetFullPath() );
+        }
+        else
+        {
+            outputPath = KEMI_FORMAT::PersistentOutputPath(
+                    KEMI_FORMAT::DOC::SYMBOL_LIB, upgradeJob->m_outputLibraryPath, true );
+
+            if( wxFileName::Exists( outputPath ) )
+                THROW_IO_ERROR( _( "Output path must not conflict with an existing path." ) );
         }
     }
-    else if( fileType != SCH_IO_MGR::SCH_KICAD )
+    catch( const IO_ERROR& error )
     {
-        m_reporter->Report( _( "Output path must be specified to convert legacy and non-KiCad libraries\n" ),
-                            RPT_SEVERITY_ERROR );
-
+        m_reporter->Report( error.What(), RPT_SEVERITY_ERROR );
         return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
     }
 
@@ -1309,8 +1344,8 @@ int EESCHEMA_JOBS_HANDLER::JobSymUpgrade( JOB* aJob )
         if( m_progressReporter )
             m_progressReporter->KeepRefreshing();
 
-        bool shouldSave =
-                upgradeJob->m_force || schLibrary.GetFileFormatVersionAtLoad() < SEXPR_SYMBOL_LIB_FILE_VERSION;
+        bool shouldSave = upgradeJob->m_force || outputPath != fn.GetFullPath()
+                          || schLibrary.GetFileFormatVersionAtLoad() < SEXPR_SYMBOL_LIB_FILE_VERSION;
 
         if( shouldSave )
         {
@@ -1318,16 +1353,15 @@ int EESCHEMA_JOBS_HANDLER::JobSymUpgrade( JOB* aJob )
 
             try
             {
-                if( !upgradeJob->m_outputLibraryPath.IsEmpty() )
-                    schLibrary.SetFileName( upgradeJob->m_outputLibraryPath );
+                schLibrary.SetFileName( outputPath );
 
                 schLibrary.SetModified();
                 schLibrary.Save();
             }
-            catch( ... )
+            catch( const IO_ERROR& error )
             {
-                m_reporter->Report( ( "Unable to save library\n" ), RPT_SEVERITY_ERROR );
-                return CLI::EXIT_CODES::ERR_UNKNOWN;
+                m_reporter->Report( error.What(), RPT_SEVERITY_ERROR );
+                return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
             }
         }
         else
@@ -1337,7 +1371,7 @@ int EESCHEMA_JOBS_HANDLER::JobSymUpgrade( JOB* aJob )
     }
     else
     {
-        if( !SCH_IO_MGR::ConvertLibrary( nullptr, fn.GetAbsolutePath(), upgradeJob->m_outputLibraryPath, m_reporter ) )
+        if( !SCH_IO_MGR::ConvertLibrary( nullptr, fn.GetAbsolutePath(), outputPath, m_reporter ) )
         {
             m_reporter->Report( ( "Unable to convert library\n" ), RPT_SEVERITY_ERROR );
             return CLI::EXIT_CODES::ERR_UNKNOWN;
@@ -1488,8 +1522,10 @@ int EESCHEMA_JOBS_HANDLER::JobUpgrade( JOB* aJob )
     try
     {
         IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
-        SCH_SHEET*          loadedSheet = pi->LoadSchematicFile( schFullPath, sch );
-        pi->SaveSchematicFile( schFullPath, loadedSheet, sch );
+        SCH_SHEET* loadedSheet = pi->LoadSchematicFile( schFullPath, sch );
+        const wxString target = KEMI_FORMAT::ResolveNativeSaveTarget(
+                KEMI_FORMAT::DOC::SCHEMATIC, schFullPath );
+        pi->SaveSchematicFile( target, loadedSheet, sch );
     }
     catch( const IO_ERROR& ioe )
     {
@@ -1594,6 +1630,71 @@ int EESCHEMA_JOBS_HANDLER::JobDowngrade( JOB* aJob )
 
     if( job == nullptr )
         return CLI::EXIT_CODES::ERR_UNKNOWN;
+
+    // Inspect the source before loading any project: settings loaders can create or
+    // update sidecars, even when a later schematic parse would reject the export.
+    try
+    {
+        if( !job->m_filename.IsEmpty() )
+        {
+            KEMI_FORMAT::CheckLegacyExportSource( job->m_filename );
+            wxFileName project( job->m_filename );
+            project.SetExt( FILEEXT::ProjectFileExtension );
+
+            if( project.FileExists() )
+                KEMI_FORMAT::CheckLegacyExportSource( project.GetFullPath() );
+        }
+    }
+    catch( const IO_ERROR& error )
+    {
+        m_reporter->Report( error.What(), RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+    }
+
+    wxFileName kemiProject( job->m_filename );
+    kemiProject.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) );
+    wxArrayString nativeLibraries;
+
+    if( !job->m_libraryDir.IsEmpty() && wxDirExists( job->m_libraryDir ) )
+        wxDir::GetAllFiles( job->m_libraryDir, &nativeLibraries, wxT( "*.kemi_sym" ) );
+
+    if( KEMI_FORMAT::HasKemiExt( job->m_filename ) || kemiProject.FileExists()
+        || !nativeLibraries.IsEmpty() )
+    {
+        m_reporter->Report( _( "Kemi documents cannot be exported to an official KiCad format.\n" ),
+                            RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+    }
+
+    // Validate source libraries before preparing output directories or copying any files.
+    // A Kemi root is also restricted when its file has been renamed to an official suffix.
+    if( !job->m_libraryDir.IsEmpty() && wxDirExists( job->m_libraryDir ) )
+    {
+        wxArrayString files;
+        wxDir::GetAllFiles( job->m_libraryDir, &files );
+
+        for( const wxString& file : files )
+        {
+            if( !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::SYMBOL_LIB, wxFileName( file ).GetExt() ) )
+                continue;
+
+            try
+            {
+                SCH_IO_KICAD_SEXPR reader;
+                if( reader.IsLibraryKemiOnly( file ) )
+                {
+                    m_reporter->Report( _( "Kemi libraries cannot be exported to an official KiCad format.\n" ),
+                                        RPT_SEVERITY_ERROR );
+                    return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+                }
+            }
+            catch( const IO_ERROR& error )
+            {
+                m_reporter->Report( error.What(), RPT_SEVERITY_ERROR );
+                return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+            }
+        }
+    }
 
     const DOWNGRADE_TARGET* target =
             job->m_target.IsEmpty() ? &GetDowngradeTargets().front() : FindDowngradeTarget( job->m_target );
@@ -1929,6 +2030,13 @@ int EESCHEMA_JOBS_HANDLER::JobDowngrade( JOB* aJob )
     catch( const IO_ERROR& ioe )
     {
         m_reporter->Report( wxString::Format( _( "Error loading schematic: %s\n" ), ioe.What() ), RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+    }
+
+    if( sch->IsKemiOnly() )
+    {
+        m_reporter->Report( _( "Kemi documents cannot be exported to an official KiCad format.\n" ),
+                            RPT_SEVERITY_ERROR );
         return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
     }
 
@@ -2346,6 +2454,94 @@ int EESCHEMA_JOBS_HANDLER::JobDowngrade( JOB* aJob )
 }
 
 
+int EESCHEMA_JOBS_HANDLER::JobLinkImportedFootprints( JOB* aJob )
+{
+    JOB_SCH_LINK_FOOTPRINTS* job = dynamic_cast<JOB_SCH_LINK_FOOTPRINTS*>( aJob );
+
+    if( !job )
+        return CLI::EXIT_CODES::ERR_UNKNOWN;
+
+    PROJECT& project = Pgm().GetSettingsManager().Prj();
+
+    if( job->m_projectFile.IsEmpty()
+        || !wxFileName( job->m_projectFile ).SameAs( wxFileName( project.GetProjectFullName() ) )
+        || !wxFileName::DirName( wxFileName( job->m_filename ).GetPath() ).SameAs(
+                wxFileName::DirName( project.GetProjectPath() ) ) )
+    {
+        m_reporter->Report( _( "The footprint-link job is not bound to its imported destination project." ),
+                            RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+    }
+
+    ClearCachedSchematic();
+    SCHEMATIC* schematic = getSchematic( job->m_filename );
+
+    // The CLI unloads this project after the import finishes.  Drop the cached schematic while
+    // the project is still alive; otherwise the handler's destructor detaches it from a freed
+    // PROJECT and crashes kicad-cli at exit (0xC0000005) after a successful import.
+    struct CACHE_RELEASE
+    {
+        EESCHEMA_JOBS_HANDLER* m_handler;
+        ~CACHE_RELEASE() { m_handler->ClearCachedSchematic(); }
+    } releaseCache{ this };
+
+    if( !schematic || &schematic->Project() != &project )
+        return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+
+    try
+    {
+        const int linked = LinkImportedFootprints(
+                *schematic, job->m_footprintsByRef, *m_reporter,
+                IMPORTED_FOOTPRINT_LINK_POLICY::FILL_EMPTY_ONLY, &job->m_padNumbersByRef );
+
+        if( linked == 0 )
+            return CLI::EXIT_CODES::SUCCESS;
+
+        KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( project.GetProjectPath() );
+        SCH_SCREENS screens( schematic->Root() );
+        SCH_IO_KICAD_SEXPR writer;
+        DOWNGRADE_FILE_TRANSACTION transaction;
+
+        for( size_t i = 0; i < screens.GetCount(); ++i )
+        {
+            SCH_SCREEN* screen = screens.GetScreen( i );
+
+            if( screen == schematic->Root().GetScreen() && schematic->Root().IsVirtualRootSheet() )
+                continue;
+
+            const wxString staged = transaction.Stage( screen->GetFileName() );
+
+            if( staged.IsEmpty() )
+                THROW_IO_ERROR( _( "Could not stage the linked imported schematic." ) );
+
+            policy.Write( KEMI_FORMAT::DOC::SCHEMATIC, screen->GetFileName(),
+                    [&]( const wxString& aStoragePath, const KEMI_FORMAT::OUTPUT_TARGET& aTarget )
+                    {
+                        writer.SaveSchematicFile( aStoragePath, screens.GetSheet( i ), schematic, aTarget );
+                        return true;
+                    }, staged );
+        }
+
+        const wxString failed = transaction.Commit();
+
+        if( !failed.IsEmpty() )
+        {
+            if( !transaction.GetRecoveryError().IsEmpty() )
+                m_reporter->Report( transaction.GetRecoveryError(), RPT_SEVERITY_ERROR );
+
+            THROW_IO_ERROR( wxString::Format( _( "Could not publish linked imported schematic '%s'." ), failed ) );
+        }
+    }
+    catch( const IO_ERROR& error )
+    {
+        m_reporter->Report( error.What(), RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+    }
+
+    return CLI::EXIT_CODES::SUCCESS;
+}
+
+
 int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
 {
     JOB_SCH_IMPORT* job = dynamic_cast<JOB_SCH_IMPORT*>( aJob );
@@ -2397,13 +2593,37 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
     wxString outputPath = job->GetConfiguredOutputPath();
 
     if( outputPath.IsEmpty() )
-        outputPath = DefaultImportOutputPath( job->m_inputFile, FILEEXT::KiCadSchematicFileExtension );
+    {
+        outputPath = DefaultImportOutputPath( job->m_inputFile,
+                KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC, KEMI_FORMAT::FLAVOR::KEMI ) );
+    }
 
     wxFileName inputFn( job->m_inputFile );
     inputFn.MakeAbsolute();
 
     wxFileName outputFn( outputPath );
     outputFn.MakeAbsolute();
+
+    KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY outputPolicy( outputFn.GetPath() );
+
+    try
+    {
+        outputFn.Assign( outputPolicy.Target( KEMI_FORMAT::DOC::SCHEMATIC,
+                                               outputFn.GetFullPath() ).FinalPath() );
+    }
+    catch( const IO_ERROR& ioe )
+    {
+        m_reporter->Report( ioe.What() + wxS( "\n" ), RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_ARGS;
+    }
+
+    if( !outputFn.DirExists()
+        && !wxFileName::Mkdir( outputFn.GetPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) )
+    {
+        m_reporter->Report( wxString::Format( _( "Could not create output directory '%s'.\n" ),
+                                              outputFn.GetPath() ), RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+    }
 
     // Foreign importers resolve their symbol library against the *active* project, so an import
     // with no project loaded needs a transient active one at the output location (never written to
@@ -2419,7 +2639,7 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
     else
     {
         wxFileName projectFn( outputFn );
-        projectFn.SetExt( FILEEXT::ProjectFileExtension );
+        projectFn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) );
 
         mgr.LoadProject( projectFn.GetFullPath(), true );
         projectPtr = mgr.GetProject( projectFn.GetFullPath() );
@@ -2462,6 +2682,7 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
 
     // Without this the importer's warnings go to the wx log and never reach the import report
     pi->SetReporter( &importMessages );
+    pi->SetImportOutputPolicy( &outputPolicy );
 
     try
     {
@@ -2500,10 +2721,16 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
         if( !loadedIsTopLevel && !loadedIsVirtualRoot )
             schematic->SetTopLevelSheets( { loadedSheet } );
 
+        PrepareSchematicImportFiles( *schematic, inputFn,
+                outputPolicy.Target( KEMI_FORMAT::DOC::SCHEMATIC, outputFn.GetFullPath() ) );
+
         // Extract a project symbol library and re-link LIB_IDs, as importFile() does; without it
         // the saved schematic references nicknames no library table row resolves.
-        ReconcileImportedSymbols( *pi, *schematic, project, inputFn.GetFullPath(), nullptr,
-                                  *m_reporter );
+        std::map<std::string, UTF8> importProperties;
+        importProperties[IMPORT_PROJ_PROPS::SYM_CACHE_NICKNAME] =
+                IMPORT_PROJ_PROPS::MakeSymbolCacheNickname( outputFn.GetName() );
+        ReconcileImportedSymbols( *pi, *schematic, project, inputFn.GetFullPath(), &importProperties,
+                                  *m_reporter, &outputPolicy );
 
         // Recompute connectivity so instance data is valid before saving, as importFile() does.
         std::unique_ptr<TOOL_MANAGER> toolManager = std::make_unique<TOOL_MANAGER>();
@@ -2523,42 +2750,30 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
         schematic->Settings().m_SchDrawingSheetFileName = wxS( "empty.kicad_wks" );
         DS_DATA_MODEL::GetTheInstance().SetEmptyLayout();
 
-        if( SCH_SHEET* topSheet = schematic->GetTopLevelSheet() )
-            topSheet->SetFileName( outputFn.GetFullName() );
-
-        schematic->RootScreen()->SetFileName( outputFn.GetFullPath() );
-
         SCH_SCREENS screens( schematic->Root() );
 
-        std::unordered_map<SCH_SCREEN*, wxString> filenameMap;
-        filenameMap[schematic->RootScreen()] = outputFn.GetFullPath();
-
-        wxString errorMsg;
-
-        if( !PrepareSaveAsFiles( *schematic, screens, inputFn, outputFn, /*aSaveCopy*/ true,
-                                 /*aCopySubsheets*/ true, /*aIncludeExternSheets*/ true,
-                                 filenameMap, errorMsg ) )
-        {
-            m_reporter->Report( errorMsg + wxS( "\n" ), RPT_SEVERITY_ERROR );
-            return CLI::EXIT_CODES::ERR_UNKNOWN;
-        }
-
-        // PrepareSaveAsFiles seeds an entry (empty for sheets it does not relocate) for every
-        // screen; empty paths are skipped.
-        IO_RELEASER<SCH_IO> kicadPi( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+        SCH_IO_KICAD_SEXPR writer;
 
         for( size_t i = 0; i < screens.GetCount(); i++ )
         {
             SCH_SCREEN* screen = screens.GetScreen( i );
-            wxString    path = filenameMap[screen];
 
-            if( path.IsEmpty() )
+            if( screen == schematic->Root().GetScreen() && schematic->Root().IsVirtualRootSheet() )
                 continue;
 
-            wxFileName fn( path );
-            fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+            outputPolicy.Write( KEMI_FORMAT::DOC::SCHEMATIC, screen->GetFileName(),
+                    [&]( const wxString& aStoragePath, const KEMI_FORMAT::OUTPUT_TARGET& aTarget )
+                    {
+                        wxFileName file( aTarget.FinalPath() );
 
-            kicadPi->SaveSchematicFile( fn.GetFullPath(), screens.GetSheet( i ), schematic.get() );
+                        if( !file.DirExists() && !file.Mkdir( wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) )
+                            return false;
+
+                        writer.SaveSchematicFile( aStoragePath, screens.GetSheet( i ),
+                                                  schematic.get(), aTarget );
+                        return true;
+                    } );
+
             sheetCount++;
 
             auto symbols = screen->Items().OfType( SCH_SYMBOL_T );
@@ -2591,6 +2806,10 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
     // Linked by the top-level `import` command's subsequent SaveProject().
     if( Pgm().GetSettingsManager().IsProjectOpenNotDummy() )
     {
+        // Match the editor's IPC-2581 revision propagation without writing a transient project.
+        if( SCH_SCREEN* rootScreen = schematic->RootScreen() )
+            project.GetProjectFile().m_IP2581Bom.schRevision = rootScreen->GetTitleBlock().GetRevision();
+
         std::vector<FILE_INFO_PAIR>& projectSheets = project.GetProjectFile().GetSheets();
         projectSheets.clear();
 
@@ -2632,7 +2851,7 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
     {
         m_reporter->Report( wxString::Format( _( "%zu sheets were written, but only '%s' is "
                                                  "reachable: top-level sheets are recorded in a "
-                                                 "project file. Use 'kicad-cli import' to create "
+                                                 "project file. Use 'kemicad-cli import' to create "
                                                  "one.\n" ),
                                               sheetCount, outputFn.GetFullName() ),
                             RPT_SEVERITY_WARNING );
@@ -3261,7 +3480,7 @@ int EESCHEMA_JOBS_HANDLER::runSchMerge( const wxString& aAncestor, const wxStrin
         if( !Pgm().IsGUI() )
         {
             m_reporter->Report( _( "--interactive requires a GUI KiCad process; the console "
-                                   "kicad-cli cannot open dialogs.\n" ),
+                                   "kemicad-cli cannot open dialogs.\n" ),
                                 RPT_SEVERITY_ERROR );
             return CLI::EXIT_CODES::ERR_ARGS;
         }
@@ -3395,33 +3614,45 @@ int EESCHEMA_JOBS_HANDLER::runSchMerge( const wxString& aAncestor, const wxStrin
     SCH_SCREENS screens( rootSheet );
     SCH_SCREEN* rootScreen = rootSheet->GetScreen();
 
-    // Detect two sub-sheets sharing a basename (e.g., a/foo.kicad_sch and
-    // b/foo.kicad_sch) before any I/O — the flat output layout can't honor
-    // both, and silently overwriting one is the worst outcome.
-    std::map<wxString, SCH_SCREEN*> basenameOwner;
+    // Preflight the whole output set, including the project, before writing any document.
+    std::map<SCH_SCREEN*, wxString> outputPaths;
+    std::set<wxString> outputNames;
+    wxFileName proFn( outFn );
+    proFn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) );
 
-    for( size_t i = 0; i < screens.GetCount(); ++i )
+    try
     {
-        SCH_SCREEN* screen = screens.GetScreen( i );
-
-        if( !screen || screen == rootScreen )
-            continue;
-
-        const wxString basename = wxFileName( screen->GetFileName() ).GetFullName();
-
-        if( basename.IsEmpty() )
-            continue;
-
-        auto [it, inserted] = basenameOwner.emplace( basename, screen );
-
-        if( !inserted && it->second != screen )
+        for( size_t i = 0; i < screens.GetCount(); ++i )
         {
-            m_reporter->Report( wxString::Format( _( "Cannot flatten sub-sheets with duplicate "
-                                                     "basename '%s'\n" ),
-                                                  basename ),
-                                RPT_SEVERITY_ERROR );
-            return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+            SCH_SCREEN* screen = screens.GetScreen( i );
+
+            if( !screen || screen->GetFileName().IsEmpty() )
+                continue;
+
+            wxFileName target = screen == rootScreen ? outFn
+                    : wxFileName( outDir, wxFileName( screen->GetFileName() ).GetName(),
+                                  KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC, KEMI_FORMAT::FLAVOR::KEMI ) );
+            KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SCHEMATIC, target.GetFullPath(),
+                    KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::SCHEMATIC, target.GetFullPath() ), true );
+            const wxString key = wxFileName::IsCaseSensitive() ? target.GetFullName()
+                                                               : target.GetFullName().Lower();
+
+            if( !outputNames.insert( key ).second )
+                THROW_IO_ERROR( _( "Cannot flatten sub-sheets with duplicate native output names." ) );
+
+            outputPaths.emplace( screen, target.GetFullPath() );
         }
+
+        if( applier.GetReport().projectFileTouched && ancestor.project )
+        {
+            KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PROJECT, proFn.GetFullPath(),
+                                                KEMI_FORMAT::FLAVOR::KEMI, true );
+        }
+    }
+    catch( const IO_ERROR& error )
+    {
+        m_reporter->Report( error.What(), RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
     }
 
     // Rewrite every SCH_SHEET symbol's filename field to its child screen's
@@ -3442,10 +3673,8 @@ int EESCHEMA_JOBS_HANDLER::runSchMerge( const wxString& aAncestor, const wxStrin
             if( !childScreen || childScreen == rootScreen )
                 continue;
 
-            const wxString basename = wxFileName( childScreen->GetFileName() ).GetFullName();
-
-            if( !basename.IsEmpty() )
-                childRef->SetFileName( basename );
+            if( const auto target = outputPaths.find( childScreen ); target != outputPaths.end() )
+                childRef->SetFileName( wxFileName( target->second ).GetFullName() );
         }
     }
 
@@ -3462,13 +3691,8 @@ int EESCHEMA_JOBS_HANDLER::runSchMerge( const wxString& aAncestor, const wxStrin
             if( !screen || !sheet || screen == rootScreen )
                 continue;
 
-            const wxString basename = wxFileName( screen->GetFileName() ).GetFullName();
-
-            if( basename.IsEmpty() )
-                continue;
-
-            wxFileName outSubFn( outDir, basename );
-            pi->SaveSchematicFile( outSubFn.GetFullPath(), sheet, ancestor.doc.get() );
+            if( const auto target = outputPaths.find( screen ); target != outputPaths.end() )
+                pi->SaveSchematicFile( target->second, sheet, ancestor.doc.get() );
         }
     }
     catch( const IO_ERROR& ioe )
@@ -3478,20 +3702,9 @@ int EESCHEMA_JOBS_HANDLER::runSchMerge( const wxString& aAncestor, const wxStrin
         return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
     }
 
-    // If the applier mutated project-file-scoped state (ERC severities, etc),
-    // persist it as a sibling .kicad_pro alongside the .kicad_sch output —
-    // otherwise the resolution dies with the process. Only write when actually
-    // needed; clobbering an existing .kicad_pro with ancestor's project
-    // would lose unrelated user settings (library tables, mru paths).
+    // Persist only the resolved project fields into a native sibling, preserving other settings.
     if( applier.GetReport().projectFileTouched && ancestor.project )
     {
-        wxFileName proFn = outFn;
-        proFn.SetExt( FILEEXT::ProjectFileExtension );
-
-        // JSON-patch path: only the diffed DOC_PROP fields are written into
-        // the output .kicad_pro, so any non-diffed user customisations
-        // (library tables, last paths, layer presets, text variables) are
-        // preserved.  Fall back to SaveProjectCopy on parse failure.
         PROJECT_FILE& ancProj = ancestor.project->GetProjectFile();
         ancProj.Store();
 
@@ -3517,13 +3730,9 @@ int EESCHEMA_JOBS_HANDLER::runSchMerge( const wxString& aAncestor, const wxStrin
         if( !KICAD_DIFF::ApplyProjectFilePatches( proFn.GetFullPath(), *ancProj.Internals(), touched,
                                                   KICAD_DIFF::DOC_KIND::SCH ) )
         {
-            if( !Pgm().GetSettingsManager().SaveProjectCopy( proFn.GetFullPath(), ancestor.project ) )
-            {
-                m_reporter->Report(
-                        wxString::Format( _( "Failed to save merged project file: %s\n" ), proFn.GetFullPath() ),
-                        RPT_SEVERITY_ERROR );
-                return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
-            }
+            m_reporter->Report( wxString::Format( _( "Failed to save merged project file: %s\n" ),
+                                                  proFn.GetFullPath() ), RPT_SEVERITY_ERROR );
+            return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
         }
     }
 

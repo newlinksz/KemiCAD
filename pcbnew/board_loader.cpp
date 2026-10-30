@@ -22,6 +22,7 @@
 
 #include <base_screen.h>
 #include <board.h>
+#include <kemi_format_profile.h>
 #include <board_design_settings.h>
 #include <drawing_sheet/ds_data_model.h>
 #include <drc/drc_engine.h>
@@ -137,9 +138,7 @@ void BOARD_LOADER::initializeLoadedBoard( BOARD* aBoard, const wxString& aFileNa
 
     try
     {
-        wxFileName rules = aFileName;
-        rules.SetExt( FILEEXT::DesignRulesFileExtension );
-        bds.m_DRCEngine->InitEngine( rules );
+        bds.m_DRCEngine->InitEngine( wxFileName( aBoard->GetDesignRulesPath() ) );
     }
     catch( ... )
     {
@@ -178,14 +177,27 @@ std::unique_ptr<BOARD> BOARD_LOADER::CreateEmptyBoard( PROJECT* aProject )
 }
 
 
-bool BOARD_LOADER::SaveBoard( wxString& aFileName, BOARD& aBoard, PCB_IO_MGR::PCB_FILE_T aFormat )
+bool BOARD_LOADER::SaveBoard( wxString& aFileName, BOARD& aBoard, PCB_IO_MGR::PCB_FILE_T aFormat,
+                              bool aAllowOverwrite )
 {
-    aBoard.BuildConnectivity();
-    aBoard.SynchronizeNetsAndNetClasses( false );
-    aBoard.SynchronizeProperties();
-
     try
     {
+        if( aFormat == PCB_IO_MGR::KICAD_SEXP )
+        {
+            aFileName = wxFileName( aFileName ).SameAs( wxFileName( aBoard.GetFileName() ) )
+                    ? KEMI_FORMAT::ResolveNativeSaveTarget( KEMI_FORMAT::DOC::PCB, aFileName )
+                    : KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::PCB, aFileName, true );
+        }
+
+        if( !aAllowOverwrite && KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PCB,
+                wxFileName( aBoard.GetFileName() ).GetExt() ) && wxFileExists( aFileName ) )
+        {
+            THROW_IO_ERROR( _( "Choose a new native file name; the save target already exists." ) );
+        }
+
+        aBoard.BuildConnectivity();
+        aBoard.SynchronizeNetsAndNetClasses( false );
+        aBoard.SynchronizeProperties();
         PCB_IO_MGR::Save( aFormat, aFileName, aBoard, nullptr );
     }
     catch( const IO_ERROR& ioe )

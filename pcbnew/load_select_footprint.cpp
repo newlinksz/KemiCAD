@@ -24,6 +24,7 @@ using namespace std::placeholders;
 
 #include <board.h>
 #include <footprint.h>
+#include <kemi_format_profile.h>
 #include <confirm.h>
 #include <connectivity/connectivity_data.h>
 #include <eda_list_dialog.h>
@@ -286,10 +287,23 @@ bool FOOTPRINT_EDIT_FRAME::SaveLibraryAs( const wxString& aLibraryPath )
 
         cur->FootprintEnumerate( footprints, curLibPath, false );
 
+        bool restricted = KEMI_FORMAT::HasKemiExt( Prj().GetProjectFullName() );
+
+        for( const wxString& name : footprints )
+        {
+            const FOOTPRINT* footprint = cur->GetEnumeratedFootprint( curLibPath, name );
+            restricted = restricted || ( footprint && footprint->IsKemiOnly() );
+        }
+
         for( const wxString& fp : footprints )
         {
             const FOOTPRINT* footprint = cur->GetEnumeratedFootprint( curLibPath, fp );
-            dst->FootprintSave( dstLibPath, footprint );
+            FOOTPRINT copy( *footprint );
+
+            if( restricted )
+                copy.SetKemiOnly();
+
+            dst->FootprintSave( dstLibPath, &copy );
 
             msg = wxString::Format( _( "Footprint '%s' saved." ), fp );
             SetStatusText( msg );

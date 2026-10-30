@@ -389,6 +389,16 @@ void CopySexprFile( const wxString& aSrcPath, const wxString& aDestPath,
                     std::function<bool( const std::string& token, wxString& value )> aCallback,
                     wxString& aErrors )
 {
+    CopySexprFile( aSrcPath, aDestPath, aCallback, aErrors, {} );
+}
+
+
+void CopySexprFile( const wxString& aSrcPath, const wxString& aDestPath,
+                    std::function<bool( const std::string& token, wxString& value )> aCallback,
+                    wxString& aErrors,
+                    std::function<bool( const std::string& token, const wxString& name,
+                                        wxString& value )> aSecondValueCallback )
+{
     bool success = false;
 
     try
@@ -417,6 +427,26 @@ void CopySexprFile( const wxString& aSrcPath, const wxString& aDestPath,
                                 pathNode->m_value = path;
                             else if( symNode )
                                 symNode->m_value = path;
+                        }
+
+                        if( aSecondValueCallback && node->GetNumberOfChildren() > 2 )
+                        {
+                            auto* stringValue = dynamic_cast<SEXPR::SEXPR_STRING*>( node->GetChild( 2 ) );
+                            auto* symbolValue = dynamic_cast<SEXPR::SEXPR_SYMBOL*>( node->GetChild( 2 ) );
+
+                            if( stringValue || symbolValue )
+                            {
+                                wxString value = wxString::FromUTF8( stringValue ? stringValue->m_value
+                                                                               : symbolValue->m_value );
+
+                                if( aSecondValueCallback( token, path, value ) )
+                                {
+                                    if( stringValue )
+                                        stringValue->m_value = value.ToStdString( wxConvUTF8 );
+                                    else
+                                        symbolValue->m_value = value.ToStdString( wxConvUTF8 );
+                                }
+                            }
                         }
                     }
                 } );

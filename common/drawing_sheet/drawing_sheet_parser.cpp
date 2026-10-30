@@ -20,6 +20,7 @@
  */
 
 #include <charconv>
+#include <limits>
 #include <fmt/format.h>
 #include <wx/base64.h>
 #include <wx/ffile.h>
@@ -36,6 +37,7 @@
 #include <drawing_sheet/drawing_sheet_lexer.h>
 #include <drawing_sheet/ds_file_versions.h>
 #include <font/font.h>
+#include <kemi_format_profile.h>
 
 using namespace DRAWINGSHEET_T;
 
@@ -204,6 +206,7 @@ void DRAWING_SHEET_PARSER::Parse( DS_DATA_MODEL* aLayout )
 
     NeedLEFT();
     T token = NextTok();
+    const bool isKemi = token == T_kemi_wks;
 
     parseHeader( token );
     aLayout->SetFileFormatVersionAtLoad( m_requiredVersion );
@@ -217,7 +220,7 @@ void DRAWING_SHEET_PARSER::Parse( DS_DATA_MODEL* aLayout )
                 if( m_requiredVersion > SEXPR_WORKSHEET_FILE_VERSION )
                 {
                     throw FUTURE_FORMAT_ERROR( fmt::format( "{}", m_requiredVersion ),
-                                               m_generatorVersion );
+                                               m_generatorVersion, isKemi );
                 }
             };
 
@@ -294,6 +297,17 @@ void DRAWING_SHEET_PARSER::Parse( DS_DATA_MODEL* aLayout )
             break;
         }
     }
+
+    if( isKemi )
+    {
+        if( token != T_RIGHT )
+            THROW_IO_ERROR( _( "Unclosed KemiCAD drawing sheet container." ) );
+
+        if( NextTok() != EOF )
+            THROW_IO_ERROR( _( "Unexpected content after KemiCAD drawing sheet container." ) );
+
+        aLayout->RequireKemiOutput();
+    }
 }
 
 
@@ -303,7 +317,46 @@ void DRAWING_SHEET_PARSER::parseHeader( T aHeaderType )
     // was a `page_layout` or `drawing_sheet` token. The newer files have versions and have a
     // `kicad_wks` token instead.
 
-    if( aHeaderType == T_kicad_wks || aHeaderType == T_drawing_sheet )
+    const bool isKemi = aHeaderType == T_kemi_wks;
+
+    // A .kemi_wks file must carry the KemiCAD root; legacy roots are only accepted from
+    // legacy (.kicad_wks) files or in-memory strings.
+    wxString kemiError = KEMI_FORMAT::CheckRootForSource( KEMI_FORMAT::DOC::DRAWING_SHEET,
+                                                          CurSource(), isKemi );
+
+    if( !kemiError.IsEmpty() )
+        THROW_IO_ERROR( kemiError );
+
+    if( isKemi )
+    {
+        NeedLEFT();
+
+        if( NextTok() != T_format_version )
+            Expecting( T_format_version );
+
+        if( NextTok() != T_NUMBER )
+            Expecting( T_NUMBER );
+
+        long formatVersion = 0;
+
+        // Reject fractional/overflowing numbers instead of truncating on LP64.
+        if( !FromUTF8().ToLong( &formatVersion )
+                || formatVersion < std::numeric_limits<int>::min()
+                || formatVersion > std::numeric_limits<int>::max() )
+        {
+            THROW_IO_ERROR( _( "Unrecognizable KemiCAD drawing sheet format_version." ) );
+        }
+
+        kemiError = KEMI_FORMAT::CheckFormatVersion( KEMI_FORMAT::DOC::DRAWING_SHEET,
+                                                      static_cast<int>( formatVersion ) );
+
+        if( !kemiError.IsEmpty() )
+            THROW_IO_ERROR( kemiError );
+
+        NeedRIGHT();
+    }
+
+    if( isKemi || aHeaderType == T_kicad_wks || aHeaderType == T_drawing_sheet )
     {
         NeedLEFT();
 
@@ -976,16 +1029,58 @@ bool DS_DATA_MODEL::LoadFromName( const wxString& aSheetName, const wxString& aB
 }
 
 
+void DS_DATA_MODEL::parsePageLayout( const char* aPageLayout, bool aAppend, const wxString& aSource )
+{
+    DS_DATA_MODEL parsed;
+
+    // Omitted setup values retain their current values. Parse into a separate owner so
+    // malformed input cannot change the existing drawing sheet or its output policy.
+    parsed.m_DefaultLineWidth = m_DefaultLineWidth;
+    parsed.m_DefaultTextSize = m_DefaultTextSize;
+    parsed.m_DefaultTextThickness = m_DefaultTextThickness;
+    parsed.m_leftMargin = m_leftMargin;
+    parsed.m_rightMargin = m_rightMargin;
+    parsed.m_topMargin = m_topMargin;
+    parsed.m_bottomMargin = m_bottomMargin;
+    parsed.m_allowVoidList = m_allowVoidList;
+
+    DRAWING_SHEET_PARSER parser( aPageLayout, aSource );
+    parser.Parse( &parsed );
+
+    if( aAppend )
+    {
+        m_list.insert( m_list.end(), parsed.m_list.begin(), parsed.m_list.end() );
+        parsed.m_list.clear();
+    }
+    else
+    {
+        m_list.swap( parsed.m_list );
+    }
+
+    m_DefaultLineWidth = parsed.m_DefaultLineWidth;
+    m_DefaultTextSize = parsed.m_DefaultTextSize;
+    m_DefaultTextThickness = parsed.m_DefaultTextThickness;
+    m_leftMargin = parsed.m_leftMargin;
+    m_rightMargin = parsed.m_rightMargin;
+    m_topMargin = parsed.m_topMargin;
+    m_bottomMargin = parsed.m_bottomMargin;
+    m_allowVoidList = parsed.m_allowVoidList;
+    m_fileFormatVersionAtLoad = parsed.m_fileFormatVersionAtLoad;
+    m_generator.swap( parsed.m_generator );
+    m_kemiOnlyOutput = ( aAppend && m_kemiOnlyOutput ) || parsed.m_kemiOnlyOutput;
+}
+
+
 void DS_DATA_MODEL::SetPageLayout( const char* aPageLayout, bool Append, const wxString& aSource )
 {
-    if( ! Append )
-        ClearList();
-
-    DRAWING_SHEET_PARSER parser( aPageLayout, wxT( "Sexpr_string" ) );
+    const bool wasNative = m_kemiOnlyOutput;
 
     try
     {
-        parser.Parse( this );
+        parsePageLayout( aPageLayout, Append, aSource );
+        // In-memory replacements include undo and edits to the default layout. They do
+        // not load a different document, so they cannot clear an existing native policy.
+        m_kemiOnlyOutput = wasNative || m_kemiOnlyOutput;
     }
     catch( ... )
     {
@@ -1041,14 +1136,9 @@ bool DS_DATA_MODEL::LoadDrawingSheet( const wxString& aFullFileName, wxString* a
     {
         buffer[filelen]=0;
 
-        if( ! aAppend )
-            ClearList();
-
-        DRAWING_SHEET_PARSER parser( buffer.get(), aFullFileName );
-
         try
         {
-            parser.Parse( this );
+            parsePageLayout( buffer.get(), aAppend, aFullFileName );
         }
         catch( const IO_ERROR& ioe )
         {

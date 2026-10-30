@@ -137,7 +137,7 @@ struct SNAPSHOT_PROJECT
             m_tempDir( aDirPrefix ),
             m_proPath( m_tempDir.ChildPathStr( aFileName ) )
     {
-        writeTextFile( m_proPath, wxS( "{ \"meta\": { \"version\": 3 } }\n" ) );
+        writeTextFile( m_proPath, wxS( "{ \"meta\": { \"version\": 3 }, \"kemicad\": { \"document_type\": \"project\", \"format_version\": 1 } }\n" ) );
         m_project = std::make_unique<SCOPED_PROJECT_LOAD>( m_mgr, m_proPath );
     }
 
@@ -159,7 +159,7 @@ void addViaStackPreset( BOARD_DESIGN_SETTINGS& aSettings, const wxString& aName 
 }
 
 
-// Snapshot the project and return the bytes recorded for the .kicad_pro.
+// Snapshot the project and return the bytes recorded for the .kemi_pro.
 std::string snapshotProjectBytes( PROJECT& aProject )
 {
     std::vector<HISTORY_FILE_DATA> fileData;
@@ -168,7 +168,7 @@ std::string snapshotProjectBytes( PROJECT& aProject )
     auto it = std::find_if( fileData.begin(), fileData.end(),
                             []( const HISTORY_FILE_DATA& aEntry )
                             {
-                                return aEntry.relativePath.EndsWith( wxS( ".kicad_pro" ) );
+                                return aEntry.relativePath.EndsWith( wxS( ".kemi_pro" ) );
                             } );
 
     BOOST_REQUIRE( it != fileData.end() );
@@ -211,7 +211,7 @@ BOOST_AUTO_TEST_CASE( SaveToHistoryUnsavedBoardProducesNothing )
     SETTINGS_MANAGER mgr;
 
     wxString tempDir = wxStandardPaths::Get().GetTempDir();
-    wxString projectPath = tempDir + wxFileName::GetPathSeparator() + wxS( "pcb_autosave.kicad_pro" );
+    wxString projectPath = tempDir + wxFileName::GetPathSeparator() + wxS( "pcb_autosave.kemi_pro" );
 
     mgr.LoadProject( projectPath.ToStdString() );
 
@@ -246,10 +246,10 @@ BOOST_AUTO_TEST_CASE( NoSnapshotWithoutProjectFile )
     KI_TEST::SCOPED_TEMP_DIR notAProject( wxS( "kicad_qa_no_project" ) );
     const wxString& path = notAProject.PathStr();
 
-    // Drop a board file in but no .kicad_pro - this mirrors saving a board to /tmp
+    // Drop a board file in but no .kemi_pro - this mirrors saving a board to /tmp
     // from standalone pcbnew.
-    wxString boardPath = path + wxFileName::GetPathSeparator() + wxS( "stray.kicad_pcb" );
-    writeTextFile( boardPath, wxS( "(kicad_pcb (version 20240108))\n" ) );
+    wxString boardPath = path + wxFileName::GetPathSeparator() + wxS( "stray.kemi_pcb" );
+    writeTextFile( boardPath, wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
 
     LOCAL_HISTORY history;
 
@@ -279,16 +279,16 @@ BOOST_AUTO_TEST_CASE( CommitFullProjectSnapshotHandlesSubdirectories )
     KI_TEST::SCOPED_TEMP_DIR project( wxS( "kicad_qa_subdirs" ) );
     const wxString& path = project.PathStr();
 
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "subdirs.kicad_pro" ), wxS( "{}\n" ) );
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "subdirs.kicad_pcb" ),
-                   wxS( "(kicad_pcb (version 20240108))\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "subdirs.kemi_pro" ), wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "subdirs.kemi_pcb" ),
+                   wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
 
     // Create a subdirectory whose contents will likely be collected before files at the
     // project root, exercising the subdirectory-first iteration order.
     wxString subDir = path + wxFileName::GetPathSeparator() + wxS( "libs" );
     BOOST_REQUIRE( wxFileName::Mkdir( subDir, 0777, wxPATH_MKDIR_FULL ) );
-    writeTextFile( subDir + wxFileName::GetPathSeparator() + wxS( "fp.kicad_mod" ),
-                   wxS( "(footprint test)\n" ) );
+    writeTextFile( subDir + wxFileName::GetPathSeparator() + wxS( "fp.kemi_mod" ),
+                   wxS( "(kemi_footprint test (format_version 1))\n" ) );
 
     LOCAL_HISTORY history;
     BOOST_REQUIRE( history.CommitFullProjectSnapshot( path, wxS( "Initial" ) ) );
@@ -302,8 +302,8 @@ BOOST_AUTO_TEST_CASE( CommitFullProjectSnapshotHandlesSubdirectories )
     BOOST_REQUIRE( !headBefore.IsEmpty() );
 
     // Mutate a file in the subdirectory to ensure the next snapshot has work to do.
-    writeTextFile( subDir + wxFileName::GetPathSeparator() + wxS( "fp.kicad_mod" ),
-                   wxS( "(footprint test (modified))\n" ) );
+    writeTextFile( subDir + wxFileName::GetPathSeparator() + wxS( "fp.kemi_mod" ),
+                   wxS( "(kemi_footprint test (format_version 1) (modified))\n" ) );
 
     // CommitFullProjectSnapshot must commit using the project root, not derive a wrong
     // root from the first file in the recursive collection.
@@ -327,14 +327,14 @@ BOOST_AUTO_TEST_CASE( RestoreCommitPreservesZipBackupsDirectory )
     const wxString& projectPath = tempProject.PathStr();
 
     wxString boardPath =
-            projectPath + wxFileName::GetPathSeparator() + wxS( "issue24016.kicad_pcb" );
-    writeTextFile( boardPath, wxS( "(kicad_pcb (version 20240108))\n" ) );
+            projectPath + wxFileName::GetPathSeparator() + wxS( "issue24016.kemi_pcb" );
+    writeTextFile( boardPath, wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
 
     // LOCAL_HISTORY refuses to operate on directories without a project file, so seed
     // the fixture with a minimal one to mirror a real KiCad project layout.
     wxString projectFile =
-            projectPath + wxFileName::GetPathSeparator() + wxS( "issue24016.kicad_pro" );
-    writeTextFile( projectFile, wxS( "{}\n" ) );
+            projectPath + wxFileName::GetPathSeparator() + wxS( "issue24016.kemi_pro" );
+    writeTextFile( projectFile, wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
 
     LOCAL_HISTORY history;
     BOOST_REQUIRE( history.CommitFullProjectSnapshot( projectPath, wxS( "Initial" ) ) );
@@ -352,7 +352,7 @@ BOOST_AUTO_TEST_CASE( RestoreCommitPreservesZipBackupsDirectory )
                        + wxS( "issue24016-2026-04-22_120000.zip" );
     writeTextFile( zipPath, wxS( "pretend-zip-contents" ) );
 
-    writeTextFile( boardPath, wxS( "(kicad_pcb (version 20240108) (dirty yes))\n" ) );
+    writeTextFile( boardPath, wxS( "(kemi_pcb (format_version 1) (version 20240108) (dirty yes))\n" ) );
 
     BOOST_REQUIRE( history.RestoreCommit( projectPath, headHash, nullptr ) );
 
@@ -371,7 +371,7 @@ BOOST_AUTO_TEST_CASE( RestoreCommitPreservesZipBackupsDirectory )
  * (because backupCurrentFiles renamed whole top-level entries) wiped the nested directory.
  *
  * The fix: collectProjectFiles() and findFilesToDelete() must skip subtrees that contain
- * their own .kicad_pro file, and the restore confirmation dialog must enter the
+ * their own .kemi_pro file, and the restore confirmation dialog must enter the
  * non-destructive "Keep All Files" path automatically when a nested project is at risk.
  *
  * This test exercises the simple reported scenario - nested project as a top-level subdir.
@@ -385,11 +385,11 @@ BOOST_AUTO_TEST_CASE( RestoreCommitPreservesNestedProject )
     KI_TEST::SCOPED_TEMP_DIR tempProject( wxS( "kicad_qa_nested_project" ) );
     const wxString& projectPath = tempProject.PathStr();
 
-    // Parent project (projectA): minimal .kicad_pro plus a board file.
-    wxString parentPro = projectPath + wxFileName::GetPathSeparator() + wxS( "projectA.kicad_pro" );
-    wxString parentPcb = projectPath + wxFileName::GetPathSeparator() + wxS( "projectA.kicad_pcb" );
-    writeTextFile( parentPro, wxS( "{}\n" ) );
-    writeTextFile( parentPcb, wxS( "(kicad_pcb (version 20240108))\n" ) );
+    // Parent project (projectA): minimal .kemi_pro plus a board file.
+    wxString parentPro = projectPath + wxFileName::GetPathSeparator() + wxS( "projectA.kemi_pro" );
+    wxString parentPcb = projectPath + wxFileName::GetPathSeparator() + wxS( "projectA.kemi_pcb" );
+    writeTextFile( parentPro, wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
+    writeTextFile( parentPcb, wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
 
     LOCAL_HISTORY history;
     BOOST_REQUIRE( history.CommitFullProjectSnapshot( projectPath, wxS( "Initial" ) ) );
@@ -403,15 +403,15 @@ BOOST_AUTO_TEST_CASE( RestoreCommitPreservesNestedProject )
     wxString nestedDir = projectPath + wxFileName::GetPathSeparator() + wxS( "projectB" );
     BOOST_REQUIRE( wxFileName::Mkdir( nestedDir, 0777, wxPATH_MKDIR_FULL ) );
 
-    wxString nestedPro = nestedDir + wxFileName::GetPathSeparator() + wxS( "projectB.kicad_pro" );
-    wxString nestedPcb = nestedDir + wxFileName::GetPathSeparator() + wxS( "projectB.kicad_pcb" );
-    wxString nestedSch = nestedDir + wxFileName::GetPathSeparator() + wxS( "projectB.kicad_sch" );
+    wxString nestedPro = nestedDir + wxFileName::GetPathSeparator() + wxS( "projectB.kemi_pro" );
+    wxString nestedPcb = nestedDir + wxFileName::GetPathSeparator() + wxS( "projectB.kemi_pcb" );
+    wxString nestedSch = nestedDir + wxFileName::GetPathSeparator() + wxS( "projectB.kemi_sch" );
     writeTextFile( nestedPro, wxS( "{ \"nested\": true }\n" ) );
-    writeTextFile( nestedPcb, wxS( "(kicad_pcb (version 20240108) (nested yes))\n" ) );
-    writeTextFile( nestedSch, wxS( "(kicad_sch (version 20240108))\n" ) );
+    writeTextFile( nestedPcb, wxS( "(kemi_pcb (format_version 1) (version 20240108) (nested yes))\n" ) );
+    writeTextFile( nestedSch, wxS( "(kemi_sch (format_version 1) (version 20240108))\n" ) );
 
     // Modify the parent board so the restore actually has work to do.
-    writeTextFile( parentPcb, wxS( "(kicad_pcb (version 20240108) (dirty yes))\n" ) );
+    writeTextFile( parentPcb, wxS( "(kemi_pcb (format_version 1) (version 20240108) (dirty yes))\n" ) );
 
     BOOST_REQUIRE( history.RestoreCommit( projectPath, headHash, nullptr ) );
 
@@ -419,11 +419,11 @@ BOOST_AUTO_TEST_CASE( RestoreCommitPreservesNestedProject )
     BOOST_CHECK_MESSAGE( wxDirExists( nestedDir ),
                          "nested project directory must survive RestoreCommit" );
     BOOST_CHECK_MESSAGE( wxFileExists( nestedPro ),
-                         "nested .kicad_pro must survive RestoreCommit" );
+                         "nested .kemi_pro must survive RestoreCommit" );
     BOOST_CHECK_MESSAGE( wxFileExists( nestedPcb ),
-                         "nested .kicad_pcb must survive RestoreCommit" );
+                         "nested .kemi_pcb must survive RestoreCommit" );
     BOOST_CHECK_MESSAGE( wxFileExists( nestedSch ),
-                         "nested .kicad_sch must survive RestoreCommit" );
+                         "nested .kemi_sch must survive RestoreCommit" );
 
     // Parent project files were correctly restored.
     BOOST_CHECK( wxFileExists( parentPro ) );
@@ -445,10 +445,10 @@ BOOST_AUTO_TEST_CASE( RestoreCommitRetainsTimestampedBackup )
     KI_TEST::SCOPED_TEMP_DIR tempProject( wxS( "kicad_qa_retained_backup" ) );
     const wxString& projectPath = tempProject.PathStr();
 
-    wxString boardPath = projectPath + wxFileName::GetPathSeparator() + wxS( "rb.kicad_pcb" );
-    wxString projectFile = projectPath + wxFileName::GetPathSeparator() + wxS( "rb.kicad_pro" );
-    writeTextFile( projectFile, wxS( "{}\n" ) );
-    writeTextFile( boardPath, wxS( "(kicad_pcb (version 20240108))\n" ) );
+    wxString boardPath = projectPath + wxFileName::GetPathSeparator() + wxS( "rb.kemi_pcb" );
+    wxString projectFile = projectPath + wxFileName::GetPathSeparator() + wxS( "rb.kemi_pro" );
+    writeTextFile( projectFile, wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
+    writeTextFile( boardPath, wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
 
     LOCAL_HISTORY history;
     BOOST_REQUIRE( history.CommitFullProjectSnapshot( projectPath, wxS( "Initial" ) ) );
@@ -457,7 +457,7 @@ BOOST_AUTO_TEST_CASE( RestoreCommitRetainsTimestampedBackup )
     BOOST_REQUIRE( !headHash.IsEmpty() );
 
     // Mutate the board so restore has work to do (and produces a backup).
-    writeTextFile( boardPath, wxS( "(kicad_pcb (version 20240108) (dirty yes))\n" ) );
+    writeTextFile( boardPath, wxS( "(kemi_pcb (format_version 1) (version 20240108) (dirty yes))\n" ) );
 
     BOOST_REQUIRE( history.RestoreCommit( projectPath, headHash, nullptr ) );
 
@@ -516,11 +516,14 @@ BOOST_AUTO_TEST_CASE( CommitFullProjectSnapshotExcludesNonKiCadFiles )
     KI_TEST::SCOPED_TEMP_DIR project( wxS( "kicad_qa_privacy" ) );
     const wxString& path = project.PathStr();
 
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_pro" ), wxS( "{}\n" ) );
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_pcb" ),
-                   wxS( "(kicad_pcb (version 20240108))\n" ) );
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_sch" ),
-                   wxS( "(kicad_sch (version 20240108))\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kemi_pro" ), wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kemi_pcb" ),
+                   wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kemi_sch" ),
+                   wxS( "(kemi_sch (format_version 1) (version 20240108))\n" ) );
+
+    const wxString official = path + wxFileName::GetPathSeparator() + wxS( "retained.kicad_pcb" );
+    writeTextFile( official, wxS( "official source sentinel\n" ) );
 
     writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "passwords.txt" ), wxS( "secret\n" ) );
     writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "datasheet.pdf" ), wxS( "fake pdf bytes\n" ) );
@@ -569,9 +572,12 @@ BOOST_AUTO_TEST_CASE( CommitFullProjectSnapshotExcludesNonKiCadFiles )
         return std::find( committedPaths.begin(), committedPaths.end(), s ) != committedPaths.end();
     };
 
-    BOOST_CHECK_MESSAGE( contains( "p.kicad_pro" ), "kicad_pro must be committed" );
-    BOOST_CHECK_MESSAGE( contains( "p.kicad_pcb" ), "kicad_pcb must be committed" );
-    BOOST_CHECK_MESSAGE( contains( "p.kicad_sch" ), "kicad_sch must be committed" );
+    BOOST_CHECK_MESSAGE( contains( "p.kemi_pro" ), "kemi_pro must be committed" );
+    BOOST_CHECK_MESSAGE( contains( "p.kemi_pcb" ), "kemi_pcb must be committed" );
+    BOOST_CHECK_MESSAGE( contains( "p.kemi_sch" ), "kemi_sch must be committed" );
+
+    BOOST_CHECK( !contains( "retained.kicad_pcb" ) );
+    BOOST_CHECK_EQUAL( readTextFile( official ), "official source sentinel\n" );
 
     BOOST_CHECK_MESSAGE( !contains( "passwords.txt" ), "passwords.txt must NOT appear in history" );
     BOOST_CHECK_MESSAGE( !contains( "datasheet.pdf" ), "datasheet.pdf must NOT appear in history" );
@@ -593,21 +599,21 @@ BOOST_AUTO_TEST_CASE( FirstAutosaveSkipsCommitWhenStagedMatchesDisk )
     KI_TEST::SCOPED_TEMP_DIR project( wxS( "kicad_qa_first_idle_autosave" ) );
     const wxString& path = project.PathStr();
 
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_pro" ), wxS( "{}\n" ) );
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_pcb" ),
-                   wxS( "(kicad_pcb (version 20240108))\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kemi_pro" ), wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kemi_pcb" ),
+                   wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
 
     LOCAL_HISTORY history;
 
     // Mutating this between calls simulates the user editing the in-memory document.
-    std::string inMemoryContent = "(kicad_pcb (version 20240108))\n";
-    BOOST_REQUIRE_EQUAL( readTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_pcb" ) ),
+    std::string inMemoryContent = "(kemi_pcb (format_version 1) (version 20240108))\n";
+    BOOST_REQUIRE_EQUAL( readTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kemi_pcb" ) ),
                          inMemoryContent );
 
     auto saver = [&inMemoryContent]( const wxString&, std::vector<HISTORY_FILE_DATA>& aFileData )
     {
         HISTORY_FILE_DATA entry;
-        entry.relativePath = wxS( "p.kicad_pcb" );
+        entry.relativePath = wxS( "p.kemi_pcb" );
         entry.content = inMemoryContent;
         aFileData.push_back( std::move( entry ) );
     };
@@ -625,7 +631,7 @@ BOOST_AUTO_TEST_CASE( FirstAutosaveSkipsCommitWhenStagedMatchesDisk )
     BOOST_CHECK_MESSAGE( head.IsEmpty(), "no untagged HEAD should exist after an idle first save" );
 
     // Real edit, must commit.
-    inMemoryContent = "(kicad_pcb (version 20240108) (edited yes))\n";
+    inMemoryContent = "(kemi_pcb (format_version 1) (version 20240108) (edited yes))\n";
 
     BOOST_REQUIRE( history.RunRegisteredSaversAndCommit( path, wxS( "Autosave" ), wxEmptyString ) );
     history.WaitForPendingSave();
@@ -653,8 +659,8 @@ BOOST_AUTO_TEST_CASE( SaverSkippedAfterOwningDocumentDestroyed )
     const wxString&  path = project.PathStr();
     const wxString   sep = wxFileName::GetPathSeparator();
 
-    writeTextFile( path + sep + wxS( "p.kicad_pro" ), wxS( "{}\n" ) );
-    writeTextFile( path + sep + wxS( "p.kicad_pcb" ), wxS( "(kicad_pcb (version 20240108))\n" ) );
+    writeTextFile( path + sep + wxS( "p.kemi_pro" ), wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
+    writeTextFile( path + sep + wxS( "p.kemi_pcb" ), wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
 
     LOCAL_HISTORY history;
 
@@ -669,8 +675,8 @@ BOOST_AUTO_TEST_CASE( SaverSkippedAfterOwningDocumentDestroyed )
                 ++( *runCount );
 
                 HISTORY_FILE_DATA entry;
-                entry.relativePath = wxS( "p.kicad_pcb" );
-                entry.content = "(kicad_pcb (version 20240108) (edited yes))\n";
+                entry.relativePath = wxS( "p.kemi_pcb" );
+                entry.content = "(kemi_pcb (format_version 1) (version 20240108) (edited yes))\n";
                 aFileData.push_back( std::move( entry ) );
             },
             board->GetHistoryLifetimeToken() );
@@ -706,18 +712,18 @@ BOOST_AUTO_TEST_CASE( FirstManualSaveAlwaysCommitsOnFreshProject )
     KI_TEST::SCOPED_TEMP_DIR project( wxS( "kicad_qa_first_manual_save" ) );
     const wxString& path = project.PathStr();
 
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_pro" ), wxS( "{}\n" ) );
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_pcb" ),
-                   wxS( "(kicad_pcb (version 20240108))\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kemi_pro" ), wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kemi_pcb" ),
+                   wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
 
     LOCAL_HISTORY history;
 
-    std::string inMemoryContent = "(kicad_pcb (version 20240108))\n";
+    std::string inMemoryContent = "(kemi_pcb (format_version 1) (version 20240108))\n";
 
     auto saver = [&inMemoryContent]( const wxString&, std::vector<HISTORY_FILE_DATA>& aFileData )
     {
         HISTORY_FILE_DATA entry;
-        entry.relativePath = wxS( "p.kicad_pcb" );
+        entry.relativePath = wxS( "p.kemi_pcb" );
         entry.content = inMemoryContent;
         aFileData.push_back( std::move( entry ) );
     };
@@ -748,17 +754,17 @@ BOOST_AUTO_TEST_CASE( ZipFormatSkipsIncrementalAutosave )
     KI_TEST::SCOPED_TEMP_DIR project( wxS( "kicad_qa_zip_skips_incremental" ) );
     const wxString& path = project.PathStr();
 
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_pro" ), wxS( "{}\n" ) );
-    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kicad_pcb" ),
-                   wxS( "(kicad_pcb (version 20240108))\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kemi_pro" ), wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
+    writeTextFile( path + wxFileName::GetPathSeparator() + wxS( "p.kemi_pcb" ),
+                   wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
 
     LOCAL_HISTORY history;
 
     auto saver = []( const wxString&, std::vector<HISTORY_FILE_DATA>& aFileData )
     {
         HISTORY_FILE_DATA entry;
-        entry.relativePath = wxS( "p.kicad_pcb" );
-        entry.content = "(kicad_pcb (version 20240108) (edited yes))\n";
+        entry.relativePath = wxS( "p.kemi_pcb" );
+        entry.content = "(kemi_pcb (format_version 1) (version 20240108) (edited yes))\n";
         aFileData.push_back( std::move( entry ) );
     };
 
@@ -786,18 +792,18 @@ BOOST_AUTO_TEST_CASE( ZipFormatWritesRecoveryFiles )
     const wxString& path = project.PathStr();
     const wxString  sep = wxFileName::GetPathSeparator();
 
-    writeTextFile( path + sep + wxS( "p.kicad_pro" ), wxS( "{}\n" ) );
+    writeTextFile( path + sep + wxS( "p.kemi_pro" ), wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
 
     SETTINGS_MANAGER&   mgr = Pgm().GetSettingsManager();
-    SCOPED_PROJECT_LOAD loadedProject( mgr, path + sep + wxS( "p.kicad_pro" ) );
+    SCOPED_PROJECT_LOAD loadedProject( mgr, path + sep + wxS( "p.kemi_pro" ) );
 
     LOCAL_HISTORY history;
 
     auto saver = []( const wxString&, std::vector<HISTORY_FILE_DATA>& aFileData )
     {
         HISTORY_FILE_DATA entry;
-        entry.relativePath = wxS( "p.kicad_pcb" );
-        entry.content = "(kicad_pcb (version 20240108) (edited yes))\n";
+        entry.relativePath = wxS( "p.kemi_pcb" );
+        entry.content = "(kemi_pcb (format_version 1) (version 20240108) (edited yes))\n";
         aFileData.push_back( std::move( entry ) );
     };
 
@@ -805,7 +811,7 @@ BOOST_AUTO_TEST_CASE( ZipFormatWritesRecoveryFiles )
 
     BOOST_REQUIRE( history.RunRegisteredSaversAsAutosaveFiles( path ) );
 
-    wxString autosavePath = path + sep + wxS( "_autosave-p.kicad_pcb" );
+    wxString autosavePath = path + sep + wxS( "_autosave-p.kemi_pcb" );
     BOOST_CHECK_MESSAGE( wxFileExists( autosavePath ),
                          "zip backup format must write autosave recovery files" );
 
@@ -825,15 +831,15 @@ BOOST_AUTO_TEST_CASE( CloudSyncTouchedAutosaveFalselyFlaggedStale )
     const wxString  sep = wxFileName::GetPathSeparator();
 
     // FindStaleAutosaveFiles resolves the autosave root through the active project, so it must
-    // be loaded; the .kicad_pro must exist on disk first for LoadProject to succeed.
-    writeTextFile( path + sep + wxS( "p.kicad_pro" ), wxS( "{}\n" ) );
+    // be loaded; the .kemi_pro must exist on disk first for LoadProject to succeed.
+    writeTextFile( path + sep + wxS( "p.kemi_pro" ), wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
 
     SETTINGS_MANAGER&   mgr = Pgm().GetSettingsManager();
-    SCOPED_PROJECT_LOAD loadedProject( mgr, path + sep + wxS( "p.kicad_pro" ) );
+    SCOPED_PROJECT_LOAD loadedProject( mgr, path + sep + wxS( "p.kemi_pro" ) );
 
-    const wxString sourcePath = path + sep + wxS( "p.kicad_pcb" );
-    const wxString autosavePath = path + sep + wxS( "_autosave-p.kicad_pcb" );
-    const wxString boardContent = wxS( "(kicad_pcb (version 20240108))\n" );
+    const wxString sourcePath = path + sep + wxS( "p.kemi_pcb" );
+    const wxString autosavePath = path + sep + wxS( "_autosave-p.kemi_pcb" );
+    const wxString boardContent = wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" );
 
     // Byte-identical source and "_autosave-" companion, mirroring a clean save.
     writeTextFile( sourcePath, boardContent );
@@ -846,7 +852,7 @@ BOOST_AUTO_TEST_CASE( CloudSyncTouchedAutosaveFalselyFlaggedStale )
     wxDateTime newerMtime = srcMtime + wxTimeSpan::Seconds( 60 );
     BOOST_REQUIRE( wxFileName( autosavePath ).SetTimes( &newerMtime, &newerMtime, nullptr ) );
 
-    std::vector<wxString> exts{ wxS( "kicad_pcb" ) };
+    std::vector<wxString> exts{ wxS( "kemi_pcb" ) };
     auto                  stale = history.FindStaleAutosaveFiles( path, exts );
 
     BOOST_CHECK_MESSAGE( stale.empty(),
@@ -866,17 +872,17 @@ BOOST_AUTO_TEST_CASE( DivergentAutosaveStillFlaggedStale )
     const wxString& path = project.PathStr();
     const wxString  sep = wxFileName::GetPathSeparator();
 
-    writeTextFile( path + sep + wxS( "p.kicad_pro" ), wxS( "{}\n" ) );
+    writeTextFile( path + sep + wxS( "p.kemi_pro" ), wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
 
     SETTINGS_MANAGER&   mgr = Pgm().GetSettingsManager();
-    SCOPED_PROJECT_LOAD loadedProject( mgr, path + sep + wxS( "p.kicad_pro" ) );
+    SCOPED_PROJECT_LOAD loadedProject( mgr, path + sep + wxS( "p.kemi_pro" ) );
 
-    const wxString sourcePath = path + sep + wxS( "p.kicad_pcb" );
-    const wxString autosavePath = path + sep + wxS( "_autosave-p.kicad_pcb" );
+    const wxString sourcePath = path + sep + wxS( "p.kemi_pcb" );
+    const wxString autosavePath = path + sep + wxS( "_autosave-p.kemi_pcb" );
 
     // Autosave content diverges from the source, a genuine unsaved edit to recover.
-    writeTextFile( sourcePath, wxS( "(kicad_pcb (version 20240108))\n" ) );
-    writeTextFile( autosavePath, wxS( "(kicad_pcb (version 20240108) (edited yes))\n" ) );
+    writeTextFile( sourcePath, wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
+    writeTextFile( autosavePath, wxS( "(kemi_pcb (format_version 1) (version 20240108) (edited yes))\n" ) );
 
     LOCAL_HISTORY history;
 
@@ -884,7 +890,7 @@ BOOST_AUTO_TEST_CASE( DivergentAutosaveStillFlaggedStale )
     wxDateTime newerMtime = srcMtime + wxTimeSpan::Seconds( 60 );
     BOOST_REQUIRE( wxFileName( autosavePath ).SetTimes( &newerMtime, &newerMtime, nullptr ) );
 
-    std::vector<wxString> exts{ wxS( "kicad_pcb" ) };
+    std::vector<wxString> exts{ wxS( "kemi_pcb" ) };
     auto                  stale = history.FindStaleAutosaveFiles( path, exts );
 
     BOOST_CHECK_MESSAGE( stale.size() == 1,
@@ -902,20 +908,20 @@ BOOST_AUTO_TEST_CASE( EnforceSizeLimitKeepsUnstagedFilesInNextSnapshot )
     const wxString& path = project.PathStr();
     const wxString  sep = wxFileName::GetPathSeparator();
 
-    writeTextFile( path + sep + wxS( "trim.kicad_pro" ), wxS( "{}\n" ) );
-    writeTextFile( path + sep + wxS( "trim.kicad_pcb" ), wxS( "(kicad_pcb (version 20240108))\n" ) );
-    writeTextFile( path + sep + wxS( "trim.kicad_sch" ), wxS( "(kicad_sch (version 20240108))\n" ) );
+    writeTextFile( path + sep + wxS( "trim.kemi_pro" ), wxS( "{\"kemicad\":{\"document_type\":\"project\",\"format_version\":1}}\n" ) );
+    writeTextFile( path + sep + wxS( "trim.kemi_pcb" ), wxS( "(kemi_pcb (format_version 1) (version 20240108))\n" ) );
+    writeTextFile( path + sep + wxS( "trim.kemi_sch" ), wxS( "(kemi_sch (format_version 1) (version 20240108))\n" ) );
 
     LOCAL_HISTORY history;
     BOOST_REQUIRE( history.CommitFullProjectSnapshot( path, wxS( "Initial" ) ) );
 
-    writeTextFile( path + sep + wxS( "trim.kicad_pcb" ), wxS( "(kicad_pcb (version 20240108) (net 1))\n" ) );
+    writeTextFile( path + sep + wxS( "trim.kemi_pcb" ), wxS( "(kemi_pcb (format_version 1) (version 20240108) (net 1))\n" ) );
     BOOST_REQUIRE( history.CommitFullProjectSnapshot( path, wxS( "Second" ) ) );
 
     BOOST_REQUIRE( history.EnforceSizeLimit( path, 1 ) );
 
-    writeTextFile( path + sep + wxS( "trim.kicad_sch" ), wxS( "(kicad_sch (version 20240108) (mod))\n" ) );
-    BOOST_REQUIRE( history.CommitSnapshot( { path + sep + wxS( "trim.kicad_sch" ) }, wxS( "Sch Save" ) ) );
+    writeTextFile( path + sep + wxS( "trim.kemi_sch" ), wxS( "(kemi_sch (format_version 1) (version 20240108) (mod))\n" ) );
+    BOOST_REQUIRE( history.CommitSnapshot( { path + sep + wxS( "trim.kemi_sch" ) }, wxS( "Sch Save" ) ) );
 
     wxString        historyDir = path + sep + wxS( ".history" );
     git_repository* repo = nullptr;
@@ -928,10 +934,10 @@ BOOST_AUTO_TEST_CASE( EnforceSizeLimitKeepsUnstagedFilesInNextSnapshot )
     BOOST_REQUIRE( git_commit_lookup( &head, repo, &headOid ) == 0 );
     BOOST_REQUIRE( git_commit_tree( &tree, head ) == 0 );
 
-    BOOST_CHECK_MESSAGE( git_tree_entry_byname( tree, "trim.kicad_sch" ),
+    BOOST_CHECK_MESSAGE( git_tree_entry_byname( tree, "trim.kemi_sch" ),
                          "schematic missing from snapshot after trim" );
-    BOOST_CHECK_MESSAGE( git_tree_entry_byname( tree, "trim.kicad_pcb" ), "board dropped from snapshot after trim" );
-    BOOST_CHECK_MESSAGE( git_tree_entry_byname( tree, "trim.kicad_pro" ),
+    BOOST_CHECK_MESSAGE( git_tree_entry_byname( tree, "trim.kemi_pcb" ), "board dropped from snapshot after trim" );
+    BOOST_CHECK_MESSAGE( git_tree_entry_byname( tree, "trim.kemi_pro" ),
                          "project file dropped from snapshot after trim" );
 
     git_tree_free( tree );
@@ -943,7 +949,7 @@ BOOST_AUTO_TEST_CASE( EnforceSizeLimitKeepsUnstagedFilesInNextSnapshot )
 // A snapshot must serialize the live project settings, not copy the stale file from disk.
 BOOST_AUTO_TEST_CASE( ProjectSnapshotCarriesUnsavedSettings )
 {
-    SNAPSHOT_PROJECT tc( wxS( "kicad_qa_pro_snapshot" ), wxS( "snap.kicad_pro" ) );
+    SNAPSHOT_PROJECT tc( wxS( "kicad_qa_pro_snapshot" ), wxS( "snap.kemi_pro" ) );
     BOOST_REQUIRE( tc.m_mgr.SaveProject() );
 
     BOARD_DESIGN_SETTINGS bds( &tc.ProjectFile(), "board.design_settings" );
@@ -959,7 +965,7 @@ BOOST_AUTO_TEST_CASE( ProjectSnapshotCarriesUnsavedSettings )
 // The snapshot flush must not swallow the next real save.
 BOOST_AUTO_TEST_CASE( ProjectSaveStillWritesAfterSnapshot )
 {
-    SNAPSHOT_PROJECT tc( wxS( "kicad_qa_pro_snapshot_save" ), wxS( "snapsave.kicad_pro" ) );
+    SNAPSHOT_PROJECT tc( wxS( "kicad_qa_pro_snapshot_save" ), wxS( "snapsave.kemi_pro" ) );
     BOOST_REQUIRE( tc.m_mgr.SaveProject() );
 
     PROJECT_FILE&         projectFile = tc.ProjectFile();
@@ -985,7 +991,7 @@ BOOST_AUTO_TEST_CASE( ProjectSaveStillWritesAfterSnapshot )
 // A snapshot of a clean project must not make the next save rewrite an unchanged file (#24402).
 BOOST_AUTO_TEST_CASE( ProjectSnapshotDoesNotDirtyACleanProject )
 {
-    SNAPSHOT_PROJECT tc( wxS( "kicad_qa_pro_snapshot_clean" ), wxS( "snapclean.kicad_pro" ) );
+    SNAPSHOT_PROJECT tc( wxS( "kicad_qa_pro_snapshot_clean" ), wxS( "snapclean.kemi_pro" ) );
 
     PROJECT_FILE&         projectFile = tc.ProjectFile();
     BOARD_DESIGN_SETTINGS bds( &projectFile, "board.design_settings" );

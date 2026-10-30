@@ -64,6 +64,7 @@
 #include <geometry/shape_utils.h>
 #include <string_utils.h>
 #include <sch_edit_frame.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 #include <wx/log.h>
 #include <wx/dir.h>
@@ -548,7 +549,7 @@ SCH_SHEET* SCH_IO_ALTIUM::LoadSchematicFile( const wxString& aFileName, SCHEMATI
     wxCHECK( ( !aFileName.IsEmpty() || !aProperties->empty() ) && aSchematic, nullptr );
 
     wxFileName fileName( aFileName );
-    fileName.SetExt( FILEEXT::KiCadSchematicFileExtension );
+    fileName.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
     m_schematic = aSchematic;
 
     // Importer may be reused so reset per-import state or freed pointers leak into the new hierarchy
@@ -570,7 +571,7 @@ SCH_SHEET* SCH_IO_ALTIUM::LoadSchematicFile( const wxString& aFileName, SCHEMATI
     if( !m_schematic->Project().GetProjectName().IsEmpty() )
     {
         m_rootSheetFile = wxFileName( m_schematic->Project().GetProjectPath(), m_schematic->Project().GetProjectName(),
-                                      FILEEXT::KiCadSchematicFileExtension ).GetFullPath();
+                                      KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt ).GetFullPath();
     }
 
     // Collect the font substitution warnings (RAII - automatically reset on scope exit)
@@ -590,7 +591,7 @@ SCH_SHEET* SCH_IO_ALTIUM::LoadSchematicFile( const wxString& aFileName, SCHEMATI
         for( SCH_SCREEN* screen = hostScreens.GetFirst(); screen; screen = hostScreens.GetNext() )
         {
             wxFileName saved( screen->GetFileName() );
-            saved.SetExt( FILEEXT::KiCadSchematicFileExtension );
+            saved.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
             m_sheetFiles.insert( saved.GetFullPath().Lower() );
         }
     }
@@ -1912,8 +1913,9 @@ void SCH_IO_ALTIUM::attachEmptySheetScreen( SCH_SHEET* aSheet, const wxString& a
     if( stem.IsEmpty() )
         stem = aSheet->m_Uuid.AsString();
 
-    // A screen with no file name is saved as ".kicad_sch", which every such sheet would then share
-    wxFileName missing( m_schematic->Project().GetProjectPath(), stem, FILEEXT::KiCadSchematicFileExtension );
+    // A screen with no file name is saved as ".kemi_sch", which every such sheet would then share
+    wxFileName missing( m_schematic->Project().GetProjectPath(), stem,
+                         KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
     if( auto it = m_missingScreens.find( missing.GetFullPath() ); it != m_missingScreens.end() )
     {
@@ -1934,7 +1936,8 @@ void SCH_IO_ALTIUM::attachEmptySheetScreen( SCH_SHEET* aSheet, const wxString& a
 
 wxString SCH_IO_ALTIUM::claimSheetFile( const wxString& aStem )
 {
-    wxFileName fn( m_schematic->Project().GetProjectPath(), aStem, FILEEXT::KiCadSchematicFileExtension );
+    wxFileName fn( m_schematic->Project().GetProjectPath(), aStem,
+                    KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
     for( int n = 1; fn.GetFullPath().IsSameAs( m_rootSheetFile, false )
                     || !m_sheetFiles.insert( fn.GetFullPath().Lower() ).second;

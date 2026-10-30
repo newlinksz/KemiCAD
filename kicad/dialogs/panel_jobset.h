@@ -101,6 +101,7 @@ protected:
     bool GetCanClose() override;
 
 private:
+    bool saveJobset();
     void rebuildJobList();
     void buildDestinationList();
     void addDestinationPanel( JOBSET_DESTINATION* aDestination );

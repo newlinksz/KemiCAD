@@ -22,6 +22,7 @@
 
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -86,6 +87,94 @@ inline constexpr char NET_NAME_MAP_TAG[] = "netmap";
 
 /// Leading field marking a value as an encoded map from reference to footprint LIB_ID.
 inline constexpr char FOOTPRINT_ID_MAP_TAG[] = "fpids";
+
+/// Validated, project-bound footprint metadata for one successful paired import.
+struct FOOTPRINT_LINK_DATA
+{
+    wxString projectFile;
+    std::map<wxString, wxString> ids;
+    std::map<wxString, std::set<wxString>> pads;
+};
+
+
+inline wxString JoinFootprintLinkData( const FOOTPRINT_LINK_DATA& aData )
+{
+    if( aData.projectFile.IsEmpty() || aData.ids.size() != aData.pads.size() )
+        return wxString();
+
+    wxArrayString fields;
+    fields.Add( wxS( "import-footprints" ) );
+    fields.Add( aData.projectFile );
+    fields.Add( wxString::Format( wxS( "%zu" ), aData.ids.size() ) );
+
+    for( const auto& [ref, id] : aData.ids )
+    {
+        const auto pads = aData.pads.find( ref );
+
+        if( pads == aData.pads.end() )
+            return wxString();
+
+        fields.Add( ref );
+        fields.Add( id );
+        fields.Add( wxString::Format( wxS( "%zu" ), pads == aData.pads.end() ? 0 : pads->second.size() ) );
+
+        if( pads != aData.pads.end() )
+        {
+            for( const wxString& pad : pads->second )
+                fields.Add( pad );
+        }
+    }
+
+    return JoinList( fields );
+}
+
+
+inline std::optional<FOOTPRINT_LINK_DATA> SplitFootprintLinkData( const wxString& aValue )
+{
+    const wxArrayString fields = wxSplit( aValue, LIST_SEPARATOR, '\0' );
+    unsigned long count = 0;
+
+    if( fields.size() < 3 || fields[0] != wxS( "import-footprints" ) || fields[1].IsEmpty()
+        || !fields[2].ToULong( &count ) || count > fields.size() )
+    {
+        return std::nullopt;
+    }
+
+    FOOTPRINT_LINK_DATA data;
+    data.projectFile = fields[1];
+    size_t cursor = 3;
+
+    for( unsigned long i = 0; i < count; ++i )
+    {
+        unsigned long padCount = 0;
+
+        if( cursor + 3 > fields.size() || fields[cursor].IsEmpty()
+            || !fields[cursor + 2].ToULong( &padCount ) || padCount > fields.size() - cursor - 3 )
+        {
+            return std::nullopt;
+        }
+
+        const wxString ref = fields[cursor++];
+        const wxString id = fields[cursor++];
+        cursor++;
+
+        if( !data.ids.emplace( ref, id ).second )
+            return std::nullopt;
+
+        std::set<wxString>& pads = data.pads[ref];
+
+        for( unsigned long pad = 0; pad < padCount; ++pad )
+        {
+            if( fields[cursor].IsEmpty() || !pads.insert( fields[cursor++] ).second )
+                return std::nullopt;
+        }
+    }
+
+    if( cursor != fields.size() )
+        return std::nullopt;
+
+    return data;
+}
 
 /// Encode a string map as a single property value led by a tag.
 inline wxString JoinTaggedMap( const char* aTag, const std::map<wxString, wxString>& aPairs )
@@ -158,16 +247,53 @@ inline void ReadSymbolProps( const std::map<std::string, UTF8>* aProps, wxString
         aSourceSymLibs = SplitList( it->second.wx_str() );
 }
 
+/**
+ * Strip a trailing OrCAD/Allegro export timestamp of the form -YYYYMMDD-HHMM from a
+ * project or design stem.  Leaves other hyphens and version tokens (e.g. -V7) alone.
+ */
+inline wxString StripImportDateSuffix( const wxString& aStem )
+{
+    // Match: ...-20YYMMDD-HHMM at end only.
+    if( aStem.length() < 16 )
+        return aStem;
+
+    const size_t n = aStem.length();
+
+    // Expect "-HHMM" then "-YYYYMMDD" immediately before the end.
+    if( aStem[n - 5] != '-' || aStem[n - 14] != '-' )
+        return aStem;
+
+    auto isDigits = [&]( size_t start, size_t len )
+    {
+        for( size_t i = 0; i < len; ++i )
+        {
+            if( aStem[start + i] < '0' || aStem[start + i] > '9' )
+                return false;
+        }
+
+        return true;
+    };
+
+    if( !isDigits( n - 4, 4 ) || !isDigits( n - 13, 8 ) )
+        return aStem;
+
+    // Require a 20xx/21xx-style year so random -12345678-1234 tails are kept.
+    if( aStem[n - 13] != '2' )
+        return aStem;
+
+    return aStem.Left( n - 14 );
+}
+
 /// Derive the generated footprint-cache nickname from a project or file stem.
 inline wxString MakeCacheNickname( const wxString& aStem )
 {
-    return LIB_ID::FixIllegalChars( aStem + wxS( "-import-fps" ), true ).wx_str();
+    return LIB_ID::FixIllegalChars( StripImportDateSuffix( aStem ), true ).wx_str();
 }
 
 /// Derive the generated symbol-cache nickname from a project or file stem.
 inline wxString MakeSymbolCacheNickname( const wxString& aStem )
 {
-    return LIB_ID::FixIllegalChars( aStem + wxS( "-import-syms" ), true ).wx_str();
+    return LIB_ID::FixIllegalChars( StripImportDateSuffix( aStem ), true ).wx_str();
 }
 }
 

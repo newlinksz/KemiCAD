@@ -38,6 +38,7 @@
 
 #include <json_common.h>
 #include <string_utils.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 #include <io/easyedapro/easyedapro_import_utils.h>
 #include <core/map_helpers.h>
@@ -508,7 +509,7 @@ SCH_SHEET* SCH_IO_EASYEDAPRO::LoadSchematicFile( const wxString& aFileName,
 
     wxFileName rootFname( aFileName );
     rootFname.SetFullName( rootBaseName + wxS( "." )
-                           + wxString::FromUTF8( FILEEXT::KiCadSchematicFileExtension ) );
+                           + wxString::FromUTF8( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt ) );
 
     rootSheet->SetName( prjSchematics[schematicToLoad].name );
     rootSheet->SetFileName( rootFname.GetFullPath() );
@@ -564,7 +565,7 @@ SCH_SHEET* SCH_IO_EASYEDAPRO::LoadSchematicFile( const wxString& aFileName,
 
             wxFileName sheetFname( aFileName );
             sheetFname.SetFullName( sheetBaseName + wxS( "." )
-                                    + wxString::FromUTF8( FILEEXT::KiCadSchematicFileExtension ) );
+                                    + wxString::FromUTF8( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt ) );
 
             wxFileName relSheetPath( sheetFname );
             relSheetPath.MakeRelativeTo( rootFname.GetPath() );

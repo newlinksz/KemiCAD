@@ -69,7 +69,7 @@ add_test(NAME qa_cli
 
 set_tests_properties( qa_cli
     PROPERTIES
-        ENVIRONMENT "KICAD_CLI=$<TARGET_FILE:kicad-cli>;PYTHONPATH=${CMAKE_BINARY_DIR}/pcbnew;${PYTHON_QA_PATH};${EXTRA_PYTEST_ENVIRONMENT}"
+        ENVIRONMENT "KICAD_CLI=$<TARGET_FILE:kemicad-cli>;PYTHONPATH=${CMAKE_BINARY_DIR}/pcbnew;${PYTHON_QA_PATH};${EXTRA_PYTEST_ENVIRONMENT}"
 )
 
 setup_qa_env( qa_cli )

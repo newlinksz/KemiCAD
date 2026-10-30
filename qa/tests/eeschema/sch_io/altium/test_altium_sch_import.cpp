@@ -186,7 +186,7 @@ BOOST_AUTO_TEST_CASE( SheetsClaimFilesNoOtherSheetSavesTo )
     BOOST_REQUIRE( root );
 
     const std::set<wxString> hostFiles = sheetFiles( root );
-    BOOST_CHECK( hostFiles.contains( wxS( "2_cubesat_bus_1.kicad_sch" ) ) );
+    BOOST_CHECK( hostFiles.contains( wxS( "2_cubesat_bus_1.kemi_sch" ) ) );
 
     std::map<std::string, UTF8> properties{ { "hierarchical_sheet_load", "1" } };
     auto                        appended = std::make_unique<SCH_SHEET>( &schematic );

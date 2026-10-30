@@ -22,6 +22,7 @@
 #ifndef KICAD_PROJECT_LOCAL_SETTINGS_H
 #define KICAD_PROJECT_LOCAL_SETTINGS_H
 
+#include <kemi_format_profile.h>
 #include <layer_ids.h>
 #include <project/board_project_settings.h>
 #include <project/sch_project_settings.h>
@@ -80,8 +81,17 @@ public:
     bool ShouldAutoSave() const { return !m_wasMigrated && !m_isFutureFormat; }
 
 protected:
+    std::optional<KEMI_FORMAT::DOC> getDocumentType() const override
+    {
+        return KEMI_FORMAT::DOC::PROJECT_LOCAL;
+    }
+
     wxString getFileExt() const override
     {
+        // Prefer native extension when this settings object is Kemi-only (K04).
+        if( IsKemiOnly() )
+            return KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT_LOCAL, KEMI_FORMAT::FLAVOR::KEMI );
+
         return FILEEXT::ProjectLocalSettingsFileExtension;
     }
 

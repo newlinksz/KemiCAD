@@ -33,6 +33,7 @@
 #include <eeschema_settings.h>
 #include <id.h>
 #include <kiface_base.h>
+#include <kemi_project_paths.h>
 #include <kiplatform/app.h>
 #include <kiplatform/ui.h>
 #include <libraries/legacy_cache_reconcile.h>
@@ -59,6 +60,8 @@
 #include <sch_file_versions.h>
 #include <sch_line.h>
 #include <sch_sheet.h>
+#include <sch_save_state.h>
+#include <set>
 #include <sch_sheet_path.h>
 #include <schematic.h>
 #include <settings/settings_manager.h>
@@ -174,8 +177,8 @@ bool SCH_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
     PROF_TIMER openFiles( "OpenProjectFile" );
 #endif
 
-    wxFileName pro = fullFileName;
-    pro.SetExt( FILEEXT::ProjectFileExtension );
+    wxFileName pro( KEMI_FORMAT::RelatedDocumentPath( KEMI_FORMAT::DOC::SCHEMATIC,
+                                                    KEMI_FORMAT::DOC::PROJECT, fullFileName ) );
 
     bool is_new = !wxFileName::IsFileReadable( fullFileName );
 
@@ -240,7 +243,17 @@ bool SCH_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
     // Crash-recovery: when zip-format autosave is active, look for autosave files newer
     // than the saved schematic and offer to recover them before any sheet is loaded.
     if( !is_new )
-        CheckForAutosaveFiles( wx_filename.GetPath(), { FILEEXT::KiCadSchematicFileExtension } );
+    {
+        const wxString recovered = CheckForAutosaveFiles( wx_filename.GetPath(),
+                { FILEEXT::KiCadSchematicFileExtension,
+                  KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC, KEMI_FORMAT::FLAVOR::KEMI ) }, fullFileName );
+
+        if( !recovered.IsEmpty() )
+        {
+            fullFileName = recovered;
+            wx_filename.Assign( recovered );
+        }
+    }
 
     // Start a new schematic object now that we sorted out our project
     std::unique_ptr<SCHEMATIC> newSchematic = std::make_unique<SCHEMATIC>( &Prj() );
@@ -1008,12 +1021,30 @@ bool SCH_EDIT_FRAME::saveSchematicFile( SCH_SHEET* aSheet, const wxString& aSave
 
     wxCHECK( screen, false );
 
+    if( screen->HasLoadError() )
+    {
+        DisplayError( this, wxString::Format(
+                _( "Cannot save schematic '%s' because it could not be loaded completely." ),
+                screen->GetFileName() ) );
+        return false;
+    }
+
     // Cannot save to nowhere
     if( aSavePath.IsEmpty() )
         return false;
 
     // Construct the name of the file to be saved
-    schematicFileName = Prj().AbsolutePath( aSavePath );
+    try
+    {
+        schematicFileName.Assign( Prj().AbsolutePath( aSavePath ) );
+        KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SCHEMATIC,
+                schematicFileName.GetFullPath(), KEMI_FORMAT::FLAVOR::KEMI, true );
+    }
+    catch( const IO_ERROR& error )
+    {
+        DisplayError( this, error.What() );
+        return false;
+    }
     oldFileName = schematicFileName;
 
     // Write through symlinks, don't replace them
@@ -1037,13 +1068,22 @@ bool SCH_EDIT_FRAME::saveSchematicFile( SCH_SHEET* aSheet, const wxString& aSave
 
     wxFileName projectFile( schematicFileName );
 
-    projectFile.SetExt( FILEEXT::ProjectFileExtension );
+    projectFile.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT,
+            Schematic().IsKemiOnly() ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY ) );
 
     if( projectFile.FileExists() )
     {
         // Save various ERC settings, such as violation severities (which may have been edited
         // via the ERC dialog as well as the Schematic Setup dialog), ERC exclusions, etc.
-        saveProjectSettings();
+        try
+        {
+            saveProjectSettings();
+        }
+        catch( const IO_ERROR& error )
+        {
+            DisplayError( this, error.What() );
+            return false;
+        }
     }
 
     // Save
@@ -1089,6 +1129,80 @@ bool SCH_EDIT_FRAME::saveSchematicFile( SCH_SHEET* aSheet, const wxString& aSave
     }
 
     return success;
+}
+
+
+void PrepareSchematicImportFiles( SCHEMATIC& aSchematic, const wxFileName& aSource,
+                                  const KEMI_FORMAT::OUTPUT_TARGET& aRootTarget )
+{
+    using namespace KEMI_FORMAT;
+
+    if( aRootTarget.Document() != DOC::SCHEMATIC )
+        THROW_IO_ERROR( _( "A schematic output target is required." ) );
+
+    const wxFileName rootFile( aRootTarget.FinalPath() );
+    KEMI_ONLY_OUTPUT_POLICY policy( rootFile.GetPath() );
+    SCH_SCREENS screens( aSchematic.Root() );
+    std::unordered_map<SCH_SCREEN*, wxString> filenames;
+
+    for( size_t i = 0; i < screens.GetCount(); ++i )
+    {
+        SCH_SCREEN* screen = screens.GetScreen( i );
+
+        // The virtual root is only a container for top-level sheets.
+        if( screen == aSchematic.Root().GetScreen() && aSchematic.Root().IsVirtualRootSheet() )
+            continue;
+
+        wxFileName destination( screen->GetFileName() );
+
+        if( screen == aSchematic.RootScreen() )
+        {
+            destination = rootFile;
+        }
+        else
+        {
+            // Keep every imported sheet beside the project root schematic.  Preserving a
+            // source-relative subdir (common when the OrCAD/PADS file sits above the
+            // chosen output folder) used to re-nest paths such as kemi\P02_... under the
+            // root again.
+            destination.Assign( rootFile.GetPath(), destination.GetFullName() );
+            destination.SetExt( Ext( DOC::SCHEMATIC, FLAVOR::KEMI ) );
+        }
+
+        const OUTPUT_TARGET target = policy.Target( DOC::SCHEMATIC, destination.GetFullPath() );
+
+        for( const auto& entry : filenames )
+        {
+            if( wxFileName( entry.second ).SameAs( wxFileName( target.FinalPath() ) ) )
+            {
+                THROW_IO_ERROR( wxString::Format(
+                        _( "Imported sheets have the same output file '%s'." ), target.FinalPath() ) );
+            }
+        }
+
+        filenames[screen] = target.FinalPath();
+    }
+
+    // Validate the complete set before changing either screen paths or sheet references.
+    for( const auto& [screen, filename] : filenames )
+        screen->SetFileName( filename );
+
+    for( SCH_SHEET_PATH& path : aSchematic.Hierarchy() )
+    {
+        SCH_SHEET* sheet = path.Last();
+
+        if( !sheet || sheet->IsVirtualRootSheet() || !sheet->GetScreen() )
+            continue;
+
+        wxFileName filename( sheet->GetScreen()->GetFileName() );
+
+        if( sheet->IsTopLevelSheet() )
+            filename.MakeRelativeTo( rootFile.GetPath() );
+        else
+            filename.MakeRelativeTo( wxFileName( path.at( path.size() - 2 )->GetScreen()->GetFileName() ).GetPath() );
+
+        sheet->SetFileName( filename.GetFullPath() );
+    }
 }
 
 
@@ -1156,7 +1270,7 @@ bool PrepareSaveAsFiles( SCHEMATIC& aSchematic, SCH_SCREENS& aScreens, const wxF
     for( SCH_SHEET_PATH& sheet : aSchematic.Hierarchy() )
     {
         if( !sheet.Last()->IsTopLevelSheet() )
-            sheet.MakeFilePathRelativeToParentSheet();
+            UpdateSheetFileReference( aSchematic, sheet );
     }
 
     return true;
@@ -1174,9 +1288,27 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
     bool        copySubsheets     = false;
     bool        includeExternSheets = false;
 
+    // Reject an incomplete hierarchy before Save As can relocate paths or rewrite references.
+    for( SCH_SCREEN* candidate = screens.GetFirst(); candidate; candidate = screens.GetNext() )
+    {
+        if( candidate->HasLoadError() )
+        {
+            DisplayError( this, wxString::Format(
+                    _( "Cannot save schematic '%s' because it could not be loaded completely." ),
+                    candidate->GetFileName() ) );
+            return false;
+        }
+    }
+
+    SCH_SAVE_STATE saveState( Schematic() );
+
     // I want to see it in the debugger, show me the string!  Can't do that with wxFileName.
     wxString    fileName = Prj().AbsolutePath( Schematic().Root().GetFileName() );
     wxFileName  fn = fileName;
+    const bool restricted = true;
+    const wxString schematicExtension = restricted
+            ? wxString( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC, KEMI_FORMAT::FLAVOR::KEMI ) )
+            : wxString( FILEEXT::KiCadSchematicFileExtension );
 
     // Path to save each screen to: will be the stored filename by default, but is overwritten by
     // a Save As Copy operation.
@@ -1200,12 +1332,14 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
         }
 
         if( savePath.HasExt() )
-            savePath.SetExt( FILEEXT::KiCadSchematicFileExtension );
+            savePath.SetExt( schematicExtension );
         else
             savePath.SetName( wxEmptyString );
 
         wxFileDialog dlg( this, _( "Schematic Files" ), savePath.GetPath(), savePath.GetFullName(),
-                          FILEEXT::KiCadSchematicFileWildcard(), wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
+                          restricted ? wxString( wxS( "KemiCAD schematic (*.kemi_sch)|*.kemi_sch" ) )
+                                     : FILEEXT::KiCadSchematicFileWildcard(),
+                          wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
 
         FILEDLG_HOOK_SAVE_PROJECT newProjectHook;
 
@@ -1220,7 +1354,22 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
         if( dlg.ShowModal() == wxID_CANCEL )
             return false;
 
-        newFileName = EnsureFileExtension( dlg.GetPath(), FILEEXT::KiCadSchematicFileExtension );
+        try
+        {
+            newFileName = KEMI_FORMAT::PersistentOutputPath(
+                    KEMI_FORMAT::DOC::SCHEMATIC, dlg.GetPath(), true );
+
+            if( !KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SCHEMATIC, fn.GetExt() )
+                    && newFileName.Exists() )
+            {
+                THROW_IO_ERROR( _( "Choose a new native file name; the save target already exists." ) );
+            }
+        }
+        catch( const IO_ERROR& error )
+        {
+            DisplayError( this, error.What() );
+            return false;
+        }
 
         if( ( !newFileName.DirExists() && !newFileName.Mkdir() )
             || !newFileName.IsDirWritable() )
@@ -1271,7 +1420,8 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
     {
         // Allow the user to save un-edited files in new format
     }
-    else if( !IsContentModified() )
+    else if( !IsContentModified()
+             && KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SCHEMATIC, fn.GetExt() ) )
     {
         return true;
     }
@@ -1282,70 +1432,84 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
             filenameMap[screens.GetScreen( i )] = screens.GetScreen( i )->GetFileName();
     }
 
-    // Warn user on potential file overwrite.  This can happen on shared sheets.
-    wxArrayString overwrittenFiles;
-    wxArrayString lockedFiles;
-
-    for( size_t i = 0; i < screens.GetCount(); i++ )
+    // Resolve the complete output set before checking write access to its targets.
+    for( size_t i = 0; i < screens.GetCount(); ++i )
     {
-        screen = screens.GetScreen( i );
+        SCH_SCREEN* candidate = screens.GetScreen( i );
 
-        wxCHECK2( screen, continue );
-
-        // Convert legacy schematics file name extensions for the new format.
-        wxFileName tmpFn = filenameMap[screen];
-
-        if( !tmpFn.IsOk() )
+        if( !candidate )
             continue;
 
-        if( tmpFn.FileExists() && !tmpFn.IsFileWritable() )
-            lockedFiles.Add( tmpFn.GetFullPath() );
+        wxFileName target( filenameMap[candidate] );
 
-        if( tmpFn.GetExt() == FILEEXT::KiCadSchematicFileExtension )
+        if( !target.IsOk() || KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SCHEMATIC, target.GetExt() ) )
             continue;
 
-        tmpFn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+        try
+        {
+            filenameMap[candidate] = KEMI_FORMAT::ResolveNativeSaveTarget(
+                    KEMI_FORMAT::DOC::SCHEMATIC, Prj().AbsolutePath( target.GetFullPath() ) );
+            updateFileHistory = true;
+        }
+        catch( const IO_ERROR& error )
+        {
+            DisplayError( this, error.What() );
+            target.SetExt( schematicExtension );
+            wxFileDialog dlg( this, _( "Save Schematic As" ), target.GetPath(), target.GetFullName(),
+                              _( "KemiCAD schematic (*.kemi_sch)|*.kemi_sch" ), wxFD_SAVE );
 
-        if( tmpFn.FileExists() )
-            overwrittenFiles.Add( tmpFn.GetFullPath() );
+            if( dlg.ShowModal() != wxID_OK )
+                return false;
+
+            try
+            {
+                target.Assign( KEMI_FORMAT::PersistentOutputPath(
+                        KEMI_FORMAT::DOC::SCHEMATIC, dlg.GetPath(), true ) );
+
+                if( target.Exists() )
+                    THROW_IO_ERROR( _( "Choose a new native file name; the save target already exists." ) );
+
+                filenameMap[candidate] = target.GetFullPath();
+            }
+            catch( const IO_ERROR& selectedError )
+            {
+                DisplayError( this, selectedError.What() );
+                return false;
+            }
+        }
     }
 
-    if( !lockedFiles.IsEmpty() )
+    for( const auto& [candidate, target] : filenameMap )
     {
-        for( const wxString& lockedFile : lockedFiles )
+        wxFileName destination( Prj().AbsolutePath( target ) );
+
+        if( !target.IsEmpty() && destination.FileExists() && !destination.IsFileWritable() )
         {
-            if( msg.IsEmpty() )
-                msg = lockedFile;
-            else
-                msg += "\n" + lockedFile;
-        }
-
-        wxRichMessageDialog dlg( this, wxString::Format( _( "Failed to save %s." ), Schematic().Root().GetFileName() ),
-                                 _( "Locked File Warning" ), wxOK | wxICON_WARNING | wxCENTER );
-        dlg.SetExtendedMessage( _( "You do not have write permissions to:\n\n" ) + msg );
-
-        dlg.ShowModal();
-        return false;
-    }
-
-    if( !overwrittenFiles.IsEmpty() )
-    {
-        for( const wxString& overwrittenFile : overwrittenFiles )
-        {
-            if( msg.IsEmpty() )
-                msg = overwrittenFile;
-            else
-                msg += "\n" + overwrittenFile;
-        }
-
-        wxRichMessageDialog dlg( this, _( "Saving will overwrite existing files." ), _( "Save Warning" ),
-                                 wxOK | wxCANCEL | wxCANCEL_DEFAULT | wxCENTER | wxICON_EXCLAMATION );
-        dlg.ShowDetailedText( _( "The following files will be overwritten:\n\n" ) + msg );
-        dlg.SetOKCancelLabels( KICAD_MESSAGE_DIALOG::ButtonLabel( _( "Overwrite Files" ) ),
-                               KICAD_MESSAGE_DIALOG::ButtonLabel( _( "Abort Project Save" ) ) );
-
-        if( dlg.ShowModal() == wxID_CANCEL )
+            DisplayError( this, wxString::Format( _( "You do not have write permissions to '%s'." ),
+                                                 destination.GetFullPath() ) );
             return false;
+        }
+    }
+
+    std::set<SCH_SHEET*> rewrittenSheets;
+
+    for( const auto& [candidate, target] : filenameMap )
+    {
+        if( !target.IsEmpty() )
+            candidate->SetFileName( target );
+    }
+
+    for( SCH_SHEET_PATH& path : Schematic().Hierarchy() )
+    {
+        SCH_SHEET* sheet = path.Last();
+
+        if( !sheet || sheet->IsVirtualRootSheet() || !sheet->GetScreen() )
+            continue;
+
+        if( !rewrittenSheets.insert( sheet ).second )
+            continue;
+
+        UpdateSheetFileReference( Schematic(), path );
     }
 
     screens.BuildClientSheetPathList();
@@ -1361,20 +1525,21 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
         // Convert legacy schematics file name extensions for the new format.
         wxFileName tmpFn = filenameMap[screen];
 
-        if( tmpFn.IsOk() && tmpFn.GetExt() != FILEEXT::KiCadSchematicFileExtension )
+        if( tmpFn.IsOk() && !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::SCHEMATIC, tmpFn.GetExt() ) )
         {
             updateFileHistory = true;
-            tmpFn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+            tmpFn.SetExt( schematicExtension );
 
             for( EDA_ITEM* item : screen->Items().OfType( SCH_SHEET_T ) )
             {
                 SCH_SHEET* sheet = static_cast<SCH_SHEET*>( item );
                 wxFileName sheetFileName = sheet->GetFileName();
 
-                if( !sheetFileName.IsOk() || sheetFileName.GetExt() == FILEEXT::KiCadSchematicFileExtension )
+                if( !sheetFileName.IsOk()
+                    || KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::SCHEMATIC, sheetFileName.GetExt() ) )
                     continue;
 
-                sheetFileName.SetExt( FILEEXT::KiCadSchematicFileExtension );
+                sheetFileName.SetExt( schematicExtension );
                 sheet->SetFileName( sheetFileName.GetFullPath() );
                 UpdateItem( sheet );
             }
@@ -1408,6 +1573,12 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
         success &= savedThisSheet;
     }
 
+    if( !success )
+        return false;
+
+    if( saveCopy )
+        saveState.Restore();
+
     if( success )
     {
         if( m_autoSaveTimer )
@@ -1439,21 +1610,33 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
 
     wxASSERT( filenameMap.count( Schematic().RootScreen() ) );
     wxFileName projectPath( filenameMap.at( Schematic().RootScreen() ) );
-    projectPath.SetExt( FILEEXT::ProjectFileExtension );
+    projectPath.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT,
+            restricted ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY ) );
 
-    if( Prj().IsNullProject() || ( aSaveAs && !saveCopy ) )
+    const bool officialProject = KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT,
+            wxFileName( Prj().GetProjectFullName() ).GetExt() ) && wxFileExists( Prj().GetProjectFullName() );
+
+    try
     {
-        Prj().SetReadOnly( !createNewProject );
-        GetSettingsManager()->SaveProjectAs( projectPath.GetFullPath() );
+        if( !officialProject && ( Prj().IsNullProject() || ( aSaveAs && !saveCopy ) ) )
+        {
+            Prj().SetReadOnly( !createNewProject );
+            GetSettingsManager()->SaveProjectAs( projectPath.GetFullPath() );
+        }
+        else if( !officialProject && saveCopy && createNewProject )
+        {
+            GetSettingsManager()->SaveProjectCopy( projectPath.GetFullPath() );
+        }
+        else if( !restricted || KEMI_FORMAT::HasKemiExt( Prj().GetProjectFullName() ) )
+        {
+            SaveProjectLocalSettings();
+            saveProjectSettings();
+        }
     }
-    else if( saveCopy && createNewProject )
+    catch( const IO_ERROR& error )
     {
-        GetSettingsManager()->SaveProjectCopy( projectPath.GetFullPath() );
-    }
-    else
-    {
-        SaveProjectLocalSettings();
-        saveProjectSettings();
+        DisplayError( this, error.What() );
+        success = false;
     }
 
     // Record a full project snapshot so related files (symbols, libs, sheets) are captured.
@@ -1504,7 +1687,12 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
     }
 
     if( success )
+    {
+        if( !saveCopy )
+            saveState.Commit();
+
         RefreshGitCommitPane();
+    }
 
     return success;
 }
@@ -1553,6 +1741,12 @@ bool SCH_EDIT_FRAME::importFile( const wxString& aFileName, int aFileType,
 
         try
         {
+            KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY outputPolicy( Prj().GetProjectPath() );
+            newfilename.Assign( Prj().GetProjectPath(), Prj().GetProjectName(),
+                    KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC, KEMI_FORMAT::FLAVOR::KEMI ) );
+            const KEMI_FORMAT::OUTPUT_TARGET rootTarget = outputPolicy.Target(
+                    KEMI_FORMAT::DOC::SCHEMATIC, newfilename.GetFullPath() );
+
             IO_RELEASER<SCH_IO>  pi( SCH_IO_MGR::FindPlugin( fileType ) );
             DIALOG_HTML_REPORTER errorReporter( this );
             WX_PROGRESS_REPORTER progressReporter( this, _( "Import Schematic" ), 1, PR_CAN_ABORT );
@@ -1569,6 +1763,7 @@ bool SCH_EDIT_FRAME::importFile( const wxString& aFileName, int aFileType,
                 pi->SetReporter( &NULL_REPORTER::GetInstance() );
 
             pi->SetProgressReporter( &progressReporter );
+            pi->SetImportOutputPolicy( &outputPolicy );
 
             SCH_SHEET* loadedSheet = pi->LoadSchematicFile( aFileName, newSchematic.get(), nullptr, aProperties );
 
@@ -1593,8 +1788,11 @@ bool SCH_EDIT_FRAME::importFile( const wxString& aFileName, int aFileType,
                 if( !loadedIsTopLevel && !loadedIsVirtualRoot )
                     Schematic().SetTopLevelSheets( { loadedSheet } );
 
+                PrepareSchematicImportFiles( Schematic(), filename, rootTarget );
+
                 // extract a project symbol library and re-link LIB_IDs so every symbol resolves
-                ReconcileImportedSymbols( *pi, Schematic(), Prj(), aFileName, aProperties, loadReporter );
+                ReconcileImportedSymbols( *pi, Schematic(), Prj(), aFileName, aProperties,
+                                          loadReporter, &outputPolicy );
 
                 // re-link footprint fields to the project lib so update-from-schematic works
                 {
@@ -1636,10 +1834,6 @@ bool SCH_EDIT_FRAME::importFile( const wxString& aFileName, int aFileType,
                     BASE_SCREEN::m_DrawingSheetFileName = Schematic().Settings().m_SchDrawingSheetFileName;
                     LoadDrawingSheet();
                 }
-
-                newfilename.SetPath( Prj().GetProjectPath() );
-                newfilename.SetName( Prj().GetProjectName() );
-                newfilename.SetExt( FILEEXT::KiCadSchematicFileExtension );
 
                 SetScreen( Schematic().RootScreen() );
 

@@ -120,6 +120,13 @@ KICOMMON_API void CopySexprFile( const wxString& aSrcPath, const wxString& aDest
                                  std::function<bool( const std::string& token, wxString& value )> aCallback,
                                  wxString& aErrors );
 
+/** As above, with an optional callback for the second value of a named pair such as a property. */
+KICOMMON_API void CopySexprFile( const wxString& aSrcPath, const wxString& aDestPath,
+                                 std::function<bool( const std::string& token, wxString& value )> aCallback,
+                                 wxString& aErrors,
+                                 std::function<bool( const std::string& token, const wxString& name,
+                                                     wxString& value )> aSecondValueCallback );
+
 /**
  * Call the executable file \a aEditorName with the parameter \a aFileName.
  *

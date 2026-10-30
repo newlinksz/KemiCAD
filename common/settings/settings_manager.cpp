@@ -18,6 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <kemi_format_profile.h>
 #include "settings/json_settings.h"
 #include <regex>
 #include <set>
@@ -1003,17 +1004,37 @@ bool SETTINGS_MANAGER::extractVersion( const std::string& aVersionString, int* a
 }
 
 
-// Every m_projects read and write goes through this so separator or extension variants share one slot
+// Normalize legacy aliases without collapsing the two explicitly named project formats.
 static wxString projectKey( const wxString& aFullPath )
 {
     // Normalize path to current project extension. Users may open legacy .pro files,
     // or the OS may hand us a .kicad_sch/.kicad_pcb via file association or drag-and-drop.
     wxFileName path( aFullPath );
 
-    if( path.HasName() && path.GetExt() != FILEEXT::ProjectFileExtension )
-        path.SetExt( FILEEXT::ProjectFileExtension );
+    if( path.HasName() && !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PROJECT, path.GetExt() ) )
+    {
+        path.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT,
+                                      KEMI_FORMAT::HasKemiExt( aFullPath )
+                                              ? KEMI_FORMAT::FLAVOR::KEMI
+                                              : KEMI_FORMAT::FLAVOR::LEGACY ) );
+    }
 
     return path.GetFullPath();
+}
+
+
+static wxString localSettingsFilename( const wxFileName& aProjectFile )
+{
+    // The default (unnamed) project must keep an empty local settings name, as upstream does, so
+    // that JSON_SETTINGS::SaveToFile skips it instead of trying to create directory ''
+    if( !aProjectFile.HasName() )
+        return wxEmptyString;
+
+    wxFileName localFile( aProjectFile );
+    localFile.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT_LOCAL,
+                                      KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PROJECT,
+                                                                 aProjectFile.GetFullPath() ) ) );
+    return localFile.GetFullName();
 }
 
 
@@ -1114,7 +1135,7 @@ bool SETTINGS_MANAGER::LoadProject( const wxString& aFullPath, bool aSetActive )
     else
         m_projects_list.push_back( std::move( project ) );
 
-    wxString fn( path.GetName() );
+    wxString fn( localSettingsFilename( path ) );
 
     PROJECT_LOCAL_SETTINGS* settings = new PROJECT_LOCAL_SETTINGS( m_projects[fullPath], fn );
 
@@ -1332,7 +1353,15 @@ void SETTINGS_MANAGER::SaveProjectAs( const wxString& aFullPath, PROJECT* aProje
         aProject = &Prj();
 
     wxString oldName = aProject->GetProjectFullName();
-    wxString newName = projectKey( aFullPath );
+
+    if( KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT, wxFileName( oldName ).GetExt() )
+            && wxFileExists( oldName ) )
+    {
+        THROW_IO_ERROR( _( "Official KiCad projects must be imported into a new directory." ) );
+    }
+
+    wxString newName = projectKey( KEMI_FORMAT::PersistentOutputPath(
+            KEMI_FORMAT::DOC::PROJECT, aFullPath, aProject->GetProjectFile().IsKemiOnly() ) );
 
     if( newName.IsSameAs( oldName ) )
     {
@@ -1352,10 +1381,10 @@ void SETTINGS_MANAGER::SaveProjectAs( const wxString& aFullPath, PROJECT* aProje
     project->SetReadOnly( aProject->IsReadOnly() );
     aProject->GetLocalSettings().SetReadOnly( aProject->IsReadOnly() );
 
-    project->SetFilename( fn.GetName() );
+    project->SetFilename( fn.GetFullName() );
     project->SaveToFile( fn.GetPath() );
 
-    aProject->GetLocalSettings().SetFilename( fn.GetName() );
+    aProject->GetLocalSettings().SetFilename( localSettingsFilename( fn ) );
     aProject->GetLocalSettings().SaveToFile( fn.GetPath() );
 
     m_project_files[fn.GetFullPath()] = project;
@@ -1372,26 +1401,37 @@ bool SETTINGS_MANAGER::SaveProjectCopy( const wxString& aFullPath, PROJECT* aPro
         aProject = &Prj();
 
     PROJECT_FILE* project = m_project_files.at( aProject->GetProjectFullName() );
-    wxString      oldName = project->GetFilename();
-    wxFileName    fn( aFullPath );
+    wxFileName    fn;
 
-    bool readOnly = project->IsReadOnly();
-    project->SetReadOnly( false );
+    if( KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT,
+                                wxFileName( aProject->GetProjectFullName() ).GetExt() )
+            && wxFileExists( aProject->GetProjectFullName() ) )
+    {
+        wxLogTrace( traceSettings, wxS( "Official KiCad projects require a whole-project import." ) );
+        return false;
+    }
 
-    project->SetFilename( fn.GetName() );
-    const bool projectOk = project->SaveToFile( fn.GetPath() );
-    project->SetFilename( oldName );
+    try
+    {
+        fn.Assign( KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::PROJECT,
+                                                     aFullPath, project->IsKemiOnly() ) );
+    }
+    catch( const IO_ERROR& error )
+    {
+        wxLogTrace( traceSettings, wxT( "Refusing project copy: %s" ), error.What() );
+        return false;
+    }
+
+    const bool projectOk = project->SaveCopyToFile( fn.GetFullPath() );
+
+    if( project->LastSaveFailed() )
+        return false;
 
     // PROJECT_LOCAL_SETTINGS save is best-effort: SaveToFile returns false for
     // benign skips (unchanged content, default settings with m_createIfDefault
     // == false), so requiring success would false-positive an error.
     PROJECT_LOCAL_SETTINGS& localSettings = aProject->GetLocalSettings();
-
-    localSettings.SetFilename( fn.GetName() );
-    localSettings.SaveToFile( fn.GetPath() );
-    localSettings.SetFilename( oldName );
-
-    project->SetReadOnly( readOnly );
+    localSettings.SaveCopyToFile( wxFileName( fn.GetPath(), localSettingsFilename( fn ) ).GetFullPath() );
 
     return projectOk;
 }
@@ -1400,7 +1440,7 @@ bool SETTINGS_MANAGER::SaveProjectCopy( const wxString& aFullPath, PROJECT* aPro
 bool SETTINGS_MANAGER::loadProjectFile( PROJECT& aProject )
 {
     wxFileName fullFn( aProject.GetProjectFullName() );
-    wxString fn( fullFn.GetName() );
+    wxString fn( fullFn.GetFullName() );
 
     PROJECT_FILE* file = RegisterSettings( new PROJECT_FILE( fn ), false );
 

@@ -60,7 +60,7 @@ const std::vector<wxString> RegressionSaveLoadTests_tests = {
 BOOST_DATA_TEST_CASE_F( SAVE_LOAD_TEST_FIXTURE, RegressionSaveLoadTests,
                          boost::unit_test::data::make( RegressionSaveLoadTests_tests ), relPath )
 {
-    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "group_saveload_tst.kicad_pcb";
+    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "group_saveload_tst.kemi_pcb";
 
     KI_TEST::LoadBoard( m_settingsManager, relPath, m_board );
     KI_TEST::DumpBoardToFile( *m_board.get(), savePath.string() );

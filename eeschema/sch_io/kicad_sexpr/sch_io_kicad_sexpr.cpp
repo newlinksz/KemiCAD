@@ -33,6 +33,8 @@
 #include <bitmap_base.h>
 #include <common.h> // ExpandTextVars
 #include <wildcards_and_files_ext.h>
+#include <kemi_format_profile.h>
+#include <gestfich.h>
 #include <build_version.h>
 #include <sch_selection.h>
 #include <font/fontconfig.h>
@@ -75,6 +77,20 @@ using namespace TSCHEMATIC_T;
 #define SCH_PARSE_ERROR( text, reader, pos )                         \
     THROW_PARSE_ERROR( text, reader.GetSource(), reader.Line(),      \
                        reader.LineNumber(), pos - reader.Line() )
+
+
+namespace
+{
+void checkOutputTarget( KEMI_FORMAT::DOC aDocument, const wxString& aStoragePath,
+                        const KEMI_FORMAT::OUTPUT_TARGET& aTarget )
+{
+    if( aTarget.Document() != aDocument )
+        THROW_IO_ERROR( _( "The KemiCAD output target has the wrong document type." ) );
+
+    KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( wxFileName( aTarget.FinalPath() ).GetPath() );
+    policy.CheckWritePath( aDocument, aStoragePath );
+}
+}
 
 
 SCH_IO_KICAD_SEXPR::SCH_IO_KICAD_SEXPR() : SCH_IO( wxS( "Eeschema s-expression" ) )
@@ -319,6 +335,12 @@ void SCH_IO_KICAD_SEXPR::loadHierarchy( const SCH_SHEET_PATH& aParentSheetPath, 
 
 void SCH_IO_KICAD_SEXPR::loadFile( const wxString& aFileName, SCH_SHEET* aSheet )
 {
+    // A genuinely missing child is a new sheet that may be created on save. Existing
+    // or inaccessible inputs remain protected until their entire load succeeds.
+    std::error_code statusError;
+    bool sourceExists = std::filesystem::exists( ToFsPath( aFileName ), statusError );
+    aSheet->GetScreen()->SetLoadError( sourceExists || !!statusError );
+
     FILE_LINE_READER reader( aFileName );
 
     size_t lineCount = 0;
@@ -358,6 +380,8 @@ void SCH_IO_KICAD_SEXPR::loadFile( const wxString& aFileName, SCH_SHEET* aSheet 
         m_schematic->ConnectionGraph()->SetNetChainTerminalRefOverrides( termRefs );
         m_schematic->ConnectionGraph()->SetNetChainMemberNetOverrides( parser.GetNetChainMemberNets() );
     }
+
+    aSheet->GetScreen()->SetLoadError( false );
 }
 
 
@@ -391,8 +415,35 @@ void SCH_IO_KICAD_SEXPR::SaveSchematicFile( const wxString& aFileName, SCH_SHEET
                                             SCHEMATIC*             aSchematic,
                                             const std::map<std::string, UTF8>* aProperties )
 {
+    saveSchematicFile( aFileName, aSheet, aSchematic, aProperties, KEMI_FORMAT::FLAVOR::KEMI );
+}
+
+
+void SCH_IO_KICAD_SEXPR::SaveSchematicFile( const wxString& aStoragePath, SCH_SHEET* aSheet,
+        SCHEMATIC* aSchematic, const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+        const std::map<std::string, UTF8>* aProperties )
+{
+    checkOutputTarget( KEMI_FORMAT::DOC::SCHEMATIC, aStoragePath, aTarget );
+    saveSchematicFile( aStoragePath, aSheet, aSchematic, aProperties, aTarget.Flavor() );
+}
+
+
+void SCH_IO_KICAD_SEXPR::saveSchematicFile( const wxString& aFileName, SCH_SHEET* aSheet,
+        SCHEMATIC* aSchematic, const std::map<std::string, UTF8>* aProperties,
+        KEMI_FORMAT::FLAVOR aFlavor )
+{
     wxCHECK_RET( aSheet != nullptr, "NULL SCH_SHEET object." );
     wxCHECK_RET( !aFileName.IsEmpty(), "No schematic file name defined." );
+
+    const bool restricted = ( aSchematic && aSchematic->IsKemiOnly() )
+            || ( aSheet->GetScreen() && ( aSheet->GetScreen()->IsKemiOnly()
+                 || KEMI_FORMAT::HasKemiExt( aSheet->GetScreen()->GetFileName() ) ) );
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SCHEMATIC, aFileName,
+                                        aFlavor, restricted );
+
+    if( aSheet->GetScreen() && aSheet->GetScreen()->HasLoadError() )
+        THROW_IO_ERRORF( _( "Cannot save schematic '%s' because it could not be loaded completely." ),
+                         aSheet->GetScreen()->GetFileName() );
 
     if( aSheet->GetScreen() )
     {
@@ -418,7 +469,8 @@ void SCH_IO_KICAD_SEXPR::SaveSchematicFile( const wxString& aFileName, SCH_SHEET
     wxASSERT( fn.IsAbsolute() );
 
     PRETTIFIED_FILE_OUTPUTFORMATTER formatter( fn.GetFullPath() );
-    FormatSchematicToFormatter( &formatter, aSheet, aSchematic, aProperties );
+
+    FormatSchematicToFormatter( &formatter, aSheet, aSchematic, aProperties, aFlavor );
     formatter.Finish();
 
     if( aSheet->GetScreen() )
@@ -428,13 +480,23 @@ void SCH_IO_KICAD_SEXPR::SaveSchematicFile( const wxString& aFileName, SCH_SHEET
 
 void SCH_IO_KICAD_SEXPR::FormatSchematicToFormatter( OUTPUTFORMATTER* aOut, SCH_SHEET* aSheet,
                                                       SCHEMATIC* aSchematic,
-                                                      const std::map<std::string, UTF8>* aProperties )
+                                                      const std::map<std::string, UTF8>* aProperties,
+                                                      KEMI_FORMAT::FLAVOR aFlavor )
 {
     wxCHECK_RET( aSheet != nullptr, "NULL SCH_SHEET object." );
+
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SCHEMATIC, wxEmptyString, aFlavor,
+            ( aSchematic && aSchematic->IsKemiOnly() )
+            || ( aSheet->GetScreen() && aSheet->GetScreen()->IsKemiOnly() ) );
+
+    if( aSheet->GetScreen() && aSheet->GetScreen()->HasLoadError() )
+        THROW_IO_ERRORF( _( "Cannot serialize schematic '%s' because it could not be loaded completely." ),
+                         aSheet->GetScreen()->GetFileName() );
 
     init( aSchematic, aProperties );
 
     m_out = aOut;
+    m_writeFlavor = aFlavor;
 
     Format( aSheet );
 
@@ -460,8 +522,13 @@ void SCH_IO_KICAD_SEXPR::Format( SCH_SHEET* aSheet )
     else
         m_schematic->GetEmbeddedFiles()->ClearEmbeddedFonts();
 
-    m_out->Print( "(kicad_sch (version %d) (generator \"eeschema\") (generator_version %s)",
-                  SEXPR_SCHEMATIC_FILE_VERSION, m_out->Quotew( GetMajorMinorVersion() ).c_str() );
+    m_out->Print( "(%s", KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::SCHEMATIC, m_writeFlavor ).c_str() );
+
+    if( m_writeFlavor == KEMI_FORMAT::FLAVOR::KEMI )
+        m_out->Print( " (format_version %d)", KEMI_FORMAT::FORMAT_VERSION );
+
+    m_out->Print( " (version %d) (generator \"eeschema\") (generator_version %s)",
+                  SEXPR_SCHEMATIC_FILE_VERSION, m_out->Quotew( KEMI_FORMAT::GeneratorVersion() ).c_str() );
 
     KICAD_FORMAT::FormatUuid( m_out, screen->m_uuid );
 
@@ -1869,23 +1936,33 @@ void SCH_IO_KICAD_SEXPR::cacheLib( const wxString& aLibraryFileName,
     if( !m_cache || !m_cache->IsFile( aLibraryFileName ) || m_cache->IsFileChanged() )
     {
         int  oldModifyHash = 1;
-        bool isNewCache = false;
 
         if( m_cache )
+        {
             oldModifyHash = m_cache->m_modHash;
-        else
-            isNewCache = true;
+
+            if( m_cache->IsFile( aLibraryFileName ) && m_cache->m_isModified )
+            {
+                m_cache->SetParseError( true );
+                THROW_IO_ERRORF( _( "Library '%s' changed on disk. Reload it before saving." ),
+                                 aLibraryFileName );
+            }
+        }
 
         // a spectacular episode in memory management:
         delete m_cache;
         m_cache = new SCH_IO_KICAD_SEXPR_LIB_CACHE( aLibraryFileName );
 
-        if( !isBuffering( aProperties ) || ( isNewCache && m_cache->isLibraryPathValid() ) )
+        if( !isBuffering( aProperties ) || m_cache->isLibraryPathValid() )
         {
             m_cache->Load();
             m_cache->m_modHash = oldModifyHash + 1;
         }
     }
+
+    if( m_cache->HasParseError() )
+        THROW_IO_ERRORF( _( "Library '%s' cannot be used because loading failed. "
+                            "Fix the file and reload the library." ), aLibraryFileName );
 }
 
 
@@ -1976,12 +2053,33 @@ LIB_SYMBOL* SCH_IO_KICAD_SEXPR::LoadSymbol( const wxString& aLibraryPath,
 void SCH_IO_KICAD_SEXPR::SaveSymbol( const wxString& aLibraryPath, std::unique_ptr<LIB_SYMBOL> aSymbol,
                                      const std::map<std::string, UTF8>* aProperties )
 {
+    if( !wxDirExists( aLibraryPath ) )
+    {
+        KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SYMBOL_LIB, aLibraryPath,
+                KEMI_FORMAT::FLAVOR::KEMI, aSymbol && aSymbol->IsKemiOnly() );
+    }
     cacheLib( aLibraryPath, aProperties );
 
+    if( KEMI_FORMAT::HasKemiExt( aLibraryPath ) )
+        aSymbol->SetKemiOnly();
     m_cache->AddSymbol( std::move( aSymbol ) );
 
     if( !isBuffering( aProperties ) )
         m_cache->Save();
+}
+
+
+void SCH_IO_KICAD_SEXPR::SaveSymbol( const wxString& aLibraryPath,
+        std::unique_ptr<LIB_SYMBOL> aSymbol, const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+        const std::map<std::string, UTF8>* aProperties )
+{
+    checkOutputTarget( KEMI_FORMAT::DOC::SYMBOL_LIB, aLibraryPath, aTarget );
+    cacheLib( aLibraryPath, aProperties );
+    aSymbol->SetKemiOnly();
+    m_cache->AddSymbol( std::move( aSymbol ) );
+
+    if( !isBuffering( aProperties ) )
+        m_cache->Save( aTarget.Flavor() );
 }
 
 
@@ -2000,6 +2098,22 @@ void SCH_IO_KICAD_SEXPR::DeleteSymbol( const wxString& aLibraryPath, const wxStr
 void SCH_IO_KICAD_SEXPR::CreateLibrary( const wxString& aLibraryPath,
                                         const std::map<std::string, UTF8>* aProperties )
 {
+    createLibrary( aLibraryPath, nullptr );
+}
+
+
+void SCH_IO_KICAD_SEXPR::CreateLibrary( const wxString& aLibraryPath,
+        const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+        const std::map<std::string, UTF8>* aProperties )
+{
+    checkOutputTarget( KEMI_FORMAT::DOC::SYMBOL_LIB, aLibraryPath, aTarget );
+    createLibrary( aLibraryPath, &aTarget );
+}
+
+
+void SCH_IO_KICAD_SEXPR::createLibrary( const wxString& aLibraryPath,
+                                      const KEMI_FORMAT::OUTPUT_TARGET* aTarget )
+{
     wxFileName fn( aLibraryPath );
 
     // Normalize the path: if it's a directory on the filesystem, ensure fn is marked as a
@@ -2017,7 +2131,12 @@ void SCH_IO_KICAD_SEXPR::CreateLibrary( const wxString& aLibraryPath,
     delete m_cache;
     m_cache = new SCH_IO_KICAD_SEXPR_LIB_CACHE( aLibraryPath );
     m_cache->SetModified();
-    m_cache->Save();
+
+    if( aTarget )
+        m_cache->Save( aTarget->Flavor() );
+    else
+        m_cache->Save();
+
     m_cache->Load();    // update m_writable and m_timestamp
 }
 
@@ -2034,6 +2153,9 @@ bool SCH_IO_KICAD_SEXPR::DeleteLibrary( const wxString& aLibraryPath,
 
     if( !fn.FileExists() && !fn.DirExists() )
         return false;
+
+    // A failed load must not turn into an implicit destructive operation on retry.
+    cacheLib( aLibraryPath, aProperties );
 
     // Some of the more elaborate wxRemoveFile() crap puts up its own wxLog dialog
     // we don't want that.  we want bare metal portability with no UI here.
@@ -2062,25 +2184,107 @@ bool SCH_IO_KICAD_SEXPR::DeleteLibrary( const wxString& aLibraryPath,
 
 void SCH_IO_KICAD_SEXPR::SaveLibrary( const wxString& aLibraryPath, const std::map<std::string, UTF8>* aProperties )
 {
-    if( !m_cache )
-        m_cache = new SCH_IO_KICAD_SEXPR_LIB_CACHE( aLibraryPath );
+    saveLibrary( aLibraryPath, aProperties, nullptr );
+}
 
-    wxString oldFileName = m_cache->GetFileName();
+
+void SCH_IO_KICAD_SEXPR::SaveLibrary( const wxString& aLibraryPath,
+        const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+        const std::map<std::string, UTF8>* aProperties )
+{
+    checkOutputTarget( KEMI_FORMAT::DOC::SYMBOL_LIB, aLibraryPath, aTarget );
+    saveLibrary( aLibraryPath, aProperties, &aTarget );
+}
+
+
+void SCH_IO_KICAD_SEXPR::saveLibrary( const wxString& aLibraryPath,
+        const std::map<std::string, UTF8>* aProperties, const KEMI_FORMAT::OUTPUT_TARGET* aTarget )
+{
+    if( !m_cache )
+    {
+        wxFileName path( aLibraryPath );
+
+        if( path.FileExists() || wxFileName::DirExists( aLibraryPath ) )
+            cacheLib( aLibraryPath, aProperties );
+        else
+            m_cache = new SCH_IO_KICAD_SEXPR_LIB_CACHE( aLibraryPath );
+    }
 
     if( !m_cache->IsFile( aLibraryPath ) )
-        m_cache->SetFileName( aLibraryPath );
+    {
+        // Saving a loaded cache under another name must validate an existing target
+        // as well.  The source's successful load says nothing about that target.
+        wxFileName path( aLibraryPath );
+        SCH_IO_KICAD_SEXPR_LIB_CACHE target( aLibraryPath );
+
+        if( path.FileExists() || wxFileName::DirExists( aLibraryPath ) )
+            target.Load();
+
+        // Save through an independent cache so the source keeps its modification
+        // stamp, symbol source paths, and pending deletes even after an exception.
+        // In particular, source-file deletes must never run while saving a copy.
+        for( const auto& [name, symbol] : target.m_symbols )
+            delete symbol;
+
+        target.m_symbols.clear();
+        target.m_symbolSourceFiles.clear();
+        target.SetParseError( m_cache->HasParseError() );
+        target.m_kemiOnly = m_cache->IsKemiOnly();
+
+        for( const auto& [name, symbol] : m_cache->m_symbols )
+        {
+            if( symbol )
+                target.m_symbols.emplace( name, new LIB_SYMBOL( *symbol ) );
+        }
+
+        if( target.m_libFileName.IsDir() )
+        {
+            for( const auto& [name, sourceFile] : m_cache->m_symbolSourceFiles )
+            {
+                if( !target.m_symbols.contains( name ) )
+                    continue;
+
+                // Keep only live file groups, all rooted at the destination.  Orphan
+                // source entries would otherwise schedule source files for deletion.
+                wxFileName destinationFile( sourceFile );
+                destinationFile.SetPath( target.m_libFileName.GetPath() );
+                target.m_symbolSourceFiles.emplace( name, destinationFile.GetFullPath() );
+            }
+        }
+
+        if( !target.HasParseError() )
+            target.updateParentSymbolLinks();
+
+        target.SetModified();
+
+        if( aTarget )
+            target.Save( aTarget->Flavor() );
+        else
+            target.Save();
+
+        return;
+    }
 
     // This is a forced save.
     m_cache->SetModified();
-    m_cache->Save();
 
-    m_cache->SetFileName( oldFileName );
+    if( aTarget )
+        m_cache->Save( aTarget->Flavor() );
+    else
+        m_cache->Save();
+}
+
+
+bool SCH_IO_KICAD_SEXPR::IsLibraryKemiOnly( const wxString& aLibraryPath )
+{
+    cacheLib( aLibraryPath, nullptr );
+    return m_cache->IsKemiOnly();
 }
 
 
 bool SCH_IO_KICAD_SEXPR::CanReadLibrary( const wxString& aLibraryPath ) const
 {
-    // Check if the path is a directory containing at least one .kicad_sym file
+    // Check if the path is a directory containing at least one .kemi_sym / .kicad_sym file
     if( wxFileName::DirExists( aLibraryPath ) )
     {
         wxDir dir( aLibraryPath );
@@ -2088,10 +2292,12 @@ bool SCH_IO_KICAD_SEXPR::CanReadLibrary( const wxString& aLibraryPath ) const
         if( dir.IsOpened() )
         {
             wxString filename;
-            wxString filespec = wxT( "*." ) + wxString( FILEEXT::KiCadSymbolLibFileExtension );
 
-            if( dir.GetFirst( &filename, filespec, wxDIR_FILES ) )
-                return true;
+            for( const std::string& ext : KEMI_FORMAT::ReadableExts( KEMI_FORMAT::DOC::SYMBOL_LIB ) )
+            {
+                if( dir.GetFirst( &filename, wxT( "*." ) + wxString( ext ), wxDIR_FILES ) )
+                    return true;
+            }
         }
 
         return false;

@@ -25,6 +25,8 @@
 #include <board.h>
 #include <footprint.h>
 #include <kiway_player.h>
+#include <kemi_format_profile.h>
+#include <string_utils.h>
 #include <wildcards_and_files_ext.h>
 #include <libraries/library_table.h>
 #include <pcb_io/pcb_io_mgr.h>
@@ -144,6 +146,8 @@ bool PCB_IO_MGR::ImportGeneratesProjectLibrary( PCB_FILE_T aFileType )
     case ALTIUM_CIRCUIT_STUDIO:
     case ALLEGRO:
     case TARGET3001:
+    case PADS:
+    case PADS_BINARY:
         return true;
 
     default:
@@ -175,6 +179,20 @@ PCB_IO_MGR::PCB_FILE_T PCB_IO_MGR::FindPluginTypeFromBoardPath( const wxString& 
     }
 
     return PCB_IO_MGR::FILE_TYPE_NONE;
+}
+
+
+PCB_IO_MGR::PCB_FILE_T PCB_IO_MGR::ResolveImportFileType( const wxString& aFileName,
+                                                       PCB_FILE_T aFileType )
+{
+    if( aFileType == PADS || aFileType == PADS_BINARY )
+    {
+        // A PADS vendor choice must not send a binary database to the ASCII reader, which
+        // can silently return an empty board. GUI import mail and CLI share this decision.
+        return FindPluginTypeFromBoardPath( aFileName ) == PADS_BINARY ? PADS_BINARY : PADS;
+    }
+
+    return aFileType;
 }
 
 
@@ -276,15 +294,29 @@ bool PCB_IO_MGR::ConvertLibrary( const std::map<std::string, UTF8>& aOldFileProp
         bool bestEfforts = false; // throw on first error
         oldFilePI->FootprintEnumerate( fpNames, aOldFilePath, bestEfforts, &aOldFileProps );
         std::map<std::string, UTF8> props { { "skip_cache_validation", "" } };
+        KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( aNewFilePath );
 
         for ( const wxString& fpName : fpNames )
         {
-            std::unique_ptr<const FOOTPRINT> fp( oldFilePI->GetEnumeratedFootprint( aOldFilePath, fpName,
-                                                                                    &aOldFileProps ) );
+            const FOOTPRINT* fp = oldFilePI->GetEnumeratedFootprint( aOldFilePath, fpName, &aOldFileProps );
+
+            // Caching plugins (e.g. KiCad .pretty) return a borrowed pointer; only own the others.
+            std::unique_ptr<const FOOTPRINT> ownedFp( oldFilePI->CachesEnumeratedFootprints() ? nullptr : fp );
 
             try
             {
-                kicadPI->FootprintSave( aNewFilePath, fp.get(), &props );
+                wxString fileName = fp->GetFPID().GetUniStringLibItemName();
+                ReplaceIllegalFileNameChars( fileName, '_' );
+                wxFileName targetName( policy.FinalDirectory(), fileName,
+                        KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::FOOTPRINT,
+                                          KEMI_FORMAT::FLAVOR::KEMI ) );
+
+                policy.Write( KEMI_FORMAT::DOC::FOOTPRINT, targetName.GetFullPath(),
+                        [&]( const wxString& aPath, const KEMI_FORMAT::OUTPUT_TARGET& aTarget )
+                        {
+                            kicadPI->FootprintSave( aPath, fp, aTarget, &props );
+                            return true;
+                        } );
             }
             catch( ... )
             {

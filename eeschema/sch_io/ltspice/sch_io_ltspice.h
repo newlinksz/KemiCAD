@@ -56,6 +56,10 @@ public:
         return IO_BASE::IO_FILE_DESC( wxEmptyString, { } );
     }
 
+    /// Accept only .asc files whose content starts with an LTspice "Version" header, so PADS ASCII
+    /// exports that share the extension are not imported as empty LTspice schematics.
+    bool CanReadSchematicFile( const wxString& aFileName ) const override;
+
     int GetModifyHash() const override;
 
     SCH_SHEET* LoadSchematicFile( const wxString& aFileName, SCHEMATIC* aSchematic,

@@ -151,11 +151,11 @@ public:
                             const PADS_IO::PARAMETERS& aParams );
 
     /**
-     * Write a .kicad_dru beside @p aFileName carrying one clearance rule per differential
-     * pair with a gap. No file is written when no pair yields a rule.
+     * Return one clearance rule per differential pair with a gap, without writing files.
+     * The text uses the legacy rule syntax for existing import callers and is empty when
+     * no pair yields a rule.
      */
-    void WriteDiffPairRules( const wxString& aFileName,
-                             const std::vector<PADS_IO::DIFF_PAIR_DEF>& aDiffPairs );
+    wxString GenerateDiffPairRules( const std::vector<PADS_IO::DIFF_PAIR_DEF>& aDiffPairs ) const;
 
     void ReportStatistics();
 

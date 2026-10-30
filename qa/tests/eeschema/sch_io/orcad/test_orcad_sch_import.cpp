@@ -7070,4 +7070,38 @@ BOOST_AUTO_TEST_CASE( WireFreePinJunctionsRetainVisibleLocalConnections )
 }
 
 
+
+
+BOOST_AUTO_TEST_CASE( SanitizeFileNameStripsOrCadPageLetterPrefix )
+{
+    // "00_B.  HOLE" -> "HOLE"; digit-letter with separators stripped.
+    BOOST_CHECK_EQUAL( ORCAD_CONVERTER::SanitizeFileName( "00_B.  HOLE" ), wxString( "HOLE" ) );
+    BOOST_CHECK_EQUAL( ORCAD_CONVERTER::SanitizeFileName( "00_A.  note" ), wxString( "note" ) );
+    BOOST_CHECK_EQUAL( ORCAD_CONVERTER::SanitizeFileName( "01. POWER" ), wxString( "POWER" ) );
+    BOOST_CHECK_EQUAL( ORCAD_CONVERTER::SanitizeFileName( "02. USB HUB" ), wxString( "USBHUB" ) );
+
+    // GBK page title "更改记录" after "00_A. "
+    const std::string gbkTitle = std::string( "00_A. " )
+                                 + std::string( "\xb8\xfc\xb8\xc4\xbc\xc7\xc2\xbc", 8 );
+    BOOST_CHECK_EQUAL( ORCAD_CONVERTER::SanitizeFileName( gbkTitle ), wxString::FromUTF8( "更改记录" ) );
+
+    // Leading/trailing spaces after prefix strip are removed with the space-strip pass.
+    BOOST_CHECK_EQUAL( ORCAD_CONVERTER::SanitizeFileName( "03.  Test MCU  " ), wxString( "TestMCU" ) );
+
+    // Leading whitespace before the page index must still strip the letter prefix.
+    BOOST_CHECK_EQUAL( ORCAD_CONVERTER::SanitizeFileName( "  00_B.  HOLE " ), wxString( "HOLE" ) );
+
+    // Do not strip ordinary names like "12_foo".
+    BOOST_CHECK_EQUAL( ORCAD_CONVERTER::SanitizeFileName( "12_foo" ), wxString( "12_foo" ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( MakePageFileNameUsesSanitizedTitle )
+{
+    BOOST_CHECK_EQUAL( ORCAD_CONVERTER::MakePageFileName( 1, "00_B.  HOLE" ),
+                       wxString( "01-HOLE.kemi_sch" ) );
+    BOOST_CHECK_EQUAL( ORCAD_CONVERTER::MakePageFileName( 2, "01. POWER" ),
+                       wxString( "02-POWER.kemi_sch" ) );
+}
+
 BOOST_AUTO_TEST_SUITE_END()

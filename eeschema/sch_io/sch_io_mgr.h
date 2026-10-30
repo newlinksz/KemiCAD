@@ -42,6 +42,11 @@ class LIB_SYMBOL;
 class LEGACY_SYMBOL_LIB;
 class PROGRESS_REPORTER;
 
+namespace KEMI_FORMAT
+{
+class KEMI_ONLY_OUTPUT_POLICY;
+}
+
 
 /**
  * A factory which returns an instance of a #SCH_IO.
@@ -114,10 +119,11 @@ public:
     static SCH_FILE_T GuessPluginTypeFromSchPath( const wxString& aSchematicPath, int aCtl = 0 );
 
     /**
-     * Convert a schematic symbol library to the latest KiCad format
+     * Convert a schematic symbol library, optionally enforcing Kemi-only import output.
      */
     static bool ConvertLibrary( std::map<std::string, UTF8>* aOldFileProps, const wxString& aOldFilePath,
-                                const wxString& aNewFilepath, REPORTER* aReporter = nullptr );
+                                const wxString& aNewFilepath, REPORTER* aReporter = nullptr,
+                                const KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY* aOutputPolicy = nullptr );
 };
 
 #endif // _SCH_IO_MGR_H_

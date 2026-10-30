@@ -29,6 +29,7 @@
 #include <utility>
 
 #include <kiid.h>
+#include <kemi_format_profile.h>
 #include <project.h>
 #include <settings/settings_manager.h>
 #include <wildcards_and_files_ext.h>
@@ -240,15 +241,26 @@ SCRATCH_DOC<DOC> LoadScratchDoc( SETTINGS_MANAGER& aMgr, const wxString& aDocPat
         return out;
 
     wxFileName pro( aDocPath );
-    pro.SetExt( FILEEXT::ProjectFileExtension );
+    pro.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT,
+            KEMI_FORMAT::HasKemiExt( aDocPath ) ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY ) );
     pro.MakeAbsolute();
+
+    if( !pro.FileExists() && KEMI_FORMAT::HasKemiExt( aDocPath ) )
+    {
+        wxFileName official( pro );
+        official.SetExt( FILEEXT::ProjectFileExtension );
+
+        if( official.FileExists() )
+            pro = official;
+    }
 
     // A document bound to the editor's live project would share and then tear down its
     // settings, so a live path gets a scratch project of its own.
     if( PROJECT* active = aMgr.GetProject( pro.GetFullPath() ); active && active == &aMgr.Prj() )
     {
+        const wxString extension = pro.GetExt();
         pro = wxFileName( wxFileName::GetTempDir(), wxS( "kicad_scratch_" ) + KIID().AsString() );
-        pro.SetExt( FILEEXT::ProjectFileExtension );
+        pro.SetExt( extension );
     }
 
     // LoadProject returns true both when newly loaded AND when already

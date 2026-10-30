@@ -32,6 +32,7 @@
 #include <build_version.h>
 #include <wildcards_and_files_ext.h>
 #include "excellon_image.h"
+#include <kemi_format_profile.h>
 #include <wx/log.h>
 #include <convert_basic_shapes_to_polygon.h>
 
@@ -566,7 +567,7 @@ void GBR_TO_PCB_EXPORTER::writePcbHeader( const int* aLayerLookUpTable )
     // Note: the .kicad_pcb version used here is after layers_id changes
     fprintf( m_fp, "(kicad_pcb (version 20240928)\n" );
     fprintf( m_fp, "\t(generator \"gerbview\")\n\t(generator_version \"%s\")\n\n",
-             GetMajorMinorVersion().c_str().AsChar() );
+             KEMI_FORMAT::GeneratorVersion().c_str().AsChar() );
 
     // Write layers section
     fprintf( m_fp, "\t(layers \n" );

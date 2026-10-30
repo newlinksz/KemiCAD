@@ -19,6 +19,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <kemi_format_profile.h>
 #include <kiface_base.h>
 #include <pgm_base.h>
 #include <bitmaps.h>
@@ -131,7 +132,8 @@ PL_EDITOR_FRAME::PL_EDITOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
 
     LoadSettings( config() );
 
-    m_acceptedExts.emplace( FILEEXT::DrawingSheetFileExtension, nullptr );
+    for( const std::string& ext : KEMI_FORMAT::ReadableExts( KEMI_FORMAT::DOC::DRAWING_SHEET ) )
+        m_acceptedExts.emplace( ext, nullptr );
     DragAcceptFiles( true );
 
     VECTOR2I pageSizeIU = GetPageLayout().GetPageSettings().GetSizeIU( drawSheetIUScale.IU_PER_MILS );

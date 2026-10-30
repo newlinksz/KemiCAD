@@ -240,8 +240,16 @@ void SCH_EDIT_FRAME::sendNetlistToCvpcb()
         NETLIST_EXPORTER_KICAD exporter( &Schematic(), &Kiway() );
         STRING_FORMATTER       formatter;
 
-        // @todo : trim GNL_ALL down to minimum for CVPCB
-        exporter.Format( &formatter, GNL_ALL | GNL_OPT_KICAD );
+        // CvPcb needs components, library pin counts and net pin functions for its preview.
+        // Keep the assignment tool available when the current footprint needs to be corrected.
+        WX_STRING_REPORTER reporter;
+
+        if( !exporter.Format( &formatter, GNL_ALL | GNL_OPT_KICAD | GNL_OPT_FOOTPRINT_ASSIGNMENT,
+                             &reporter ) )
+        {
+            DisplayErrorMessage( this, _( "Cannot export the schematic netlist." ), reporter.GetMessages() );
+            return;
+        }
 
         packet = formatter.GetString();  // an abbreviated "kicad" (s-expr) netlist
 

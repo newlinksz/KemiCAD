@@ -63,6 +63,7 @@ private:
     PCB_EDIT_FRAME*   m_frame;
     SCINTILLA_TRICKS* m_scintillaTricks;
     wxString          m_originalText;
+    bool              m_kemiOnlyRules = false;
 
     wxRegEx           m_netClassRegex;
     wxRegEx           m_netNameRegex;

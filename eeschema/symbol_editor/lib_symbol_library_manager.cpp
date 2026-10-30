@@ -181,5 +181,5 @@ bool LIB_SYMBOL_LIBRARY_MANAGER::CreateNewSymbol( const wxString& aLibrary, cons
 
 void LIB_SYMBOL_LIBRARY_MANAGER::OnDataChanged() const
 {
-    static_cast<SYMBOL_EDIT_FRAME&>( m_frame ).SyncLibraries( false );
+    static_cast<SYMBOL_EDIT_FRAME*>( m_frame )->SyncLibraries( false );
 }

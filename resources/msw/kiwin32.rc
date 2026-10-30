@@ -81,6 +81,7 @@ BEGIN
         BLOCK "040904E4"
         BEGIN
             // this gets displayed in the windows 10 task manager
+            VALUE "CompanyName", L"\x6DF1\x5733\x65B0\x667A\x8054\x8F6F\x4EF6\x6709\x9650\x516C\x53F8"
             VALUE "FileDescription", RC_VER_FILE_DESCRIPTION
             VALUE "FileVersion", RC_VER_FILEVER_STR
             //original filename without extension

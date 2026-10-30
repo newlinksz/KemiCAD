@@ -46,7 +46,7 @@ struct PROJECT_NAME_FIXTURE
             m_settingsManager()
     {
         wxString tempDir = wxStandardPaths::Get().GetTempDir();
-        wxString projectPath = tempDir + wxFileName::GetPathSeparator() + wxT( "test_project.kicad_pro" );
+        wxString projectPath = tempDir + wxFileName::GetPathSeparator() + wxS( "test_project.kemi_pro" );
         m_tempFiles.push_back( projectPath );
 
         m_settingsManager.LoadProject( projectPath.ToStdString() );
@@ -70,7 +70,7 @@ struct PROJECT_NAME_FIXTURE
     {
         wxString tempDir = wxStandardPaths::Get().GetTempDir();
         wxString fileName = wxFileName::CreateTempFileName( tempDir + wxFileName::GetPathSeparator() + aPrefix );
-        fileName += wxT( ".kicad_sch" );
+        fileName += wxS( ".kemi_sch" );
         m_tempFiles.push_back( fileName );
         return fileName;
     }

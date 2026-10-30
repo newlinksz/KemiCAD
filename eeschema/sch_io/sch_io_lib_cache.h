@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 #include <wx/filename.h>
 
@@ -80,6 +81,12 @@ public:
     bool IsFile( const wxString& aFullPathAndFileName ) const;
 
     bool IsFileChanged() const;
+
+    /// The same native/legacy file set is used when loading and checking directory caches.
+    static std::vector<wxString> GetSymbolLibraryFiles( const wxString& aDirectory );
+
+    /// Shared native/legacy disk stamp for caches, file watchers, and library trees.
+    static long long GetSymbolLibraryTimestamp( const wxString& aPath );
 
     void SetModified( bool aModified = true ) { m_isModified = aModified; }
 

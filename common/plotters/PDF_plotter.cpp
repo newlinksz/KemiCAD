@@ -2106,7 +2106,7 @@ bool PDF_PLOTTER::EndPlot()
 
     fmt::print( m_outputFile,
                 "<<\n"
-                "/Producer (KiCad PDF)\n"
+                "/Producer (KemiCAD PDF)\n"
                 "/CreationDate ({})\n"
                 "/Creator {}\n"
                 "/Title {}\n"

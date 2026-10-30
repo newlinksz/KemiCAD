@@ -1097,15 +1097,15 @@ static void buildKicadAboutBanner( EDA_BASE_FRAME* aParent, ABOUT_APP_INFO& aInf
     description << wxT( "<ul>" );
     description << wxT( "<li>" )
                 << _( "The official KemiCAD website - " )
-                << HtmlHyperlink( wxS( "https://github.com/newlinksz/KemiCAD" ) )
+                << HtmlHyperlink( wxS( BRAND_URL_HOME ) )
                 << wxT( "</li>" );
     description << wxT( "<li>" )
                 << _( "Source code - " )
-                << HtmlHyperlink( wxS( "https://github.com/newlinksz/KemiCAD" ) )
+                << HtmlHyperlink( wxS( BRAND_URL_HOME ) )
                 << wxT( "</li>" );
     description << wxT( "<li>" )
                 << _( "Downloads and other versions - " )
-                << HtmlHyperlink( wxS( "https://github.com/newlinksz/KemiCAD/releases" ) )
+                << HtmlHyperlink( wxS( BRAND_URL_RELEASES ) )
                 << wxT( "</li>" );
 
     // Define KEMI_SHOW_KICAD_LIBRARY_LINK to restore the upstream library link.
@@ -1126,7 +1126,7 @@ static void buildKicadAboutBanner( EDA_BASE_FRAME* aParent, ABOUT_APP_INFO& aInf
     description << wxT( "<ul>" );
     description << wxT( "<li>" )
                 << _( "Report or examine bugs - " )
-                << HtmlHyperlink( wxS( "https://github.com/newlinksz/KemiCAD/issues" ) )
+                << HtmlHyperlink( wxS( BRAND_URL_ISSUES ) )
                 << wxT( "</li>" );
     description << wxT( "</ul></p>" );
 

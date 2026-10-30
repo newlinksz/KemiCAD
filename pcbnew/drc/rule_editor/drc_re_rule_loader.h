@@ -70,9 +70,14 @@ public:
      * Load rules from a text string.
      *
      * @param aRulesText The text content of the rules.
+     * @param aSource Real file path, or empty for a pathless fragment that may omit the version.
      * @return Vector of panel entries for all rules in the text.
+     *         An empty result is only a valid rule set when GetLoadError() is empty.
      */
-    std::vector<DRC_RE_LOADED_PANEL_ENTRY> LoadFromString( const wxString& aRulesText );
+    std::vector<DRC_RE_LOADED_PANEL_ENTRY> LoadFromString(
+            const wxString& aRulesText, const wxString& aSource = wxEmptyString );
+
+    const wxString& GetLoadError() const { return m_loadError; }
 
     /**
      * @return The text outside the rules of the last loaded file, for DRC_RULE_SAVER.
@@ -147,6 +152,7 @@ private:
 
     DRC_PANEL_MATCHER  m_matcher;
     DRC_RE_FILE_TRIVIA m_fileTrivia;
+    wxString          m_loadError;
 };
 
 

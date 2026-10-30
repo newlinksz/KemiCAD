@@ -82,7 +82,7 @@ BOOST_AUTO_TEST_CASE( RoundTrip )
     KIID aId = a->m_Uuid;
     KIID bId = b->m_Uuid;
 
-    auto path = std::filesystem::temp_directory_path() / "constraint_roundtrip_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "constraint_roundtrip_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *board1, path.string() );
 
     std::unique_ptr<BOARD> board2 = ::KI_TEST::ReadBoardFromFileOrStream( path.string() );
@@ -130,7 +130,7 @@ BOOST_AUTO_TEST_CASE( VertexIndexRoundTrip )
     KIID aId = a->m_Uuid;
     KIID bId = b->m_Uuid;
 
-    auto path = std::filesystem::temp_directory_path() / "constraint_vertex_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "constraint_vertex_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *board1, path.string() );
 
     // Written text carries the index only for VERTEX members a START member keeps the two token
@@ -181,7 +181,7 @@ BOOST_AUTO_TEST_CASE( VertexIndexValidation )
     c->AddMember( a->m_Uuid, CONSTRAINT_ANCHOR::VERTEX, 1 );
     board1->Add( c );
 
-    auto path = std::filesystem::temp_directory_path() / "constraint_vertex_validation_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "constraint_vertex_validation_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *board1, path.string() );
 
     std::ifstream     in( path );
@@ -236,7 +236,7 @@ BOOST_AUTO_TEST_CASE( MissingShapeMemberPreservedAsError )
     c->AddMember( danglingId, CONSTRAINT_ANCHOR::START );
     board1->Add( c );
 
-    auto path = std::filesystem::temp_directory_path() / "constraint_missing_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "constraint_missing_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *board1, path.string() );
 
     std::unique_ptr<BOARD> board2 = ::KI_TEST::ReadBoardFromFileOrStream( path.string() );
@@ -278,7 +278,7 @@ BOOST_AUTO_TEST_CASE( AppendRemapsConstraintMembers )
 
     KIID aOrigId = a->m_Uuid;
 
-    auto path = std::filesystem::temp_directory_path() / "constraint_append_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "constraint_append_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *board1, path.string() );
 
     // Append the file into a fresh board, which forces uuid remapping.

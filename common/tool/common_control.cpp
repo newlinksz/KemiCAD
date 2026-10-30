@@ -49,17 +49,18 @@
 #include <confirm.h>
 #include <reporter.h>
 #include <widgets/kistatusbar.h>
+#include <brand.h>
 
-#define KEMI_DOCS_BASE wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/" )
+#define KEMI_DOCS_BASE wxS( BRAND_URL_DOCS )
 
 /// Online documentation index (docs/kemi/README.md).
 #define URL_DOCUMENTATION KEMI_DOCS_BASE wxS( "README.md" )
 
 /// docs/kemi/入门指南.md, percent-encoded UTF-8.
-#define URL_GETTING_STARTED wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%85%A5%E9%97%A8%E6%8C%87%E5%8D%97.md" )
+#define URL_GETTING_STARTED wxS( BRAND_URL_DOCS "%E5%85%A5%E9%97%A8%E6%8C%87%E5%8D%97.md" )
 
 /// docs/kemi/使用帮助.md, used by the project manager.
-#define URL_USER_HELP wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E4%BD%BF%E7%94%A8%E5%B8%AE%E5%8A%A9.md" )
+#define URL_USER_HELP wxS( BRAND_URL_DOCS "%E4%BD%BF%E7%94%A8%E5%B8%AE%E5%8A%A9.md" )
 
 
 /**
@@ -70,17 +71,17 @@
 static wxString kemiHelpUrl( EDA_BASE_FRAME* aFrame )
 {
     static const std::pair<const wxChar*, const wxChar*> pages[] = {
-        { wxS( "KemiCAD Schematic Editor" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%8E%9F%E7%90%86%E5%9B%BE%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 原理图编辑器.md
-        { wxS( "KemiCAD Symbol Editor" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E7%AC%A6%E5%8F%B7%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 符号编辑器.md
-        { wxS( "KemiCAD Symbol Library Browser" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E7%AC%A6%E5%8F%B7%E4%B8%8E%E5%B0%81%E8%A3%85%E5%BA%93.md" ) }, // 符号与封装库.md
-        { wxS( "KemiCAD PCB Editor" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/PCB%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // PCB编辑器.md
-        { wxS( "KemiCAD Footprint Editor" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%B0%81%E8%A3%85%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 封装编辑器.md
-        { wxS( "KemiCAD Footprint Library Browser" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E7%AC%A6%E5%8F%B7%E4%B8%8E%E5%B0%81%E8%A3%85%E5%BA%93.md" ) }, // 符号与封装库.md
-        { wxS( "KemiCAD 3D Viewer" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/PCB%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // PCB编辑器.md
-        { wxS( "KemiCAD Gerber Viewer" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/Gerber%E6%9F%A5%E7%9C%8B%E5%99%A8.md" ) }, // Gerber查看器.md
-        { wxS( "KemiCAD Calculator Tools" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/PCB%E8%AE%A1%E7%AE%97%E5%99%A8.md" ) }, // PCB计算器.md
-        { wxS( "KemiCAD Drawing Sheet Editor" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%9B%BE%E6%A1%86%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 图框编辑器.md
-        { wxS( "KemiCAD Assign Footprints" ), wxS( "https://github.com/newlinksz/KemiCAD/blob/main/docs/kemi/%E5%88%86%E9%85%8D%E5%B0%81%E8%A3%85.md" ) }, // 分配封装.md
+        { wxS( "KemiCAD Schematic Editor" ), wxS( BRAND_URL_DOCS "%E5%8E%9F%E7%90%86%E5%9B%BE%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 原理图编辑器.md
+        { wxS( "KemiCAD Symbol Editor" ), wxS( BRAND_URL_DOCS "%E7%AC%A6%E5%8F%B7%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 符号编辑器.md
+        { wxS( "KemiCAD Symbol Library Browser" ), wxS( BRAND_URL_DOCS "%E7%AC%A6%E5%8F%B7%E4%B8%8E%E5%B0%81%E8%A3%85%E5%BA%93.md" ) }, // 符号与封装库.md
+        { wxS( "KemiCAD PCB Editor" ), wxS( BRAND_URL_DOCS "PCB%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // PCB编辑器.md
+        { wxS( "KemiCAD Footprint Editor" ), wxS( BRAND_URL_DOCS "%E5%B0%81%E8%A3%85%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 封装编辑器.md
+        { wxS( "KemiCAD Footprint Library Browser" ), wxS( BRAND_URL_DOCS "%E7%AC%A6%E5%8F%B7%E4%B8%8E%E5%B0%81%E8%A3%85%E5%BA%93.md" ) }, // 符号与封装库.md
+        { wxS( "KemiCAD 3D Viewer" ), wxS( BRAND_URL_DOCS "PCB%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // PCB编辑器.md
+        { wxS( "KemiCAD Gerber Viewer" ), wxS( BRAND_URL_DOCS "Gerber%E6%9F%A5%E7%9C%8B%E5%99%A8.md" ) }, // Gerber查看器.md
+        { wxS( "KemiCAD Calculator Tools" ), wxS( BRAND_URL_DOCS "PCB%E8%AE%A1%E7%AE%97%E5%99%A8.md" ) }, // PCB计算器.md
+        { wxS( "KemiCAD Drawing Sheet Editor" ), wxS( BRAND_URL_DOCS "%E5%9B%BE%E6%A1%86%E7%BC%96%E8%BE%91%E5%99%A8.md" ) }, // 图框编辑器.md
+        { wxS( "KemiCAD Assign Footprints" ), wxS( BRAND_URL_DOCS "%E5%88%86%E9%85%8D%E5%B0%81%E8%A3%85.md" ) }, // 分配封装.md
     };
 
     if( !aFrame )
@@ -103,7 +104,7 @@ static wxString kemiHelpUrl( EDA_BASE_FRAME* aFrame )
 
 /// URL to launch a new issue with pre-populated description
 wxString COMMON_CONTROL::m_bugReportUrl =
-        wxS( "https://github.com/newlinksz/KemiCAD/issues/new?body=%s" );
+        wxS( BRAND_URL_ISSUES "/new?body=%s" );
 
 
 /// Issue template to use for reporting bugs (this should not be translated)

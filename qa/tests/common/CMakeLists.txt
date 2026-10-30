@@ -63,6 +63,15 @@ set( QA_COMMON_SRCS
     test_expand_text_vars.cpp
     test_text_var_dependency.cpp
     test_drawing_sheet_reactive.cpp
+    test_kemi_drawing_sheet.cpp
+    test_kemi_json.cpp
+    test_kemi_output_policy.cpp
+    test_kemi_persistent_output.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/project_tree_traverser.cpp
+    test_kemi_archive_history.cpp
+    test_kemi_unarchive_project.cpp
+    test_kemi_generator_version.cpp
+    test_kemi_project_import.cpp
     test_file_history.cpp
     test_filename_resolver.cpp
     test_hashtables.cpp

@@ -56,6 +56,10 @@
 #include <build_version.h>
 #include <kiway.h>
 #include <kiway_mail.h>
+#include <kemi_format_profile.h>
+#include <kemi_project_paths.h>
+#include <richio.h>
+#include <json_common.h>
 #include <launch_ext.h>
 #include <lockfile.h>
 #include <notifications_manager.h>
@@ -335,6 +339,8 @@ KICAD_MANAGER_FRAME::KICAD_MANAGER_FRAME( wxWindow* parent, const wxString& titl
 
     // Init for dropping files
     m_acceptedExts.emplace( FILEEXT::ProjectFileExtension, &KICAD_MANAGER_ACTIONS::loadProject );
+    m_acceptedExts.emplace( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ),
+                            &KICAD_MANAGER_ACTIONS::loadProject );
     m_acceptedExts.emplace( FILEEXT::LegacyProjectFileExtension, &KICAD_MANAGER_ACTIONS::loadProject );
 
     // Gerber files
@@ -532,7 +538,6 @@ void KICAD_MANAGER_FRAME::setupUIConditions()
     activeProjectCond.Enable( activeProject );
 
     manager->SetConditions( ACTIONS::saveAs,                       activeProjectCond );
-    manager->SetConditions( KICAD_MANAGER_ACTIONS::exportForOlderVersion, activeProjectCond );
     manager->SetConditions( KICAD_MANAGER_ACTIONS::closeProject,   activeProjectCond );
     manager->SetConditions( KICAD_MANAGER_ACTIONS::archiveProject, activeProjectCond );
     manager->SetConditions( KICAD_MANAGER_ACTIONS::newJobsetFile,  activeProjectCond );
@@ -616,10 +621,8 @@ const wxString KICAD_MANAGER_FRAME::GetProjectFileName() const
 
 const wxString KICAD_MANAGER_FRAME::SchFileName()
 {
-   wxFileName   fn( GetProjectFileName() );
-
-   fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
-   return fn.GetFullPath();
+    return KEMI_FORMAT::RelatedDocumentPath( KEMI_FORMAT::DOC::PROJECT,
+                                              KEMI_FORMAT::DOC::SCHEMATIC, GetProjectFileName() );
 }
 
 
@@ -634,10 +637,8 @@ const wxString KICAD_MANAGER_FRAME::SchLegacyFileName()
 
 const wxString KICAD_MANAGER_FRAME::PcbFileName()
 {
-   wxFileName   fn( GetProjectFileName() );
-
-   fn.SetExt( FILEEXT::PcbFileExtension );
-   return fn.GetFullPath();
+    return KEMI_FORMAT::RelatedDocumentPath( KEMI_FORMAT::DOC::PROJECT,
+                                              KEMI_FORMAT::DOC::PCB, GetProjectFileName() );
 }
 
 
@@ -686,7 +687,8 @@ void KICAD_MANAGER_FRAME::DoWithAcceptedFiles()
     {
         wxString ext = fileName.GetExt();
 
-        if( ext == FILEEXT::ProjectFileExtension || ext == FILEEXT::LegacyProjectFileExtension )
+        if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PROJECT, ext )
+            || ext == FILEEXT::LegacyProjectFileExtension )
         {
             wxString fn = fileName.GetFullPath();
             m_toolManager->RunAction<wxString*>( *m_acceptedExts.at( fileName.GetExt() ), &fn );
@@ -941,13 +943,23 @@ void KICAD_MANAGER_FRAME::OpenJobsFile( const wxFileName& aFileName, bool aCreat
     {
         std::unique_ptr<JOBSET> jobsFile = std::make_unique<JOBSET>( aFileName.GetFullPath().ToStdString() );
 
-        jobsFile->LoadFromFile();
+        bool creating = aCreate && !aFileName.FileExists();
 
-        if( aCreate && !aFileName.FileExists() )
+        if( !creating && !jobsFile->LoadFromFile() )
+        {
+            DisplayErrorMessage( this, _( "Error opening jobs file" ), jobsFile->GetLoadError() );
+            return;
+        }
+
+        if( creating )
         {
             JOBSET_DESTINATION* dest = jobsFile->AddNewDestination( JOBSET_DESTINATION_T::FOLDER );
             dest->m_outputHandler->SetOutputPath( aFileName.GetName() );
-            jobsFile->SaveToFile( wxEmptyString, true );
+            if( !jobsFile->SaveToFile( wxEmptyString, true ) )
+            {
+                DisplayErrorMessage( this, _( "Error saving jobs file" ) );
+                return;
+            }
         }
 
         PANEL_JOBSET* jobPanel = new PANEL_JOBSET( m_notebook, this, std::move( jobsFile ) );
@@ -1109,103 +1121,115 @@ bool KICAD_MANAGER_FRAME::LoadProject( const wxFileName& aProjectFileName )
 }
 
 
-void KICAD_MANAGER_FRAME::CreateNewProject( const wxFileName& aProjectFileName, bool aCreateStubFiles )
+bool KICAD_MANAGER_FRAME::CreateNewProject( const wxFileName& aProjectFileName, bool aCreateStubFiles )
 {
-    wxCHECK_RET( aProjectFileName.DirExists() && aProjectFileName.IsDirWritable(),
-                 "Project folder must exist and be writable to create a new project." );
+    wxCHECK_MSG( aProjectFileName.DirExists() && aProjectFileName.IsDirWritable(), false,
+                 wxS( "Project folder must exist and be writable to create a new project." ) );
 
-    // If the project is legacy, convert it
-    if( !aProjectFileName.FileExists() )
+    try
     {
-        wxFileName legacyPro( aProjectFileName );
-        legacyPro.SetExt( FILEEXT::LegacyProjectFileExtension );
+        const wxFileName projectFile( KEMI_FORMAT::PersistentOutputPath(
+                KEMI_FORMAT::DOC::PROJECT, aProjectFileName.GetFullPath(), true ) );
 
-        if( legacyPro.FileExists() )
+        if( !projectFile.FileExists() )
         {
-            GetSettingsManager()->LoadProject( legacyPro.GetFullPath() );
-            GetSettingsManager()->SaveProject();
+            wxFileName source( projectFile );
 
-            wxRemoveFile( legacyPro.GetFullPath() );
-        }
-        else
-        {
-            // Copy template project file from template folder.
-            wxString srcFileName = sys_search().FindValidPath( "kicad.kicad_pro" );
-
-            wxFileName destFileName( aProjectFileName );
-            destFileName.SetExt( FILEEXT::ProjectFileExtension );
-
-            // Create a minimal project file if the template project file could not be copied
-            if( !wxFileName::FileExists( srcFileName )
-                || !wxCopyFile( srcFileName, destFileName.GetFullPath() ) )
+            for( const wxString& extension : { wxString( FILEEXT::ProjectFileExtension ),
+                                               wxString( FILEEXT::LegacyProjectFileExtension ) } )
             {
-                wxFFile file( destFileName.GetFullPath(), "wb" );
+                source.SetExt( extension );
 
-                if( file.IsOpened() )
-                    file.Write( wxT( "{\n}\n") );
+                if( source.FileExists() )
+                    THROW_IO_ERROR( _( "Import the existing KiCad project into a new folder first." ) );
+            }
 
-                // wxFFile dtor will close the file
+            wxString templatePath = sys_search().FindValidPath( wxS( "kicad.kemi_pro" ) );
+
+            if( templatePath.IsEmpty() )
+                templatePath = sys_search().FindValidPath( wxS( "kicad.kicad_pro" ) );
+
+            nlohmann::json document = { { "meta", { { "version", 1 } } } };
+
+            if( wxFileExists( templatePath ) )
+            {
+                wxFFile input( templatePath, wxS( "rb" ) );
+                wxString contents;
+
+                if( !input.IsOpened() || !input.ReadAll( &contents, wxConvUTF8 ) )
+                    THROW_IO_ERROR( _( "Could not read the default project template." ) );
+
+                document = nlohmann::json::parse( contents.ToStdString( wxConvUTF8 ) );
+                const wxString error = KEMI_FORMAT::ValidateJsonMarker(
+                        document, KEMI_FORMAT::DOC::PROJECT, templatePath );
+
+                if( !error.IsEmpty() )
+                    THROW_IO_ERROR( error );
+            }
+
+            KEMI_FORMAT::StampJsonMarker( document, KEMI_FORMAT::DOC::PROJECT );
+            document["meta"]["filename"] = projectFile.GetFullName().ToStdString( wxConvUTF8 );
+            FILE_OUTPUTFORMATTER output( projectFile.GetFullPath() );
+            output.Print( "%s\n", document.dump( 2 ).c_str() );
+            output.Finish();
+        }
+
+        if( aCreateStubFiles )
+        {
+            wxFileName schematic( projectFile );
+            schematic.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC,
+                                               KEMI_FORMAT::FLAVOR::KEMI ) );
+
+            if( !schematic.FileExists() )
+            {
+                KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SCHEMATIC,
+                        schematic.GetFullPath(), KEMI_FORMAT::FLAVOR::KEMI, true );
+                FILE_OUTPUTFORMATTER output( schematic.GetFullPath() );
+                output.Print( "(%s (format_version %d)\n"
+                              "  (version %d)\n"
+                              "  (generator \"eeschema\")\n"
+                              "  (generator_version \"%s\")\n"
+                              "  (uuid %s)\n"
+                              "  (paper \"A4\")\n"
+                              "  (lib_symbols)\n"
+                              "  (sheet_instances (path \"/\" (page \"1\")))\n"
+                              "  (embedded_fonts no)\n)\n",
+                              KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::SCHEMATIC,
+                                                      KEMI_FORMAT::FLAVOR::KEMI ).c_str(),
+                              KEMI_FORMAT::FORMAT_VERSION, SEXPR_SCHEMATIC_FILE_VERSION,
+                              KEMI_FORMAT::GeneratorVersion().ToUTF8().data(),
+                              KIID().AsString().ToUTF8().data() );
+                output.Finish();
+            }
+
+            wxFileName board( projectFile );
+            board.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, KEMI_FORMAT::FLAVOR::KEMI ) );
+
+            if( !board.FileExists() )
+            {
+                KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PCB,
+                        board.GetFullPath(), KEMI_FORMAT::FLAVOR::KEMI, true );
+                FILE_OUTPUTFORMATTER output( board.GetFullPath() );
+                output.Print( "(%s (format_version %d) (version %d) (generator \"pcbnew\")"
+                              " (generator_version \"%s\")\n)\n",
+                              KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::PCB,
+                                                      KEMI_FORMAT::FLAVOR::KEMI ).c_str(),
+                              KEMI_FORMAT::FORMAT_VERSION, SEXPR_BOARD_FILE_VERSION,
+                              KEMI_FORMAT::GeneratorVersion().ToUTF8().data() );
+                output.Finish();
             }
         }
     }
-
-    // Create a "stub" for a schematic root sheet and a board if requested.
-    // It will avoid messages from the schematic editor or the board editor to create a new file
-    // And forces the user to create main files under the right name for the project manager
-    if( aCreateStubFiles )
+    catch( const IO_ERROR& error )
     {
-        wxFileName fn( aProjectFileName.GetFullPath() );
-        fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
-
-        // If a <project>.kicad_sch file does not exist, create a "stub" file ( minimal schematic
-        // file ).
-        if( !fn.FileExists() )
-        {
-            wxFFile file( fn.GetFullPath(), "wb" );
-
-            if( file.IsOpened() )
-            {
-                file.Write( wxString::Format( "(kicad_sch\n"
-                                              "\t(version %d)\n"
-                                              "\t(generator \"eeschema\")\n"
-                                              "\t(generator_version \"%s\")\n"
-                                              "\t(uuid %s)\n"
-                                              "\t(paper \"A4\")\n"
-                                              "\t(lib_symbols)\n"
-                                              "\t(sheet_instances\n"
-                                              "\t\t(path \"/\"\n"
-                                              "\t\t\t(page \"1\")\n"
-                                              "\t\t)\n"
-                                              "\t)\n"
-                                              "\t(embedded_fonts no)\n"
-                                              ")",
-                                              SEXPR_SCHEMATIC_FILE_VERSION,
-                                              GetMajorMinorVersion(),
-                                              KIID().AsString() ) );
-            }
-
-            // wxFFile dtor will close the file
-        }
-
-        // If a <project>.kicad_pcb or <project>.brd file does not exist,
-        // create a .kicad_pcb "stub" file
-        fn.SetExt( FILEEXT::KiCadPcbFileExtension );
-        wxFileName leg_fn( fn );
-        leg_fn.SetExt( FILEEXT::LegacyPcbFileExtension );
-
-        if( !fn.FileExists() && !leg_fn.FileExists() )
-        {
-            wxFFile file( fn.GetFullPath(), "wb" );
-
-            if( file.IsOpened() )
-            {
-                // Create a small dummy file as a stub for pcbnew:
-                file.Write( wxString::Format( "(kicad_pcb (version %d) (generator \"pcbnew\") (generator_version \"%s\")\n)",
-                                              SEXPR_BOARD_FILE_VERSION, GetMajorMinorVersion() ) );
-            }
-
-            // wxFFile dtor will close the file
-        }
+        DisplayErrorMessage( this, _( "Could not create the project." ), error.What() );
+        return false;
+    }
+    catch( const nlohmann::json::exception& error )
+    {
+        DisplayErrorMessage( this, _( "Invalid default project template." ),
+                             wxString::FromUTF8( error.what() ) );
+        return false;
     }
 
     // Save history & window state to disk now.  Don't wait around for a crash.
@@ -1214,6 +1238,7 @@ void KICAD_MANAGER_FRAME::CreateNewProject( const wxFileName& aProjectFileName, 
     settings->SaveToFile( Pgm().GetSettingsManager().GetPathForSettingsFile( settings ) );
 
     m_openSavedWindows = true;
+    return true;
 }
 
 
@@ -1334,6 +1359,8 @@ void KICAD_MANAGER_FRAME::CommonSettingsChanged( int aFlags )
 
 void KICAD_MANAGER_FRAME::ProjectChanged()
 {
+    // Format-dependent export choices must follow a newly opened or closed project.
+    ReCreateMenuBar();
     wxString file = GetProjectFileName();
 
     // empty file string means no project loaded

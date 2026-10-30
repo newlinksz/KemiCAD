@@ -23,6 +23,7 @@
 #include "pcb_differ.h"
 
 #include <board.h>
+#include <kemi_format_profile.h>
 #include <board_design_settings.h>
 #include <board_item.h>
 #include <board_stackup_manager/board_stackup.h>
@@ -161,6 +162,15 @@ std::unique_ptr<BOARD> PCB_MERGE_APPLIER::Apply()
     auto readSiblingRules =
             [&]( const BOARD* aBoard ) -> wxString
             {
+                if( aBoard && KEMI_FORMAT::HasKemiExt( aBoard->GetFileName() ) )
+                {
+                    wxFileName native( aBoard->GetFileName() );
+                    native.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::DESIGN_RULES, KEMI_FORMAT::FLAVOR::KEMI ) );
+
+                    if( native.FileExists() )
+                        return readProjectSiblingFile( aBoard, native.GetExt(), false );
+                }
+
                 return readProjectSiblingFile( aBoard, wxString::FromUTF8( FILEEXT::DesignRulesFileExtension ),
                                                false );
             };

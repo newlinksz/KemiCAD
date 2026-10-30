@@ -23,7 +23,7 @@
 
 #include <diff_merge/diff_doc_kind.h>
 
-#include <wildcards_and_files_ext.h>
+#include <kemi_format_profile.h>
 
 #include <wx/filename.h>
 
@@ -35,16 +35,16 @@ DOC_KIND DocKindFromExtension( const wxString& aPath )
 {
     const wxString ext = wxFileName( aPath ).GetExt().Lower();
 
-    if( ext == FILEEXT::KiCadPcbFileExtension )
+    if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PCB, ext ) )
         return DOC_KIND::PCB;
 
-    if( ext == FILEEXT::KiCadSchematicFileExtension )
+    if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::SCHEMATIC, ext ) )
         return DOC_KIND::SCH;
 
-    if( ext == FILEEXT::KiCadSymbolLibFileExtension )
+    if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::SYMBOL_LIB, ext ) )
         return DOC_KIND::SYM_LIB;
 
-    if( ext == FILEEXT::KiCadFootprintFileExtension )
+    if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::FOOTPRINT, ext ) )
         return DOC_KIND::FOOTPRINT;
 
     return DOC_KIND::UNKNOWN;

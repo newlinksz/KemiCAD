@@ -100,7 +100,7 @@ class TestSchImportHelp:
         stdout, _, return_code = utils.run_and_capture( command )
 
         assert return_code == 0
-        assert "Import a non-KiCad schematic file" in stdout
+        assert "save it in KemiCAD format (.kemi_sch)" in stdout
         assert "--format" in stdout
         assert "--report-format" in stdout
 

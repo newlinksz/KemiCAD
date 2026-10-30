@@ -23,6 +23,9 @@
 #include "dialogs/panel_maintenance.h"
 #include "kicad_manager_frame.h"
 #include <eda_base_frame.h>
+#include <kemi_format_profile.h>
+#include <map>
+#include <ki_exception.h>
 #include <nlohmann/json.hpp>
 
 #include <advanced_config.h>
@@ -73,6 +76,7 @@
 #include <wx/config.h>
 #include <wx/display.h>
 #include <wx/stdpaths.h>
+#include <wx/ffile.h>
 #include <wx/string.h>
 #include <wx/msgdlg.h>
 #include <wx/wupdlock.h>
@@ -463,14 +467,36 @@ static wxString buildRecoveredFileName( const wxFileName& aSrcFn, const wxDateTi
 }
 
 
-void EDA_BASE_FRAME::CheckForAutosaveFiles( const wxString& aProjectPath, const std::vector<wxString>& aExtensions )
+wxString EDA_BASE_FRAME::CheckForAutosaveFiles( const wxString& aProjectPath,
+                                                const std::vector<wxString>& aExtensions,
+                                                const wxString& aDocumentPath )
 {
+    wxString recoveredDocument;
+    bool officialDocument = false;
+    wxFileName nativeDocument( aDocumentPath );
+
+    for( const KEMI_FORMAT::DOC_PROFILE& profile : KEMI_FORMAT::AllProfiles() )
+    {
+        if( KEMI_FORMAT::IsReadableExt( profile.doc, nativeDocument.GetExt() ) )
+        {
+            officialDocument = KEMI_FORMAT::IsLegacyExt( profile.doc, nativeDocument.GetExt() );
+            nativeDocument.SetExt( KEMI_FORMAT::Ext( profile.doc, KEMI_FORMAT::FLAVOR::KEMI ) );
+            break;
+        }
+    }
+
     auto stale = Kiway().LocalHistory().FindStaleAutosaveFiles( aProjectPath, aExtensions );
 
     if( stale.empty() )
-        return;
+        return wxEmptyString;
 
-    DIALOG_AUTOSAVE_RECOVERY dlg( this, stale );
+    const bool schematicHierarchy = KEMI_FORMAT::IsReadableExt(
+            KEMI_FORMAT::DOC::SCHEMATIC, nativeDocument.GetExt() );
+
+    if( schematicHierarchy )
+        stale = Kiway().LocalHistory().FindStaleAutosaveFiles( aProjectPath, aExtensions, true );
+
+    DIALOG_AUTOSAVE_RECOVERY dlg( this, stale, schematicHierarchy );
     dlg.ShowModal();
 
     auto selected = dlg.GetSelectedStale();
@@ -478,17 +504,39 @@ void EDA_BASE_FRAME::CheckForAutosaveFiles( const wxString& aProjectPath, const 
     switch( dlg.GetChoice() )
     {
     case AUTOSAVE_RECOVERY_CHOICE::RESTORE:
+    case AUTOSAVE_RECOVERY_CHOICE::KEEP_BOTH:
+    {
+        std::map<wxString, wxString> targets;
+
         for( const auto& [autosavePath, srcPath] : selected )
         {
-            if( !wxCopyFile( autosavePath, srcPath, true ) )
+            wxString target = srcPath;
+
+            if( dlg.GetChoice() == AUTOSAVE_RECOVERY_CHOICE::KEEP_BOTH
+                    || ( officialDocument && wxFileName::Exists( target ) ) )
             {
-                wxLogError( _( "Failed to recover auto-saved file '%s'." ), srcPath );
-                continue;
+                target = buildRecoveredFileName( wxFileName( target ), wxDateTime::Now() );
             }
+
+            targets.emplace( srcPath, target );
+        }
+
+        if( !LOCAL_HISTORY::RestoreAutosaveFiles( selected, targets ) )
+        {
+            wxLogError( _( "Failed to recover the auto-saved files. The autosaves have been kept." ) );
+            break;
+        }
+
+        for( const auto& [autosavePath, srcPath] : selected )
+        {
+            if( !aDocumentPath.IsEmpty() && nativeDocument.SameAs( wxFileName( srcPath ) ) )
+                recoveredDocument = targets.at( srcPath );
 
             wxRemoveFile( autosavePath );
         }
+
         break;
+    }
 
     case AUTOSAVE_RECOVERY_CHOICE::KEEP_CURRENT:
         for( const auto& [autosavePath, srcPath] : selected )
@@ -498,29 +546,12 @@ void EDA_BASE_FRAME::CheckForAutosaveFiles( const wxString& aProjectPath, const 
         }
         break;
 
-    case AUTOSAVE_RECOVERY_CHOICE::KEEP_BOTH:
-        for( const auto& [autosavePath, srcPath] : selected )
-        {
-            wxFileName autosaveFn( autosavePath );
-            wxFileName srcFn( srcPath );
-            wxDateTime stamp = autosaveFn.FileExists() ? autosaveFn.GetModificationTime() : wxDateTime::Now();
-
-            wxString target = buildRecoveredFileName( srcFn, stamp );
-
-            if( !wxCopyFile( autosavePath, target, true ) )
-            {
-                wxLogError( _( "Failed to write recovered file '%s'." ), target );
-                continue;
-            }
-
-            wxRemoveFile( autosavePath );
-        }
-        break;
-
     case AUTOSAVE_RECOVERY_CHOICE::CANCEL:
         // Leave all autosaves on disk so the dialog can offer them again next open.
         break;
     }
+
+    return recoveredDocument;
 }
 
 

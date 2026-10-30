@@ -34,12 +34,15 @@
 #include <pcb_edit_frame.h>
 #include <board_design_settings.h>
 #include <board_loader.h>
+#include <drc/rule_editor/drc_re_rule_loader.h>
+#include <drc/rule_editor/drc_re_rule_saver.h>
 #include <3d_viewer/eda_3d_viewer_frame.h>
 #include <footprint_import_reconciler.h>
 #include <import_design_rules.h>
 #include <footprint_library_adapter.h>
 #include <import_proj_properties.h>
 #include <import_net_names.h>
+#include <kemi_format_profile.h>
 #include <kiface_base.h>
 #include <macros.h>
 #include <trace_helpers.h>
@@ -102,6 +105,31 @@
 #define     USE_INSTRUMENTATION     0
 
 static const wxChar* const traceAllegroPerf = wxT( "KICAD_ALLEGRO_PERF" );
+
+
+static void copyBoardDesignRules( const wxFileName& aSource, const wxFileName& aTarget,
+                                 wxString& aError )
+{
+    if( KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::DESIGN_RULES, aSource.GetFullPath() )
+        != KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::DESIGN_RULES, aTarget.GetFullPath() ) )
+    {
+        DRC_RULE_LOADER loader;
+        const auto entries = loader.LoadFile( aSource.GetFullPath() );
+        aError = loader.GetLoadError();
+
+        if( !aError.IsEmpty() )
+            return;
+
+        DRC_RULE_SAVER saver;
+
+        if( !saver.SaveFile( aTarget.GetFullPath(), entries, nullptr, loader.GetFileTrivia() ) )
+            aError = _( "Could not save the custom design rules." );
+    }
+    else
+    {
+        KiCopyFile( aSource.GetFullPath(), aTarget.GetFullPath(), aError );
+    }
+}
 
 
 /**
@@ -228,10 +256,17 @@ bool AskLoadBoardFileName( PCB_EDIT_FRAME* aParent, wxString* aFileName, int aCt
  */
 bool AskSaveBoardFileName( PCB_EDIT_FRAME* aParent, wxString* aFileName, bool* aCreateProject )
 {
-    wxString   wildcard = FILEEXT::PcbFileWildcard();
+    const bool restricted = true;
+    wxString   wildcard = restricted
+            ? _( "KemiCAD PCB files" ) + AddFileExtListToFilter(
+                    { KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, KEMI_FORMAT::FLAVOR::KEMI ) } )
+            : FILEEXT::PcbFileWildcard();
     wxFileName  fn = *aFileName;
+    const wxString extension = KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB,
+            restricted ? KEMI_FORMAT::FLAVOR::KEMI
+                       : KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PCB, fn.GetFullPath() ) );
 
-    fn.SetExt( FILEEXT::KiCadPcbFileExtension );
+    fn.SetExt( extension );
 
     wxFileDialog dlg( aParent, _( "Save Board File As" ), fn.GetPath(), fn.GetFullName(), wildcard,
                       wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
@@ -248,7 +283,25 @@ bool AskSaveBoardFileName( PCB_EDIT_FRAME* aParent, wxString* aFileName, bool* a
         return false;
 
     *aFileName = dlg.GetPath();
-    *aFileName = EnsureFileExtension( *aFileName, FILEEXT::KiCadPcbFileExtension );
+
+    try
+    {
+        *aFileName = restricted
+                ? KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::PCB, *aFileName, true )
+                : EnsureFileExtension( *aFileName, extension );
+    }
+    catch( const IO_ERROR& error )
+    {
+        DisplayError( aParent, error.What() );
+        return false;
+    }
+
+    if( KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PCB,
+            wxFileName( aParent->GetBoard()->GetFileName() ).GetExt() ) && wxFileExists( *aFileName ) )
+    {
+        DisplayError( aParent, _( "Choose a new native file name; the save target already exists." ) );
+        return false;
+    }
 
     if( newProjectHook.IsAttachedToDialog() )
         *aCreateProject = newProjectHook.GetCreateNewProject();
@@ -376,7 +429,9 @@ bool PCB_EDIT_FRAME::SaveBoard( bool aSaveAs, bool aSaveCopy )
     {
         if( !GetBoard()->GetFileName().IsEmpty() )
         {
-            if( SavePcbFile( Prj().AbsolutePath( GetBoard()->GetFileName() ) ) )
+            wxFileName target( Prj().AbsolutePath( GetBoard()->GetFileName() ) );
+
+            if( SavePcbFile( target.GetFullPath() ) )
             {
                 m_autoSaveRequired = false;
                 return true;
@@ -403,7 +458,8 @@ bool PCB_EDIT_FRAME::SaveBoard( bool aSaveAs, bool aSaveCopy )
             savePath = PATHS::GetDefaultUserProjectsPath();
     }
 
-    wxFileName  fn( savePath.GetPath(), orig_name, FILEEXT::KiCadPcbFileExtension );
+    const wxString extension = KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, KEMI_FORMAT::FLAVOR::KEMI );
+    wxFileName  fn( savePath.GetPath(), orig_name, extension );
     wxString    filename = fn.GetFullPath();
     bool        createProject = false;
     bool        success = false;
@@ -412,7 +468,7 @@ bool PCB_EDIT_FRAME::SaveBoard( bool aSaveAs, bool aSaveCopy )
     {
         if( aSaveCopy )
         {
-            success = SavePcbCopy( EnsureFileExtension( filename, FILEEXT::KiCadPcbFileExtension ), createProject );
+            success = SavePcbCopy( EnsureFileExtension( filename, extension ), createProject );
         }
         else
         {
@@ -544,7 +600,6 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
     }
 
     wxFileName pro = fullFileName;
-    pro.SetExt( FILEEXT::ProjectFileExtension );
 
     bool is_new = !wxFileName::IsFileReadable( fullFileName );
 
@@ -572,9 +627,6 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
     WX_STRING_REPORTER loadReporter;
     LOAD_INFO_REPORTER_SCOPE loadReporterScope( &loadReporter );
 
-    // No save prompt (we already prompted above), and only reset to a new blank board if new
-    Clear_Pcb( false, !is_new );
-
     PCB_IO_MGR::PCB_FILE_T pluginType = PCB_IO_MGR::KICAD_SEXP;
 
     if( !is_new )
@@ -589,6 +641,29 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
 
     bool converted =  pluginType != PCB_IO_MGR::LEGACY && pluginType != PCB_IO_MGR::KICAD_SEXP;
 
+    // The import menu opens a file directly, whereas manager mail goes through importFile().
+    // Both entrances must reconcile the same project footprint cache.
+    if( converted && PCB_IO_MGR::ImportGeneratesProjectLibrary( pluginType ) )
+        aCtl |= KICTL_IMPORT_LIB;
+
+    if( converted && !Kiface().IsSingle()
+        && !KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PROJECT,
+                                    wxFileName( Prj().GetProjectFullName() ).GetExt() ) )
+    {
+        // Other editors may share this PROJECT. Its migration belongs to the manager.
+        progressReporter.Hide();
+        DisplayError( this, _( "Open a KemiCAD project before importing a board." ) );
+        return false;
+    }
+
+    // No save prompt (we already prompted above), and only reset to a new blank board if new.
+    Clear_Pcb( false, !is_new );
+
+    const KEMI_FORMAT::FLAVOR outputFlavor =
+            converted || KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PCB, wx_filename.GetExt() )
+                    ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY;
+    pro.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, outputFlavor ) );
+
     // Loading a project should only be done under carefully considered circumstances.
 
     // The calling code should know not to ask me here to change projects unless
@@ -601,6 +676,15 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
         setProject = pro.GetFullPath() != mgr->Prj().GetProjectFullName();
     else
         setProject = Prj().GetProjectFullName().IsEmpty();
+
+    // Standalone foreign imports must establish their Kemi project before the importer
+    // writes settings or caches. Manager imports already provide a destination project.
+    if( converted && Kiface().IsSingle()
+        && !KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PROJECT,
+                                    wxFileName( Prj().GetProjectFullName() ).GetExt() ) )
+    {
+        setProject = true;
+    }
 
     if( setProject )
     {
@@ -627,10 +711,47 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
         Prj().SetReadOnly( !pro.Exists() && !converted );
     }
 
+    wxString importedBoardPath;
+
+    if( converted )
+    {
+        wxFileName target;
+
+        if( !previousBoardFileName.IsEmpty() && ( aCtl & KICTL_NONKICAD_ONLY ) && !setProject )
+            target.Assign( previousBoardFileName );
+        else
+            target.Assign( Prj().GetProjectPath(), Prj().GetProjectName() );
+
+        target.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, KEMI_FORMAT::FLAVOR::KEMI ) );
+
+        try
+        {
+            KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( target.GetPath() );
+            importedBoardPath = policy.Target( KEMI_FORMAT::DOC::PCB,
+                                               target.GetFullPath() ).FinalPath();
+        }
+        catch( const IO_ERROR& ioe )
+        {
+            progressReporter.Hide();
+            DisplayError( this, ioe.What() );
+            return false;
+        }
+    }
+
     // Crash-recovery: when zip-format autosave is active, look for autosave files newer than
     // the saved board and offer to recover them before the load happens.
     if( !is_new )
-        CheckForAutosaveFiles( wx_filename.GetPath(), { FILEEXT::KiCadPcbFileExtension } );
+    {
+        const wxString recovered = CheckForAutosaveFiles( wx_filename.GetPath(),
+                { FILEEXT::KiCadPcbFileExtension,
+                  KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, KEMI_FORMAT::FLAVOR::KEMI ) }, fullFileName );
+
+        if( !recovered.IsEmpty() )
+        {
+            fullFileName = recovered;
+            wx_filename.Assign( recovered );
+        }
+    }
 
     // custom rules the importer derived, saved with the board once its name is known
     wxString importedRules;
@@ -905,13 +1026,18 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
 
         // extract a project fp library and re-link board FPIDs so update-from-schematic works
         if( aCtl & KICTL_IMPORT_LIB )
-            reconcileImportedFootprintLibraries( std::move( importedLibFootprints ), fullFileName );
+            reconcileImportedFootprintLibraries( std::move( importedLibFootprints ),
+                                                 converted ? importedBoardPath : fullFileName );
     }
 
     {
         wxString fname;
 
-        if( !previousBoardFileName.IsEmpty() && ( aCtl & KICTL_NONKICAD_ONLY ) && !setProject )
+        if( converted )
+        {
+            fname = importedBoardPath;
+        }
+        else if( !previousBoardFileName.IsEmpty() && ( aCtl & KICTL_NONKICAD_ONLY ) && !setProject )
         {
             fname = previousBoardFileName;
         }
@@ -921,7 +1047,7 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
 
             fn.SetPath( Prj().GetProjectPath() );
             fn.SetName( Prj().GetProjectName() );
-            fn.SetExt( FILEEXT::KiCadPcbFileExtension );
+            fn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, outputFlavor ) );
 
             fname = fn.GetFullPath();
 
@@ -1019,11 +1145,57 @@ bool PCB_EDIT_FRAME::SavePcbFile( const wxString& aFileName, bool addToHistory,
     // please, keep it simple.  prompting goes elsewhere.
     wxFileName pcbFileName = aFileName;
 
-    if( pcbFileName.GetExt() == FILEEXT::LegacyPcbFileExtension )
-        pcbFileName.SetExt( FILEEXT::KiCadPcbFileExtension );
+    try
+    {
+        if( wxFileName( aFileName ).SameAs( wxFileName( GetBoard()->GetFileName() ) ) )
+        {
+            try
+            {
+                pcbFileName.Assign( KEMI_FORMAT::ResolveNativeSaveTarget(
+                        KEMI_FORMAT::DOC::PCB, aFileName ) );
+            }
+            catch( const IO_ERROR& )
+            {
+                wxString selected = aFileName;
+                bool createProject = false;
+
+                if( !AskSaveBoardFileName( this, &selected, &createProject ) )
+                    return false;
+
+                pcbFileName.Assign( selected );
+
+                if( pcbFileName.Exists() )
+                    THROW_IO_ERROR( _( "Choose a new native file name; the save target already exists." ) );
+            }
+        }
+        else
+        {
+            pcbFileName.Assign( KEMI_FORMAT::PersistentOutputPath(
+                    KEMI_FORMAT::DOC::PCB, aFileName, true ) );
+        }
+    }
+    catch( const IO_ERROR& error )
+    {
+        DisplayError( this, error.What() );
+        return false;
+    }
 
     // Write through symlinks, don't replace them
     WX_FILENAME::ResolvePossibleSymlinks( pcbFileName );
+
+    try
+    {
+        KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PCB, pcbFileName.GetFullPath(),
+                GetBoard()->IsKemiOnly() ? KEMI_FORMAT::FLAVOR::KEMI
+                        : KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PCB,
+                                                      pcbFileName.GetFullPath() ),
+                GetBoard()->IsKemiOnly() );
+    }
+    catch( const IO_ERROR& error )
+    {
+        DisplayError( this, error.What() );
+        return false;
+    }
 
     if( !IsWritable( pcbFileName ) )
     {
@@ -1039,23 +1211,38 @@ bool PCB_EDIT_FRAME::SavePcbFile( const wxString& aFileName, bool addToHistory,
     wxFileName rulesFile( pcbFileName );
     wxString   msg;
 
-    projectFile.SetExt( FILEEXT::ProjectFileExtension );
-    rulesFile.SetExt( FILEEXT::DesignRulesFileExtension );
+    const KEMI_FORMAT::FLAVOR flavor =
+            KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PCB, pcbFileName.GetFullPath() );
+    projectFile.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, flavor ) );
+    rulesFile.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::DESIGN_RULES, flavor ) );
 
-    if( projectFile.FileExists() )
+    try
     {
-        GetSettingsManager()->SaveProject();
+        if( projectFile.FileExists()
+                && ( !GetBoard()->IsKemiOnly()
+                     || KEMI_FORMAT::HasKemiExt( Prj().GetProjectFullName() ) ) )
+        {
+            GetSettingsManager()->SaveProject();
+        }
+        else if( aChangeProject
+                 && !( KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT,
+                        wxFileName( Prj().GetProjectFullName() ).GetExt() )
+                       && wxFileExists( Prj().GetProjectFullName() ) ) )
+        {
+            Prj().SetReadOnly( false );
+            GetSettingsManager()->SaveProjectAs( projectFile.GetFullPath() );
+        }
     }
-    else if( aChangeProject )
+    catch( const IO_ERROR& error )
     {
-        Prj().SetReadOnly( false );
-        GetSettingsManager()->SaveProjectAs( projectFile.GetFullPath() );
+        DisplayError( this, error.What() );
+        return false;
     }
 
     wxFileName currentRules( GetBoard()->GetDesignRulesPath() );
 
     if( currentRules.FileExists() && !rulesFile.FileExists() && aChangeProject )
-        KiCopyFile( currentRules.GetFullPath(), rulesFile.GetFullPath(), msg );
+        copyBoardDesignRules( currentRules, rulesFile, msg );
 
     if( !msg.IsEmpty() )
     {
@@ -1063,7 +1250,9 @@ bool PCB_EDIT_FRAME::SavePcbFile( const wxString& aFileName, bool addToHistory,
                                               rulesFile.GetFullPath() ) );
     }
 
-    if( projectFile.FileExists() )
+    if( projectFile.FileExists()
+            && ( !GetBoard()->IsKemiOnly()
+                 || KEMI_FORMAT::HasKemiExt( Prj().GetProjectFullName() ) ) )
     {
         // Save various DRC parameters, such as violation severities (which may have been
         // edited via the DRC dialog as well as the Board Setup dialog), DRC exclusions, etc.
@@ -1159,6 +1348,19 @@ bool PCB_EDIT_FRAME::SavePcbCopy( const wxString& aFileName, bool aCreateProject
 {
     wxFileName pcbFileName( aFileName );
 
+    try
+    {
+        KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PCB, aFileName,
+                                            KEMI_FORMAT::FLAVOR::KEMI, true );
+    }
+    catch( const IO_ERROR& error )
+    {
+        if( !aHeadless )
+            DisplayError( this, error.What() );
+
+        return false;
+    }
+
     if( !IsWritable( pcbFileName ) )
     {
         if( !aHeadless )
@@ -1171,7 +1373,8 @@ bool PCB_EDIT_FRAME::SavePcbCopy( const wxString& aFileName, bool aCreateProject
 
     // Save various DRC parameters, such as violation severities (which may have been
     // edited via the DRC dialog as well as the Board Setup dialog), DRC exclusions, etc.
-    SaveProjectLocalSettings();
+    if( !GetBoard()->IsKemiOnly() || KEMI_FORMAT::HasKemiExt( Prj().GetProjectFullName() ) )
+        SaveProjectLocalSettings();
 
     GetBoard()->SynchronizeNetsAndNetClasses( false );
     GetBoard()->SynchronizeProperties();
@@ -1205,16 +1408,34 @@ bool PCB_EDIT_FRAME::SavePcbCopy( const wxString& aFileName, bool aCreateProject
     wxFileName rulesFile( pcbFileName );
     wxString   msg;
 
-    projectFile.SetExt( FILEEXT::ProjectFileExtension );
-    rulesFile.SetExt( FILEEXT::DesignRulesFileExtension );
+    const KEMI_FORMAT::FLAVOR flavor =
+            KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PCB, pcbFileName.GetFullPath() );
+    projectFile.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, flavor ) );
+    rulesFile.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::DESIGN_RULES, flavor ) );
 
-    if( aCreateProject && !projectFile.FileExists() )
-        GetSettingsManager()->SaveProjectCopy( projectFile.GetFullPath() );
+    try
+    {
+        if( aCreateProject && !projectFile.FileExists()
+                && !GetSettingsManager()->SaveProjectCopy( projectFile.GetFullPath() ) )
+        {
+            if( !aHeadless )
+                DisplayError( this, _( "Could not save the project copy." ) );
+
+            return false;
+        }
+    }
+    catch( const IO_ERROR& error )
+    {
+        if( !aHeadless )
+            DisplayError( this, error.What() );
+
+        return false;
+    }
 
     wxFileName currentRules( GetBoard()->GetDesignRulesPath() );
 
     if( aCreateProject && currentRules.FileExists() && !rulesFile.FileExists() )
-        KiCopyFile( currentRules.GetFullPath(), rulesFile.GetFullPath(), msg );
+        copyBoardDesignRules( currentRules, rulesFile, msg );
 
     if( !msg.IsEmpty() && !aHeadless )
     {
@@ -1233,7 +1454,8 @@ bool PCB_EDIT_FRAME::importFile( const wxString& aFileName, int aFileType,
 
     m_importProperties = aProperties;
 
-    PCB_IO_MGR::PCB_FILE_T fileType = (PCB_IO_MGR::PCB_FILE_T) aFileType;
+    PCB_IO_MGR::PCB_FILE_T fileType = PCB_IO_MGR::ResolveImportFileType(
+            aFileName, static_cast<PCB_IO_MGR::PCB_FILE_T>( aFileType ) );
 
     switch( fileType )
     {
@@ -1249,6 +1471,15 @@ bool PCB_EDIT_FRAME::importFile( const wxString& aFileName, int aFileType,
     case PCB_IO_MGR::ALLEGRO:
     case PCB_IO_MGR::SOLIDWORKS_PCB:
     case PCB_IO_MGR::PADS:
+    case PCB_IO_MGR::PADS_BINARY:
+    case PCB_IO_MGR::FABMASTER:
+    case PCB_IO_MGR::PCAD:
+    case PCB_IO_MGR::EASYPC:
+    case PCB_IO_MGR::DIPTRACE:
+    case PCB_IO_MGR::AUTOTRAX:
+    case PCB_IO_MGR::SPRINT_LAYOUT:
+    case PCB_IO_MGR::IPC2581:
+    case PCB_IO_MGR::ODBPP:
     case PCB_IO_MGR::TARGET3001:
     {
         int ctl = KICTL_NONKICAD_ONLY;

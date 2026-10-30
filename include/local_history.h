@@ -101,6 +101,10 @@ public:
      */
     bool CommitFullProjectSnapshot( const wxString& aProjectPath, const wxString& aTitle );
 
+    /** Enumerate the project artifacts used by full snapshots and restore backups, excluding
+     *  nested projects, metadata and transient backup directories. */
+    static std::vector<wxString> CollectProjectFiles( const wxString& aProjectPath );
+
     /** Register a saver callback invoked during autosave history commits.
      *  The callback receives the project path and should populate aFileData with
      *  serialized content or source paths for inclusion.
@@ -143,6 +147,12 @@ public:
      */
     bool RunRegisteredSaversAsAutosaveFiles( const wxString& aProjectPath );
 
+    /** Write already-serialized saver data without depending on application settings. Validate
+     *  every native output destination before creating directories or files. */
+    static bool WriteAutosaveFiles( const wxString& aAutosaveRoot, const wxString& aProjectPath,
+                                    BACKUP_LOCATION aLocation,
+                                    std::vector<HISTORY_FILE_DATA> aFileData );
+
     /**
      * Enumerate autosave files newer than their corresponding source files for the
      * project at @p aProjectPath, restricted to sources whose extension is in
@@ -154,7 +164,12 @@ public:
      *   second - corresponding source path under the project directory
      */
     std::vector<std::pair<wxString, wxString>> FindStaleAutosaveFiles( const wxString&              aProjectPath,
-                                                                       const std::vector<wxString>& aExtensions ) const;
+                                                                       const std::vector<wxString>& aExtensions,
+                                                                       bool aIncludeUnchanged = false ) const;
+
+    /** Preflight a recovery group and rewrite sheet references to its final target map. */
+    static bool RestoreAutosaveFiles( const std::vector<std::pair<wxString, wxString>>& aFiles,
+                                      const std::map<wxString, wxString>& aTargets );
 
     /**
      * Enumerate every (autosave, source) pair found under @p aAutosaveRoot for the project

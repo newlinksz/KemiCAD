@@ -190,17 +190,40 @@ void SYMBOL_TREE_SYNCHRONIZING_ADAPTER::updateLibrary( LIB_TREE_NODE_LIBRARY& aL
 {
     auto hashIt = m_libHashes.find( aLibNode.m_Name );
 
+    // The active symbol has a private working copy. Its watcher coordinates reloading it;
+    // other clean libraries can be refreshed immediately without rebasing a live edit.
+    const bool reloadCleanBuffer = !m_frame->GetCurSymbol()
+                                   || m_frame->GetCurSymbol()->GetLibNickname() != aLibNode.m_Name;
+    const bool updateExisting = hashIt != m_libHashes.end()
+                                && hashIt->second != m_libMgr->GetLibraryHash( aLibNode.m_Name );
+    std::list<LIB_SYMBOL*> symbols;
+
+    if( hashIt == m_libHashes.end() || updateExisting )
+    {
+        try
+        {
+            symbols = m_libMgr->EnumerateSymbols( aLibNode.m_Name, reloadCleanBuffer );
+        }
+        catch( const IO_ERROR& error )
+        {
+            wxLogError( _( "Error updating library buffer." ) + wxS( "\n%s" ), error.What() );
+
+            // Keep a failed new node eligible for retry without adding a duplicate node.
+            if( hashIt == m_libHashes.end() )
+                m_libHashes.emplace( aLibNode.m_Name, -1 );
+
+            return;
+        }
+    }
+
     if( hashIt == m_libHashes.end() )
     {
         // add a new library
-        for( LIB_SYMBOL* symbol : m_libMgr->EnumerateSymbols( aLibNode.m_Name ) )
+        for( LIB_SYMBOL* symbol : symbols )
             aLibNode.AddItem( symbol );
     }
-    else if( hashIt->second != m_libMgr->GetLibraryHash( aLibNode.m_Name ) )
+    else if( updateExisting )
     {
-        // update an existing library
-        std::list<LIB_SYMBOL*> symbols = m_libMgr->EnumerateSymbols( aLibNode.m_Name );
-
         // remove the common part from the aliases list
         for( auto nodeIt = aLibNode.m_Children.begin(); nodeIt != aLibNode.m_Children.end(); /**/ )
         {

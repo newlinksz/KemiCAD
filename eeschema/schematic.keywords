@@ -67,6 +67,7 @@ file
 fill
 font
 footprint
+format_version
 free
 generator
 generator_version
@@ -96,6 +97,8 @@ italic
 jumper_pin_groups
 junction
 justify
+kemi_sch
+kemi_symbol_lib
 kicad_sch
 kicad_symbol_lib
 label

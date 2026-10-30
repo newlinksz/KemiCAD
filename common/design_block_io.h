@@ -21,6 +21,8 @@
 #define DESIGN_BLOCK_IO_H
 
 #include <kicommon.h>
+#include <utility>
+#include <kemi_format_profile.h>
 #include <io/io_base.h>
 #include <io/io_mgr.h>
 
@@ -56,7 +58,11 @@ public:
 class KICOMMON_API DESIGN_BLOCK_IO : public IO_BASE
 {
 public:
-    DESIGN_BLOCK_IO() : IO_BASE( wxS( "KiCad" ) ) {}
+    using NATIVE_CONVERTER = std::function<bool( KEMI_FORMAT::DOC, const wxString&, const wxString& )>;
+
+    explicit DESIGN_BLOCK_IO( NATIVE_CONVERTER aConverter = {} ) :
+            IO_BASE( wxS( "KiCad" ) ), m_converter( std::move( aConverter ) )
+    {}
 
     const IO_BASE::IO_FILE_DESC GetLibraryDesc() const override;
     long long                   GetLibraryTimestamp( const wxString& aLibraryPath ) const;
@@ -101,6 +107,11 @@ public:
 
     void DesignBlockDelete( const wxString& aLibraryPath, const wxString& aDesignBlockName,
                             const std::map<std::string, UTF8>* aProperties = nullptr );
+
+private:
+    void saveDocument( KEMI_FORMAT::DOC aDoc, const wxString& aSource, const wxString& aTarget );
+
+    NATIVE_CONVERTER m_converter;
 };
 
 #endif

@@ -21,12 +21,16 @@
 #include <cli/exit_codes.h>
 #include <jobs/job_pcb_import.h>
 #include <jobs/job_sch_import.h>
+#include <jobs/job_sch_link_footprints.h>
 #include <jobs/job_import_utils.h>
+#include <kemi_format_profile.h>
+#include <kemi_project_import.h>
 #include <ki_exception.h>
 #include <pgm_base.h>
 #include <settings/settings_manager.h>
 #include <project.h>
 #include <project/project_file.h>
+#include <project/project_local_settings.h>
 #include <reporter.h>
 #include <kiid.h>
 #include <string_utils.h>
@@ -46,7 +50,7 @@
 CLI::IMPORT_COMMAND::IMPORT_COMMAND() : COMMAND( "import" )
 {
     m_argParser.add_description( UTF8STDSTR(
-            _( "Import non-KiCad board and/or schematic files into a new KiCad project" ) ) );
+            _( "Import board and/or schematic files from other EDA tools into a new KemiCAD project" ) ) );
 
     m_argParser.add_argument( ARG_INPUT )
             .help( UTF8STDSTR( _( "Input file(s) to import; each is autodetected as a board or "
@@ -56,7 +60,7 @@ CLI::IMPORT_COMMAND::IMPORT_COMMAND() : COMMAND( "import" )
 
     m_argParser.add_argument( "-o", ARG_OUTPUT )
             .default_value( std::string() )
-            .help( UTF8STDSTR( _( "Output project path stem; produces <stem>.kicad_pro plus "
+            .help( UTF8STDSTR( _( "Output project path stem; produces <stem>.kemi_pro plus "
                                   "imported board and/or schematic files beside it. Defaults to the first "
                                   "input's name in the current directory." ) ) )
             .metavar( "PROJECT" );
@@ -99,25 +103,34 @@ int CLI::IMPORT_COMMAND::doPerform( KIWAY& aKiway )
         }
     }
 
-    wxFileName projectFn;
+    KEMI_FORMAT::PROJECT_IMPORT_TARGETS targets;
 
-    if( !outputArg.IsEmpty() )
+    try
     {
-        projectFn.Assign( outputArg );
-
-        // The argument is a stem, so a dot in it is part of the name unless it names a project file
-        if( projectFn.HasExt() && projectFn.GetExt() != FILEEXT::ProjectFileExtension )
-            projectFn.SetName( projectFn.GetFullName() );
+        targets = KEMI_FORMAT::ResolveProjectImportTargets(
+                outputArg, inputFiles.front(), wxFileName::GetCwd() );
     }
-    else
+    catch( const IO_ERROR& error )
     {
-        wxFileName firstInput( inputFiles.front() );
-        projectFn.AssignDir( wxFileName::GetCwd() );
-        projectFn.SetName( firstInput.GetName() );
+        wxFprintf( stderr, wxS( "%s\n" ), error.What() );
+        return EXIT_CODES::ERR_ARGS;
     }
 
-    projectFn.SetExt( FILEEXT::ProjectFileExtension );
-    projectFn.MakeAbsolute();
+    try
+    {
+        KEMI_FORMAT::ValidateProjectImportTargets( targets );
+    }
+    catch( const IO_ERROR& error )
+    {
+        wxFprintf( stderr, wxS( "%s\n" ), error.What() );
+        return EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+    }
+
+    // Validate every top-level destination before mkdir, project loading or an import job.
+    wxFileName projectFn( targets.project );
+    wxFileName boardFn( targets.board );
+    wxFileName schFn( targets.schematic );
+    KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY outputPolicy( projectFn.GetPath() );
 
     if( !projectFn.DirExists()
         && !wxFileName::Mkdir( projectFn.GetPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) )
@@ -125,12 +138,6 @@ int CLI::IMPORT_COMMAND::doPerform( KIWAY& aKiway )
         wxFprintf( stderr, _( "Could not create output directory: %s\n" ), projectFn.GetPath() );
         return EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
     }
-
-    wxString stem = projectFn.GetName();
-    wxString dir = projectFn.GetPath();
-
-    wxFileName boardFn( dir, stem, FILEEXT::KiCadPcbFileExtension );
-    wxFileName schFn( dir, stem, FILEEXT::KiCadSchematicFileExtension );
 
     // LoadProject returns false for a not-yet-existing file but still registers a fully-defaulted
     // active project, so success is signalled by GetProject() returning it.
@@ -149,11 +156,14 @@ int CLI::IMPORT_COMMAND::doPerform( KIWAY& aKiway )
 
     bool haveBoard = false;
     bool haveSch = false;
-    std::vector<FILE_INFO_PAIR> boards;
+    std::vector<wxString> boards;
     int  retCode = EXIT_CODES::SUCCESS;
 
     std::map<wxString, wxString> netNameMap;
     wxString boardInput;
+    wxString boardInputId;
+    std::map<wxString, wxString> footprintIds;
+    std::map<wxString, std::set<wxString>> footprintPads;
 
     // Preserve board-first format detection, but defer loading until the schematic supplies its names.
     for( const wxString& input : inputFiles )
@@ -172,7 +182,14 @@ int CLI::IMPORT_COMMAND::doPerform( KIWAY& aKiway )
             {
                 const auto& sourcePcbs = probe.m_projectBoards;
 
-                if( !sourcePcbs.empty() )
+                if( sourcePcbs.size() == 1 )
+                {
+                    boards.push_back( boardFn.GetFullPath() );
+                    haveBoard = true;
+                    boardInput = input;
+                    boardInputId = sourcePcbs.front().first;
+                }
+                else if( !sourcePcbs.empty() )
                 {
                     const bool         hasMultipleBoards = sourcePcbs.size() > 1;
                     std::set<wxString> usedBoardNames;
@@ -200,6 +217,28 @@ int CLI::IMPORT_COMMAND::doPerform( KIWAY& aKiway )
                             outputFn.SetName( uniqueBoardName );
                         }
 
+                        try
+                        {
+                            outputFn.Assign( outputPolicy.Target( KEMI_FORMAT::DOC::PCB,
+                                                                   outputFn.GetFullPath() ).FinalPath() );
+
+                            if( outputFn.Exists() )
+                                THROW_IO_ERROR( _( "An imported board's destination already exists." ) );
+
+                            wxFileName officialOutput( outputFn );
+                            officialOutput.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB,
+                                                                    KEMI_FORMAT::FLAVOR::LEGACY ) );
+
+                            if( officialOutput.Exists() )
+                                THROW_IO_ERROR( _( "An official board already uses the imported board's name." ) );
+                        }
+                        catch( const IO_ERROR& error )
+                        {
+                            wxFprintf( stderr, wxS( "%s\n" ), error.What() );
+                            retCode = EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+                            break;
+                        }
+
                         JOB_PCB_IMPORT pcbJob;
                         pcbJob.m_inputFile = input;
                         pcbJob.m_importPcbId = pcbId;
@@ -214,7 +253,7 @@ int CLI::IMPORT_COMMAND::doPerform( KIWAY& aKiway )
                             break;
                         }
 
-                        boards.emplace_back( KIID(), outputFn.GetFullName() );
+                        boards.push_back( outputFn.GetFullPath() );
                         haveBoard = true;
                     }
 
@@ -223,7 +262,7 @@ int CLI::IMPORT_COMMAND::doPerform( KIWAY& aKiway )
                 }
                 else
                 {
-                    boards.emplace_back( KIID(), boardFn.GetFullName() );
+                    boards.push_back( boardFn.GetFullPath() );
                     haveBoard = true;
                     boardInput = input;
                 }
@@ -283,10 +322,32 @@ int CLI::IMPORT_COMMAND::doPerform( KIWAY& aKiway )
         JOB_PCB_IMPORT pcbJob;
         pcbJob.m_inputFile = boardInput;
         pcbJob.m_format = JOB_PCB_IMPORT::FORMAT::AUTO;
+        pcbJob.m_importPcbId = boardInputId;
         pcbJob.m_layerMap = layerMap;
         pcbJob.m_netNameMap = std::move( netNameMap );
+        pcbJob.m_collectFootprintLinks = haveSch && boards.size() == 1;
         pcbJob.SetConfiguredOutputPath( boardFn.GetFullPath() );
         retCode = aKiway.ProcessJob( KIWAY::FACE_PCB, &pcbJob, &reporter );
+        footprintIds = std::move( pcbJob.m_footprintIds );
+        footprintPads = std::move( pcbJob.m_footprintPadNumbers );
+    }
+
+    if( retCode == EXIT_CODES::SUCCESS && haveSch && haveBoard )
+    {
+        if( boards.size() == 1 && !boardInput.IsEmpty() )
+        {
+            JOB_SCH_LINK_FOOTPRINTS link;
+            link.m_filename = schFn.GetFullPath();
+            link.m_projectFile = projectFn.GetFullPath();
+            link.m_footprintsByRef = std::move( footprintIds );
+            link.m_padNumbersByRef = std::move( footprintPads );
+            retCode = aKiway.ProcessJob( KIWAY::FACE_SCH, &link, &reporter );
+        }
+        else
+        {
+            reporter.Report( _( "IMPORT_LINK_MULTIBOARD: automatic footprint linking was skipped because no unique schematic-to-board pairing is known." ),
+                             RPT_SEVERITY_WARNING );
+        }
     }
 
     if( retCode == EXIT_CODES::SUCCESS && !haveBoard && !haveSch )
@@ -300,15 +361,35 @@ int CLI::IMPORT_COMMAND::doPerform( KIWAY& aKiway )
         // The schematic handler already registered any sheets; link the board here.
         if( haveBoard )
         {
-            std::vector<FILE_INFO_PAIR>& projectBoards = project->GetProjectFile().GetBoards();
-            projectBoards = boards;
+            try
+            {
+                KEMI_FORMAT::RegisterImportedBoards( *project, boards );
+            }
+            catch( const IO_ERROR& error )
+            {
+                wxFprintf( stderr, wxS( "%s\n" ), error.What() );
+                return EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+            }
         }
 
-        if( mgr.SaveProject( projectFn.GetFullPath() ) )
+        if( mgr.SaveProject( projectFn.GetFullPath() )
+            && project->GetLocalSettings().SaveToFile( projectFn.GetPath(), true ) )
         {
             reporter.Report( wxString::Format( _( "Created project '%s'\n" ),
                                                projectFn.GetFullPath() ),
                              RPT_SEVERITY_INFO );
+
+            if( KEMI_FORMAT::WriteImportZip( projectFn.GetFullPath(), &reporter,
+                                              inputFiles ) )
+            {
+                reporter.Report( _( "Wrote project zip archive\n" ), RPT_SEVERITY_INFO );
+            }
+            else
+            {
+                wxFprintf( stderr, _( "Failed to write project zip for '%s'\n" ),
+                           projectFn.GetFullPath() );
+                retCode = EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+            }
         }
         else
         {

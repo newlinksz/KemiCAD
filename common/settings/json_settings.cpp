@@ -18,6 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <kemi_format_profile.h>
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
@@ -25,7 +26,9 @@
 #include <sstream>
 
 #include <kiplatform/io.h>
+#include <ki_exception.h>
 #include <locale_io.h>
+#include <project.h>
 #include <gal/color4d.h>
 #include <settings/json_settings.h>
 #include <settings/json_settings_internals.h>
@@ -83,6 +86,7 @@ JSON_SETTINGS::JSON_SETTINGS( const wxString& aFilename, SETTINGS_LOC aLocation,
         m_isFutureFormat( false ),
         m_manager( nullptr )
 {
+    m_kemiOnly = KEMI_FORMAT::HasKemiExt( aFilename );
     m_internals = std::make_unique<JSON_SETTINGS_INTERNALS>();
 
     try
@@ -115,9 +119,60 @@ JSON_SETTINGS::~JSON_SETTINGS()
 }
 
 
+void JSON_SETTINGS::SetFilename( const wxString& aFilename )
+{
+    m_kemiOnly |= KEMI_FORMAT::HasKemiExt( m_filename )
+                  || KEMI_FORMAT::HasKemiExt( aFilename );
+    m_filename = aFilename;
+}
+
+
+bool JSON_SETTINGS::IsKemiOnly() const
+{
+    const PROJECT* owner = GetOwningProject();
+    return m_kemiOnly || KEMI_FORMAT::IsRestrictedOutput(
+            m_filename, owner ? owner->GetProjectFullName() : wxString() );
+}
+
+
+wxString JSON_SETTINGS::filePath( const wxString& aDirectory ) const
+{
+    wxFileName path;
+
+    if( getDocumentType() )
+    {
+        path.Assign( GetFullFilename() );
+
+        if( !aDirectory.IsEmpty() )
+            path.SetPath( aDirectory );
+    }
+    else if( aDirectory.IsEmpty() )
+    {
+        path.Assign( m_filename );
+        path.SetExt( getFileExt() );
+    }
+    else
+    {
+        path.Assign( aDirectory, m_filename, getFileExt() );
+    }
+
+    return path.GetFullPath();
+}
+
+
 wxString JSON_SETTINGS::GetFullFilename() const
 {
-    if( m_filename.AfterLast( '.' ) == getFileExt() )
+    wxString ext = wxFileName( m_filename ).GetExt();
+
+    if( std::optional<KEMI_FORMAT::DOC> doc = getDocumentType() )
+    {
+        if( KEMI_FORMAT::IsReadableExt( *doc, ext ) )
+            return m_filename;
+
+        return m_filename + wxS( "." ) + KEMI_FORMAT::Ext( *doc, KEMI_FORMAT::FLAVOR::KEMI );
+    }
+
+    if( ext == getFileExt() )
         return m_filename;
 
     return wxString( m_filename + "." + getFileExt() );
@@ -163,7 +218,9 @@ bool JSON_SETTINGS::LoadFromFile( const wxString& aDirectory )
 {
     // First, load all params to default values
     m_internals->clear();
+    m_internals->m_original = nlohmann::json::object();
     Load();
+    m_fileSynced = false;
 
     bool success         = true;
     bool migrated        = false;
@@ -235,20 +292,17 @@ bool JSON_SETTINGS::LoadFromFile( const wxString& aDirectory )
                 legacy_migrated = true;
             };
 
-    wxFileName path;
-
-    if( aDirectory.empty() )
-    {
-        path.Assign( m_filename );
-        path.SetExt( getFileExt() );
-    }
-    else
-    {
-        path.Assign( aDirectory, m_filename, getFileExt() );
-    }
+    wxFileName path( filePath( aDirectory ) );
 
     if( !path.Exists() )
     {
+        // An explicit Kemi target must never silently select a different legacy file.
+        if( getDocumentType()
+                && KEMI_FORMAT::IsKemiExt( *getDocumentType(), path.GetExt() ) )
+        {
+            return false;
+        }
+
         // Case 1: legacy migration, no .json extension yet
         path.SetExt( getLegacyFileExt() );
 
@@ -281,9 +335,15 @@ bool JSON_SETTINGS::LoadFromFile( const wxString& aDirectory )
 
             if( fp.IsOk() )
             {
-                *static_cast<nlohmann::json*>( m_internals.get() ) = nlohmann::json::parse( fstream, nullptr,
-                                                                                            ALLOW_EXCEPTIONS,
-                                                                                            IGNORE_COMMENTS );
+                nlohmann::json document = nlohmann::json::parse( fstream, nullptr,
+                                                                ALLOW_EXCEPTIONS,
+                                                                IGNORE_COMMENTS );
+
+                // Validate before migrations, parameter callbacks or nested settings see input.
+                if( !validateDocument( document, path.GetFullPath() ) )
+                    return false;
+
+                *static_cast<nlohmann::json*>( m_internals.get() ) = std::move( document );
 
                 // Save whatever we loaded, before doing any migration etc
                 m_internals->m_original = *static_cast<nlohmann::json*>( m_internals.get() );
@@ -325,12 +385,31 @@ bool JSON_SETTINGS::LoadFromFile( const wxString& aDirectory )
             else
             {
                 wxLogTrace( traceSettings, wxT( "%s exists but can't be opened for read" ), GetFullFilename() );
+                success = false;
+
+                if( getDocumentType() )
+                {
+                    m_loadError = _( "Could not read the settings document." );
+                    return false;
+                }
             }
         }
-        catch( nlohmann::json::parse_error& error )
+        catch( const nlohmann::json::exception& error )
         {
             success = false;
-            wxLogTrace( traceSettings, wxT( "Json parse error reading %s: %s" ), path.GetFullPath(), error.what() );
+            wxLogTrace( traceSettings, wxT( "Json error reading %s: %s" ), path.GetFullPath(), error.what() );
+
+            if( getDocumentType() )
+            {
+                m_loadError = _( "Invalid JSON settings document." );
+                return false;
+            }
+
+            // Only syntax errors can indicate a legacy settings file.  Other JSON errors
+            // (such as numeric overflow) must not trigger migration of a JSON document.
+            if( !dynamic_cast<const nlohmann::json::parse_error*>( &error ) )
+                return false;
+
             wxLogTrace( traceSettings, wxT( "Attempting migration in case file is in legacy format" ) );
             migrateFromLegacy( path );
         }
@@ -422,6 +501,13 @@ bool JSON_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce )
 {
     m_lastSaveFailed = false;
 
+    if( !m_loadError.IsEmpty() )
+    {
+        m_lastSaveFailed = true;
+        wxLogTrace( traceSettings, wxT( "Refusing to save rejected document: %s" ), m_loadError );
+        return false;
+    }
+
     if( !m_writeFile )
         return false;
 
@@ -429,17 +515,21 @@ bool JSON_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce )
     if( m_filename.IsEmpty() )
         return false;
 
-    wxFileName path;
+    wxFileName path( filePath( aDirectory ) );
 
-    if( aDirectory.empty() )
+    if( std::optional<KEMI_FORMAT::DOC> doc = getDocumentType() )
     {
-        path.Assign( m_filename );
-        path.SetExt( getFileExt() );
-    }
-    else
-    {
-        wxString dir( aDirectory );
-        path.Assign( dir, m_filename, getFileExt() );
+        try
+        {
+            KEMI_FORMAT::CheckPersistentOutput( *doc, path.GetFullPath(),
+                    KEMI_FORMAT::FlavorForPath( *doc, path.GetFullPath() ), IsKemiOnly() );
+        }
+        catch( const IO_ERROR& error )
+        {
+            m_lastSaveFailed = true;
+            wxLogTrace( traceSettings, wxT( "Refusing settings output: %s" ), error.What() );
+            return false;
+        }
     }
 
     if( !m_createIfMissing && !path.FileExists() )
@@ -451,6 +541,20 @@ bool JSON_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce )
     }
 
     bool modified = flushToStore();
+
+    if( getDocumentType() )
+    {
+        // Marker-only changes must reach serialization.
+        nlohmann::json originalMarker = nlohmann::json::object();
+
+        if( m_internals->m_original.contains( KEMI_FORMAT::JSON_MARKER_KEY ) )
+            originalMarker[KEMI_FORMAT::JSON_MARKER_KEY] =
+                    m_internals->m_original[KEMI_FORMAT::JSON_MARKER_KEY];
+
+        nlohmann::json outputMarker = originalMarker;
+        prepareDocument( outputMarker, path.GetFullPath() );
+        modified |= outputMarker != originalMarker;
+    }
 
     if( !modified && !aForce && path.FileExists() )
     {
@@ -470,7 +574,7 @@ bool JSON_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce )
 
     try
     {
-        std::string  payload = formatFileContents();
+        std::string  payload = formatFileContents( path.GetFullPath() );
         wxString     writeError;
 
         // Last-chance skip for the case where the dirty heuristic fired but the serialized payload
@@ -545,6 +649,53 @@ bool JSON_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce )
 }
 
 
+bool JSON_SETTINGS::SaveCopyToFile( const wxString& aFullPath )
+{
+    const wxString oldFilename = m_filename;
+    const bool oldKemiOnly = m_kemiOnly;
+    const bool oldWriteFile = m_writeFile;
+    const bool oldSynced = m_fileSynced;
+    bool oldModified = m_modified;
+    auto restoreSource = [&]()
+    {
+        m_filename = oldFilename;
+        m_kemiOnly = oldKemiOnly;
+        m_writeFile = oldWriteFile;
+        m_fileSynced = oldSynced;
+        m_modified = oldModified;
+    };
+
+    try
+    {
+        wxFileName target( aFullPath );
+
+        if( std::optional<KEMI_FORMAT::DOC> doc = getDocumentType() )
+            target.Assign( KEMI_FORMAT::PersistentOutputPath( *doc, aFullPath, IsKemiOnly() ) );
+
+        // Store may discover edits that were not yet reflected in m_modified. A copy
+        // must not mark those edits as synchronized with the original backing file.
+        oldModified |= flushToStore();
+        SetFilename( target.GetFullName() );
+        SetReadOnly( false );
+        const bool result = SaveToFile( target.GetPath() );
+        restoreSource();
+        return result;
+    }
+    catch( const IO_ERROR& error )
+    {
+        restoreSource();
+        m_lastSaveFailed = true;
+        wxLogTrace( traceSettings, wxT( "Refusing settings copy: %s" ), error.What() );
+        return false;
+    }
+    catch( ... )
+    {
+        restoreSource();
+        throw;
+    }
+}
+
+
 bool JSON_SETTINGS::flushToStore()
 {
     bool modified = false;
@@ -568,8 +719,48 @@ const nlohmann::json& JSON_SETTINGS::originalJson() const
 }
 
 
-std::string JSON_SETTINGS::formatFileContents()
+bool JSON_SETTINGS::validateDocument( const nlohmann::json& aDocument,
+                                      const wxString& aSourcePath )
 {
+    if( std::optional<KEMI_FORMAT::DOC> doc = getDocumentType() )
+    {
+        m_loadError = KEMI_FORMAT::ValidateJsonMarker( aDocument, *doc, aSourcePath );
+
+        if( !m_loadError.IsEmpty() )
+        {
+            wxLogTrace( traceSettings, wxT( "%s" ), m_loadError );
+            return false;
+        }
+
+        m_kemiOnly |= KEMI_FORMAT::HasKemiExt( aSourcePath )
+                      || aDocument.contains( KEMI_FORMAT::JSON_MARKER_KEY );
+    }
+
+    return true;
+}
+
+
+void JSON_SETTINGS::prepareDocument( nlohmann::json& aDocument,
+                                    const wxString& aTargetPath ) const
+{
+    if( std::optional<KEMI_FORMAT::DOC> doc = getDocumentType() )
+    {
+        KEMI_FORMAT::CheckPersistentOutput( *doc, aTargetPath,
+                KEMI_FORMAT::FlavorForPath( *doc, aTargetPath ), IsKemiOnly() );
+
+        if( KEMI_FORMAT::FlavorForPath( *doc, aTargetPath ) == KEMI_FORMAT::FLAVOR::KEMI )
+            KEMI_FORMAT::StampJsonMarker( aDocument, *doc );
+        else
+            KEMI_FORMAT::ClearJsonMarker( aDocument );
+    }
+}
+
+
+std::string JSON_SETTINGS::formatFileContents( const wxString& aTargetPath )
+{
+    if( !m_loadError.IsEmpty() )
+        THROW_IO_ERROR( m_loadError );
+
     LOCALE_IO dummy;
 
     nlohmann::json toSave = m_internals->m_original;
@@ -585,6 +776,7 @@ std::string JSON_SETTINGS::formatFileContents()
     }
 
     toSave.update( m_internals->begin(), m_internals->end(), /* merge_objects = */ true );
+    prepareDocument( toSave, aTargetPath );
 
     return toSave.dump( 2 ) + '\n';
 }
@@ -592,19 +784,32 @@ std::string JSON_SETTINGS::formatFileContents()
 
 const std::string JSON_SETTINGS::FormatAsString()
 {
+    if( getDocumentType() )
+    {
+        flushToStore();
+        wxFileName target( GetFullFilename() );
+        target.SetExt( KEMI_FORMAT::Ext( *getDocumentType(), KEMI_FORMAT::FLAVOR::KEMI ) );
+        return formatFileContents( target.GetFullPath() );
+    }
+
     Store();
-
     LOCALE_IO dummy;
-
     std::stringstream buffer;
     buffer << std::setw( 2 ) << *m_internals << std::endl;
-
     return buffer.str();
 }
 
 
 bool JSON_SETTINGS::LoadFromRawFile( const wxString& aPath )
 {
+    if( getDocumentType() )
+    {
+        m_internals->clear();
+        m_internals->m_original = nlohmann::json::object();
+        Load();
+        m_fileSynced = false;
+    }
+
     try
     {
         wxFFileInputStream fp( aPath, wxT( "rt" ) );
@@ -612,18 +817,31 @@ bool JSON_SETTINGS::LoadFromRawFile( const wxString& aPath )
 
         if( fp.IsOk() )
         {
-            *static_cast<nlohmann::json*>( m_internals.get() ) = nlohmann::json::parse( fstream, nullptr,
-                                                                                        ALLOW_EXCEPTIONS,
-                                                                                        IGNORE_COMMENTS );
+            nlohmann::json document = nlohmann::json::parse( fstream, nullptr,
+                                                            ALLOW_EXCEPTIONS, IGNORE_COMMENTS );
+
+            if( !validateDocument( document, aPath ) )
+                return false;
+
+            *static_cast<nlohmann::json*>( m_internals.get() ) = std::move( document );
+
+            if( getDocumentType() )
+                m_internals->m_original = *static_cast<nlohmann::json*>( m_internals.get() );
         }
         else
         {
+            if( getDocumentType() )
+                m_loadError = _( "Could not read the settings document." );
+
             return false;
         }
     }
-    catch( nlohmann::json::parse_error& error )
+    catch( const nlohmann::json::exception& error )
     {
-        wxLogTrace( traceSettings, wxT( "Json parse error reading %s: %s" ), aPath, error.what() );
+        wxLogTrace( traceSettings, wxT( "Json error reading %s: %s" ), aPath, error.what() );
+
+        if( getDocumentType() )
+            m_loadError = _( "Invalid JSON settings document." );
 
         return false;
     }

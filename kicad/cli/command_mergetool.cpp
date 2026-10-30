@@ -27,6 +27,7 @@
 #include <diff_merge/diff_doc_kind.h>
 #include <kiface_base.h>
 #include <kiway.h>
+#include <kemi_format_profile.h>
 #include <paths.h>
 #include <string_utils.h>
 
@@ -87,8 +88,8 @@ CLI::MERGETOOL_COMMAND::MERGETOOL_COMMAND() :
                            "and writes the merged file." ) ) );
 
     m_argParser.add_argument( ARG_ANCESTOR )
-            .help( UTF8STDSTR( _( "Common-ancestor file (.kicad_pcb, .kicad_sch, "
-                                  ".kicad_sym, or .kicad_mod)" ) ) )
+            .help( UTF8STDSTR( _( "Common-ancestor file (.kemi_pcb, .kemi_sch, "
+                                  ".kemi_sym, or .kemi_mod)" ) ) )
             .metavar( "ANCESTOR" );
 
     m_argParser.add_argument( ARG_OURS )
@@ -125,21 +126,32 @@ int CLI::MERGETOOL_COMMAND::doPerform( KIWAY& /* aKiway */ )
     {
         wxFprintf( stderr,
                    _( "Unsupported output extension '%s'. "
-                      "Expected .kicad_pcb, .kicad_sch, .kicad_sym, or .kicad_mod\n" ),
+                      "Expected .kemi_pcb, .kemi_sch, .kemi_sym, or .kemi_mod\n" ),
                    output );
         return EXIT_CODES::ERR_INVALID_INPUT_FILE;   // contract code 3 — bad input
+    }
+
+    if( !KEMI_FORMAT::HasKemiExt( output )
+            || wxFileName( output ).GetFullName().Lower().Contains( wxS( ".kicad_" ) ) )
+    {
+        wxFprintf( stderr, _( "Official KiCad formats are import-only. Choose a .kemi_* output.\n" ) );
+        return EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
     }
 
     // The conflict-resolution dialog needs a GUI, which kicad-cli doesn't
     // provide. Re-exec the main `kicad` binary in --mergetool mode so the
     // user gets the interactive dialog. This is the documented Phase 8
     // contract for `git mergetool`.
+#ifdef _WIN32
+    const wxString kicadBinPath = PATHS::ResolveSiblingExecutable( wxT( "kemicad" ) ); // main exe is kemicad.exe
+#else
     const wxString kicadBinPath = PATHS::ResolveSiblingExecutable( wxT( "kicad" ) );
+#endif
 
     if( kicadBinPath.IsEmpty() )
     {
         wxFprintf( stderr,
-                   _( "Cannot find the main kicad binary alongside kicad-cli.\n" ) );
+                   _( "Cannot find the main kicad binary alongside kemicad-cli.\n" ) );
         return 4;   // contract code 4 — initialization failure
     }
 

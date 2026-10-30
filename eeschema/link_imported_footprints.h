@@ -21,10 +21,17 @@
 #define LINK_IMPORTED_FOOTPRINTS_H
 
 #include <map>
+#include <set>
 #include <wx/string.h>
 
 class REPORTER;
 class SCHEMATIC;
+
+enum class IMPORTED_FOOTPRINT_LINK_POLICY
+{
+    CACHE_RENAMES,
+    FILL_EMPTY_ONLY
+};
 
 /**
  * Point the Footprint field of each symbol at the footprint with the same reference on the imported board.
@@ -36,9 +43,17 @@ class SCHEMATIC;
  * @param[in] aSchematic is the imported schematic whose symbols are updated.
  * @param[in] aFootprintsByRef maps a board reference to the full LIB_ID of its footprint.
  * @param[in] aReporter receives a count of the symbols linked.
+ * @param[in] aPolicy distinguishes an explicit cache rename from automatic paired-import
+ *                   linking, which preserves every nonempty user field.
+ * @param[in] aPadNumbersByRef supplies the validated physical pad sets for a paired import.
+ *                            A connected pin without its target pad rejects all field changes;
+ *                            explicit no-connect and bare unconnected pins retain warnings.
  * @return the number of symbols linked.
+ * @throws IO_ERROR when paired-import pad coverage cannot safely be established.
  */
 int LinkImportedFootprints( SCHEMATIC& aSchematic, const std::map<wxString, wxString>& aFootprintsByRef,
-                            REPORTER& aReporter );
+                            REPORTER& aReporter,
+                            IMPORTED_FOOTPRINT_LINK_POLICY aPolicy = IMPORTED_FOOTPRINT_LINK_POLICY::CACHE_RENAMES,
+                            const std::map<wxString, std::set<wxString>>* aPadNumbersByRef = nullptr );
 
 #endif // LINK_IMPORTED_FOOTPRINTS_H

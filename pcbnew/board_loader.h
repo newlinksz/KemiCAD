@@ -71,7 +71,9 @@ public:
 
     static std::unique_ptr<BOARD> CreateEmptyBoard( PROJECT* aProject );
 
-    static bool SaveBoard( wxString& aFileName, BOARD& aBoard, PCB_IO_MGR::PCB_FILE_T aFormat );
+    // Only explicit copy operations may overwrite an existing native target after importing.
+    static bool SaveBoard( wxString& aFileName, BOARD& aBoard, PCB_IO_MGR::PCB_FILE_T aFormat,
+                           bool aAllowOverwrite = false );
 
     static bool SaveBoard( wxString& aFileName, BOARD& aBoard );
 

@@ -40,7 +40,7 @@ public:
         wxRemoveFile( m_tempDir );
         wxFileName::Mkdir( m_tempDir );
 
-        m_libPath = wxFileName( m_tempDir, wxS( "test_lib.kicad_sym" ) ).GetFullPath();
+        m_libPath = wxFileName( m_tempDir, wxS( "test_lib.kemi_sym" ) ).GetFullPath();
     }
 
     ~DERIVED_BODY_STYLES_FIXTURE()

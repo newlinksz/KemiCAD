@@ -69,7 +69,7 @@ int CLI::VERSION_COMMAND::doPerform( KIWAY& aKiway )
     }
     else if( format == wxS( "about" ) )
     {
-        wxString msg_version = GetVersionInfoData( wxS( "kicad-cli" ) );
+        wxString msg_version = GetVersionInfoData( wxS( "KemiCAD CLI" ) );
         wxPrintf( "%s\n", msg_version );
     }
     else

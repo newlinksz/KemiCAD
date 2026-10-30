@@ -27,6 +27,7 @@
 #include <wx/zipstrm.h>
 
 #include <core/arraydim.h>
+#include <kemi_format_profile.h>
 #include <macros.h>
 #include <project/project_archiver.h>
 #include <reporter.h>
@@ -36,11 +37,96 @@
 #include <wx/log.h>
 #include <kiplatform/io.h>
 
+#include <map>
 #include <regex>
 #include <set>
 
 
 #define ZipFileExtension wxT( "zip" )
+
+struct PROJECT_FORMAT_STATE
+{
+    bool nativeProject = false;
+    bool officialProject = false;
+    bool nativeDocument = false;
+
+    void Add( const wxFileName& aFile )
+    {
+        nativeProject |= KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PROJECT, aFile.GetExt() );
+        officialProject |= KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT, aFile.GetExt() );
+        nativeDocument |= KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SCHEMATIC, aFile.GetExt() )
+                          || KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PCB, aFile.GetExt() );
+    }
+};
+
+
+// Project files establish ownership before standalone documents. In particular, an
+// unrelated native library beside an official project must not hide its source files.
+class PROJECT_FORMAT_SCOPES
+{
+public:
+    explicit PROJECT_FORMAT_SCOPES( const wxString& aRoot, bool aReadDisk = false ) :
+            m_root( directoryKey( aRoot ) ), m_readDisk( aReadDisk )
+    {}
+
+    void Add( const wxFileName& aFile )
+    {
+        m_states[directoryKey( aFile.GetPath() )].Add( aFile );
+    }
+
+    bool IsNative( const wxFileName& aFile )
+    {
+        wxFileName directory = wxFileName::DirName( aFile.GetPath() );
+        bool standaloneNative = false;
+
+        for( ;; )
+        {
+            const wxString key = directoryKey( directory.GetPath() );
+            PROJECT_FORMAT_STATE& state = m_states[key];
+
+            if( m_readDisk && m_scanned.insert( key ).second )
+            {
+                wxDir dir( directory.GetPath() );
+                wxString name;
+
+                if( dir.IsOpened() )
+                {
+                    for( bool more = dir.GetFirst( &name, wxEmptyString, wxDIR_FILES ); more;
+                         more = dir.GetNext( &name ) )
+                        state.Add( wxFileName( directory.GetPath(), name ) );
+                }
+            }
+
+            if( state.nativeProject || state.officialProject )
+                return state.nativeProject;
+
+            standaloneNative |= state.nativeDocument;
+
+            if( key == m_root || directory.GetDirCount() == 0 )
+                return standaloneNative;
+
+            directory.RemoveLastDir();
+        }
+    }
+
+private:
+    static wxString directoryKey( const wxString& aDirectory )
+    {
+        wxFileName directory = wxFileName::DirName( aDirectory );
+        directory.Normalize( wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE );
+        wxString key = directory.GetPath();
+#ifdef __WXMSW__
+        key.MakeLower();
+#endif
+        return key;
+    }
+
+    wxString m_root;
+    bool     m_readDisk;
+    std::map<wxString, PROJECT_FORMAT_STATE> m_states;
+    std::set<wxString> m_scanned;
+};
+
 
 class PROJECT_ARCHIVER_DIR_ZIP_TRAVERSER : public wxDirTraverser
 {
@@ -141,6 +227,75 @@ bool PROJECT_ARCHIVER::Unarchive( const wxString& aSrcFile, const wxString& aDes
     // in aDestDir (avoids <dest>/<name>/<name>/...).
     const wxString stripPrefix = aStripTopFolder.IsEmpty() ? wxString()
                                                            : aStripTopFolder + wxS( "/" );
+
+    PROJECT_FORMAT_SCOPES scopes( aDestDir, true );
+    std::vector<std::pair<wxFileName, wxString>> officialMembers;
+
+    // Validate every member before the first temporary extraction file is opened. An
+    // archive created before conversion must not write official files into a native project.
+    for( std::unique_ptr<wxArchiveEntry> entry( archiveStream->GetNextEntry() ); entry;
+         entry.reset( archiveStream->GetNextEntry() ) )
+    {
+        wxString name = entry->GetName( wxPATH_UNIX );
+
+        if( !stripPrefix.IsEmpty() )
+        {
+            while( name.StartsWith( wxS( "/" ) ) )
+                name = name.Mid( 1 );
+
+            if( name == aStripTopFolder || name == stripPrefix )
+                continue;
+
+            if( name.StartsWith( stripPrefix ) )
+                name = name.Mid( stripPrefix.length() );
+        }
+
+        wxFileName file;
+
+        if( !WX_FILENAME::ResolveArchiveEntryPath( aDestDir, name, file ) )
+        {
+            aReporter.Report( wxString::Format( _( "Refusing to extract file '%s': the archive "
+                                                   "entry points outside of the destination "
+                                                   "directory." ), name ), RPT_SEVERITY_ERROR );
+            return false;
+        }
+
+        if( entry->IsDir() )
+            continue;
+
+        scopes.Add( file );
+
+        if( file.GetFullName().Lower().Contains( wxS( ".kicad_" ) ) )
+            officialMembers.emplace_back( file, name );
+    }
+
+    if( archiveStream->GetLastError() == wxSTREAM_READ_ERROR )
+    {
+        aReporter.Report( _( "The archive file is damaged or could not be read completely." ),
+                          RPT_SEVERITY_ERROR );
+        return false;
+    }
+
+    for( const auto& [file, name] : officialMembers )
+    {
+        if( scopes.IsNative( file ) )
+        {
+            aReporter.Report( wxString::Format(
+                    _( "Cannot restore official KiCad file '%s' into a KemiCAD project." ),
+                    name ), RPT_SEVERITY_ERROR );
+            return false;
+        }
+    }
+
+    archiveStream.reset();
+
+    if( stream.SeekI( 0 ) == wxInvalidOffset )
+    {
+        aReporter.Report( _( "Could not open archive file." ), RPT_SEVERITY_ERROR );
+        return false;
+    }
+
+    archiveStream.reset( archiveClassFactory->NewStream( stream ) );
 
     for( std::unique_ptr<wxArchiveEntry> entry( archiveStream->GetNextEntry() ); entry;
          entry.reset( archiveStream->GetNextEntry() ) )
@@ -257,6 +412,9 @@ bool PROJECT_ARCHIVER::Archive( const wxString& aSrcDir, const wxString& aDestFi
     extensions.emplace( FILEEXT::JsonFileExtension );                  // for design blocks
     extensions.emplace( FILEEXT::WorkbookFileExtension );
 
+    for( const KEMI_FORMAT::DOC_PROFILE& profile : KEMI_FORMAT::AllProfiles() )
+        extensions.emplace( wxString::FromUTF8( profile.kemiExt ) );
+
     files.emplace( FILEEXT::FootprintLibraryTableFileName );
     files.emplace( FILEEXT::SymbolLibraryTableFileName );
     files.emplace( FILEEXT::DesignBlockLibraryTableFileName );
@@ -338,9 +496,20 @@ bool PROJECT_ARCHIVER::Archive( const wxString& aSrcDir, const wxString& aDestFi
     // wxDIR_DEFAULT includes wxDIR_HIDDEN, so specify flags explicitly.
     projectDir.Traverse( traverser, wxEmptyString, wxDIR_FILES | wxDIR_DIRS );
 
+    PROJECT_FORMAT_SCOPES scopes( aSrcDir );
+
+    for( const wxString& fileName : traverser.GetFilesToArchive() )
+        scopes.Add( wxFileName( fileName ) );
+
     for( const wxString& fileName : traverser.GetFilesToArchive() )
     {
         wxFileName fn( fileName );
+
+        // A converted project can retain its original files alongside the native ones.
+        // Keep those originals on disk, but do not reintroduce them through a backup restore.
+        if( fn.GetFullName().Lower().Contains( wxS( ".kicad_" ) ) && scopes.IsNative( fn ) )
+            continue;
+
         wxString extLower = fn.GetExt().Lower();
         wxString fileNameLower = fn.GetName().Lower();
         bool archive = false;
@@ -382,9 +551,25 @@ bool PROJECT_ARCHIVER::Archive( const wxString& aSrcDir, const wxString& aDestFi
 
         if( infile )
         {
-            zipstream.PutNextEntry( relativeFn, infile->GetModificationTime() );
-            infile->GetStream()->Read( zipstream );
-            zipstream.CloseEntry();
+            bool copied = zipstream.PutNextEntry( relativeFn, infile->GetModificationTime() );
+
+            if( copied )
+            {
+                infile->GetStream()->Read( zipstream );
+                copied = infile->GetStream()->GetLastError() != wxSTREAM_READ_ERROR
+                         && zipstream.IsOk();
+            }
+
+            copied = zipstream.CloseEntry() && copied;
+
+            if( !copied )
+            {
+                msg.Printf( _( "Failed to archive file '%s'." ), relativeFn );
+                aReporter.Report( msg, RPT_SEVERITY_ERROR );
+                success = false;
+                delete infile;
+                continue;
+            }
 
             uncompressedBytes += infile->GetStream()->GetSize();
 
@@ -404,6 +589,7 @@ bool PROJECT_ARCHIVER::Archive( const wxString& aSrcDir, const wxString& aDestFi
                 msg.Printf( _( "Failed to archive file '%s': %s" ), relativeFn, sysError );
 
             aReporter.Report( msg, RPT_SEVERITY_ERROR );
+            success = false;
         }
     }
 
@@ -427,7 +613,7 @@ bool PROJECT_ARCHIVER::Archive( const wxString& aSrcDir, const wxString& aDestFi
         // bytes are included in the count.
         size_t zipBytesCnt = ostream.GetSize();
 
-        if( aVerbose )
+        if( aVerbose && success )
         {
             msg.Printf( _( "Zip archive '%s' created (%s uncompressed, %s compressed)." ), aDestFile,
                         reportSize( uncompressedBytes ), reportSize( zipBytesCnt ) );
@@ -443,4 +629,82 @@ bool PROJECT_ARCHIVER::Archive( const wxString& aSrcDir, const wxString& aDestFi
 
     wxSetWorkingDirectory( oldCwd );
     return success;
+}
+
+
+/**
+ * KEMI: return the single top-level folder name shared by every entry of the zip archive,
+ * or an empty string if entries are not all inside one folder (or the archive is unreadable).
+ */
+wxString PROJECT_ARCHIVER::FindSingleTopFolder( const wxString& aZipFile )
+{
+    wxFFileInputStream stream( aZipFile );
+
+    if( !stream.IsOk() )
+        return wxEmptyString;
+
+    wxZipInputStream zip( stream );
+    wxString         top;
+    bool             any = false;
+
+    for( std::unique_ptr<wxZipEntry> entry( zip.GetNextEntry() ); entry;
+         entry.reset( zip.GetNextEntry() ) )
+    {
+        wxString name = entry->GetName( wxPATH_UNIX );
+
+        while( name.StartsWith( wxS( "/" ) ) )
+            name = name.Mid( 1 );
+
+        if( name.IsEmpty() )
+            continue;
+
+        // A file in the archive root means there is no single top-level folder.
+        if( !name.Contains( wxS( "/" ) ) && !entry->IsDir() )
+            return wxEmptyString;
+
+        wxString first = name.BeforeFirst( '/' );
+
+        if( first.IsEmpty() || first == wxS( "." ) || first == wxS( ".." ) )
+            return wxEmptyString;
+
+        if( !any )
+        {
+            top = first;
+            any = true;
+        }
+        else if( first != top )
+        {
+            return wxEmptyString;
+        }
+    }
+
+    if( zip.GetLastError() == wxSTREAM_READ_ERROR )
+        return wxEmptyString;
+
+    return any ? top : wxString();
+}
+
+
+wxString PROJECT_ARCHIVER::FindExtractedProjectFile( const wxString& aDir )
+{
+    if( !wxDirExists( aDir ) )
+        return wxEmptyString;
+
+    const wxString exts[] = {
+        wxString::FromUTF8( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) ),
+        wxString::FromUTF8( FILEEXT::ProjectFileExtension )
+    };
+
+    for( const wxString& ext : exts )
+    {
+        wxArrayString projectFiles;
+        wxDir::GetAllFiles( aDir, &projectFiles, wxT( "*." ) + ext, wxDIR_FILES );
+
+        if( projectFiles.empty() )
+            continue;
+
+        return projectFiles.size() == 1 ? projectFiles[0] : wxString();
+    }
+
+    return wxEmptyString;
 }

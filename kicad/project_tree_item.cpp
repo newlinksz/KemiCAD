@@ -36,6 +36,8 @@
 #include <kiplatform/environment.h>
 #include <kiplatform/io.h>
 #include <kiway.h>
+#include <kemi_project_import.h>
+#include <kemi_project_paths.h>
 #include <tool/tool_manager.h>
 #include <tools/kicad_manager_actions.h>
 #include <wx/msgdlg.h>
@@ -262,7 +264,7 @@ void PROJECT_TREE_ITEM::Activate( PROJECT_TREE_PANE* aTreePrjFrame )
         if( rootSchematic.IsEmpty() )
             rootSchematic = frame->SchLegacyFileName();
 
-        if( fullFileName == rootSchematic )
+        if( wxFileName( fullFileName ).SameAs( wxFileName( rootSchematic ) ) )
         {
             toolMgr->RunAction( KICAD_MANAGER_ACTIONS::editSchematic );
         }
@@ -274,7 +276,11 @@ void PROJECT_TREE_ITEM::Activate( PROJECT_TREE_PANE* aTreePrjFrame )
             if( !rootSchematic.IsEmpty() && wxFileExists( rootSchematic ) )
                 ScanSchematicHierarchy( rootSchematic, hierarchyFiles );
 
-            bool isInHierarchy = hierarchyFiles.count( fullFileName ) > 0;
+            // Flat imported projects have several independent roots, so scanning only the first
+            // root cannot discover the other declared pages. Open the shared editor and navigate
+            // to the selected page instead of launching an unrelated standalone schematic.
+            bool isInHierarchy = KEMI_FORMAT::IsProjectTopLevelSchematic( frame->Prj(), fullFileName )
+                                 || hierarchyFiles.count( fullFileName ) > 0;
 
             if( isInHierarchy )
             {
@@ -290,7 +296,7 @@ void PROJECT_TREE_ITEM::Activate( PROJECT_TREE_PANE* aTreePrjFrame )
 
                 if( schFrame )
                 {
-                    packet = fullFileName.ToStdString();
+                    packet = KEMI_FORMAT::NavigationPathToUtf8( fullFileName );
                     kiway.ExpressMail( FRAME_SCH, MAIL_SCH_NAVIGATE_TO_SHEET, packet );
                 }
             }

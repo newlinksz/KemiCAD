@@ -24,6 +24,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <jobs/job_pcb_diff.h>
+#include <diff_merge/diff_doc_kind.h>
+#include <cli/exit_codes.h>
 #include <qa_utils/file_utils.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
@@ -34,12 +36,14 @@
 #include <wx/txtstrm.h>
 
 #include <array>
+#include <filesystem>
 #include <string>
 #include <vector>
+#include <utility>
 
 
 #ifndef QA_KICAD_CLI_PATH
-#define QA_KICAD_CLI_PATH "kicad-cli"
+#define QA_KICAD_CLI_PATH "kemicad-cli"
 #endif
 
 
@@ -316,6 +320,19 @@ BOOST_AUTO_TEST_CASE( DiffJobSerializesSingleOutputKey )
 }
 
 
+BOOST_AUTO_TEST_CASE( NativeAndOfficialExtensionsSelectTheSameMergeKind )
+{
+    using namespace KICAD_DIFF;
+    for( const wxString& prefix : { wxS( "kemi" ), wxS( "kicad" ) } )
+    {
+        BOOST_CHECK( DocKindFromExtension( wxS( "a." ) + prefix + wxS( "_pcb" ) ) == DOC_KIND::PCB );
+        BOOST_CHECK( DocKindFromExtension( wxS( "a." ) + prefix + wxS( "_sch" ) ) == DOC_KIND::SCH );
+        BOOST_CHECK( DocKindFromExtension( wxS( "a." ) + prefix + wxS( "_sym" ) ) == DOC_KIND::SYM_LIB );
+        BOOST_CHECK( DocKindFromExtension( wxS( "a." ) + prefix + wxS( "_mod" ) ) == DOC_KIND::FOOTPRINT );
+    }
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 
@@ -374,6 +391,99 @@ BOOST_AUTO_TEST_CASE( RendersChangedPngAndSvgContentForEveryCommand )
         expectVisualDifference( dir, c, wxS( "svg" ) );
         expectVisualDifference( dir, c, wxS( "png" ) );
     }
+}
+
+
+BOOST_AUTO_TEST_CASE( GitMergeDriverWritesNativeBlobsAndRejectsOfficialIdentity )
+{
+    TEMP_DIR dir;
+    CLI_FIXTURES fixtures( dir );
+    for( const auto& item : { std::make_pair( wxS( "pcb" ), fixtures.pcbA ),
+                             std::make_pair( wxS( "sch" ), fixtures.schA ),
+                             std::make_pair( wxS( "sym" ), fixtures.symA ),
+                             std::make_pair( wxS( "fp" ), fixtures.fpB + wxFILE_SEP_PATH
+                                                        + wxS( "VisualDiff.kicad_mod" ) ) } )
+    {
+        const wxString extension = item.first == wxS( "fp" ) ? wxS( "mod" ) : item.first;
+        const wxString output = dir.Path( wxS( "merged.kemi_" ) + extension );
+        const std::string before = KI_TEST::LoadStringData( item.second );
+        COMMAND_RESULT result = runCli( { wxS( "git-mergedriver" ), wxS( "--kind" ), item.first,
+                item.second, item.second, item.second, wxS( "--output" ), output } );
+        BOOST_CHECK_MESSAGE( result.exitCode == 0, result.error );
+        BOOST_REQUIRE( wxFileExists( output ) );
+        BOOST_CHECK( KI_TEST::LoadStringData( output ).starts_with( "(kemi_" ) );
+        BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( item.second ), before );
+
+        const wxString blob = dir.Path( wxS( "git-blob-" ) + item.first );
+        BOOST_REQUIRE( wxCopyFile( output, blob ) );
+        result = runCli( { wxS( "git-mergedriver" ), wxS( "--kind" ), item.first,
+                blob, blob, blob, wxS( "--path" ), output, wxS( "--output" ), blob } );
+        BOOST_CHECK_MESSAGE( result.exitCode == 0, result.error );
+        BOOST_CHECK( KI_TEST::LoadStringData( blob ).starts_with( "(kemi_" ) );
+
+        result = runCli( { wxS( "git-mergedriver" ), wxS( "--kind" ), item.first,
+                item.second, item.second, item.second, wxS( "--output" ), item.second } );
+        BOOST_CHECK_EQUAL( result.exitCode, CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT );
+        BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( item.second ), before );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( GitMergeDriverRejectsSymlinksToOfficialSources )
+{
+    TEMP_DIR dir;
+    CLI_FIXTURES fixtures( dir );
+    const std::string before = KI_TEST::LoadStringData( fixtures.pcbA );
+
+    for( const wxString& name : { wxS( "linked.kemi_pcb" ), wxS( "git-blob" ) } )
+    {
+        const wxString link = dir.Path( name );
+        std::error_code error;
+        std::filesystem::create_symlink( std::filesystem::path( fixtures.pcbA.wc_str() ),
+                                        std::filesystem::path( link.wc_str() ), error );
+
+        if( error )
+        {
+            BOOST_TEST_MESSAGE( "Symlink creation unavailable: " << error.message() );
+            return;
+        }
+
+        COMMAND_RESULT result = runCli( { wxS( "git-mergedriver" ), wxS( "--kind" ), wxS( "pcb" ),
+                fixtures.pcbA, fixtures.pcbA, fixtures.pcbA,
+                wxS( "--path" ), dir.Path( wxS( "board.kemi_pcb" ) ), wxS( "--output" ), link } );
+        BOOST_CHECK_EQUAL( result.exitCode, CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT );
+        BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( fixtures.pcbA ), before );
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( SymbolUpgradeUsesNativeDefaultAndPreservesOfficialSource )
+{
+    TEMP_DIR dir;
+    CLI_FIXTURES fixtures( dir );
+    const std::string before = KI_TEST::LoadStringData( fixtures.symA );
+    const wxString native = dir.Path( wxS( "sym_a.kemi_sym" ) );
+    COMMAND_RESULT result = runCli( { wxS( "sym" ), wxS( "upgrade" ), wxS( "--force" ), fixtures.symA } );
+    BOOST_CHECK_MESSAGE( result.exitCode == 0, result.error );
+    BOOST_REQUIRE( wxFileExists( native ) );
+    const std::string saved = KI_TEST::LoadStringData( native );
+    BOOST_CHECK( saved.starts_with( "(kemi_symbol_lib" ) );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( fixtures.symA ), before );
+
+    result = runCli( { wxS( "sym" ), wxS( "upgrade" ), wxS( "--force" ), fixtures.symA } );
+    BOOST_CHECK_EQUAL( result.exitCode, CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( native ), saved );
+
+    result = runCli( { wxS( "sym" ), wxS( "upgrade" ), wxS( "--force" ), native } );
+    BOOST_CHECK_MESSAGE( result.exitCode == 0, result.error );
+    BOOST_CHECK( KI_TEST::LoadStringData( native ).starts_with( "(kemi_symbol_lib" ) );
+
+    const wxString official = dir.Path( wxS( "rejected.kicad_sym" ) );
+    result = runCli( { wxS( "sym" ), wxS( "upgrade" ), wxS( "--force" ), fixtures.symA,
+                       wxS( "--output" ), official } );
+    BOOST_CHECK_EQUAL( result.exitCode, CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT );
+    BOOST_CHECK( !wxFileExists( official ) );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( fixtures.symA ), before );
 }
 
 

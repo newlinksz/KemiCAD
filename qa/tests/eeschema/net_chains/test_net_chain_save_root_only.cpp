@@ -50,7 +50,7 @@ struct NETCHAIN_SAVE_ROOT_FIXTURE
     {
         wxString tempDir = wxStandardPaths::Get().GetTempDir();
         wxString projectPath =
-                tempDir + wxFileName::GetPathSeparator() + wxT( "test_netchain_save.kicad_pro" );
+                tempDir + wxFileName::GetPathSeparator() + wxS( "test_netchain_save.kemi_pro" );
         m_tempFiles.push_back( projectPath );
 
         m_settingsManager.LoadProject( projectPath.ToStdString() );
@@ -110,8 +110,8 @@ BOOST_FIXTURE_TEST_CASE( NetChainSavedOnlyOnRootSheetFile, NETCHAIN_SAVE_ROOT_FI
     SCH_SCREEN* subScreen = new SCH_SCREEN( m_schematic.get() );
     subSheet->SetName( "SubSheet" );
     subSheet->SetScreen( subScreen );
-    subSheet->SetFileName( "subsheet.kicad_sch" );
-    subScreen->SetFileName( "subsheet.kicad_sch" );
+    subSheet->SetFileName( wxS( "subsheet.kemi_sch" ) );
+    subScreen->SetFileName( wxS( "subsheet.kemi_sch" ) );
     topScreen->Append( subSheet );
 
     m_schematic->RefreshHierarchy();
@@ -127,11 +127,11 @@ BOOST_FIXTURE_TEST_CASE( NetChainSavedOnlyOnRootSheetFile, NETCHAIN_SAVE_ROOT_FI
     BOOST_REQUIRE_EQUAL( m_schematic->ConnectionGraph()->GetCommittedNetChains().size(), 1u );
 
     wxString topFileName = GetTempFileName( "netchain_main" );
-    topFileName += ".kicad_sch";
+    topFileName += wxS( ".kemi_sch" );
     m_tempFiles.push_back( topFileName );
 
     wxString subFileName = GetTempFileName( "netchain_sub" );
-    subFileName += ".kicad_sch";
+    subFileName += wxS( ".kemi_sch" );
     m_tempFiles.push_back( subFileName );
 
     SCH_IO_KICAD_SEXPR io;

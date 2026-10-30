@@ -33,8 +33,10 @@ static wxString formatStamp( const wxDateTime& aDt )
 
 
 DIALOG_AUTOSAVE_RECOVERY::DIALOG_AUTOSAVE_RECOVERY( wxWindow*                                         aParent,
-                                                    const std::vector<std::pair<wxString, wxString>>& aStale ) :
+                                                    const std::vector<std::pair<wxString, wxString>>& aStale,
+                                                    bool aWholeSet ) :
         DIALOG_AUTOSAVE_RECOVERY_BASE( aParent ),
+        m_wholeSet( aWholeSet ),
         m_choice( AUTOSAVE_RECOVERY_CHOICE::CANCEL ),
         m_stale( aStale )
 {
@@ -42,7 +44,13 @@ DIALOG_AUTOSAVE_RECOVERY::DIALOG_AUTOSAVE_RECOVERY( wxWindow*                   
     m_fileList->AppendColumn( _( "Saved version" ), wxLIST_FORMAT_LEFT, 150 );
     m_fileList->AppendColumn( _( "Auto-saved copy" ), wxLIST_FORMAT_LEFT, 150 );
 
-    m_fileList->EnableCheckBoxes( true );
+    m_fileList->EnableCheckBoxes( !m_wholeSet );
+
+    if( m_wholeSet )
+    {
+        SetTitle( _( "Recover Schematic Hierarchy" ) );
+        m_fileList->SetToolTip( _( "All sheets are recovered together to preserve child sheet references." ) );
+    }
 
     for( const auto& [autosavePath, srcPath] : m_stale )
     {
@@ -61,7 +69,8 @@ DIALOG_AUTOSAVE_RECOVERY::DIALOG_AUTOSAVE_RECOVERY( wxWindow*                   
         long row = m_fileList->InsertItem( m_fileList->GetItemCount(), srcFn.GetFullName() );
         m_fileList->SetItem( row, 1, formatStamp( srcTime ) );
         m_fileList->SetItem( row, 2, formatStamp( autosaveTime ) );
-        m_fileList->CheckItem( row, true );
+        if( !m_wholeSet )
+            m_fileList->CheckItem( row, true );
     }
 
     m_fileList->Bind( wxEVT_LIST_ITEM_CHECKED, &DIALOG_AUTOSAVE_RECOVERY::onItemCheckChanged, this );
@@ -73,6 +82,9 @@ DIALOG_AUTOSAVE_RECOVERY::DIALOG_AUTOSAVE_RECOVERY( wxWindow*                   
 
 std::vector<std::pair<wxString, wxString>> DIALOG_AUTOSAVE_RECOVERY::GetSelectedStale() const
 {
+    if( m_wholeSet )
+        return m_stale;
+
     std::vector<std::pair<wxString, wxString>> selected;
 
     for( long i = 0; i < m_fileList->GetItemCount(); ++i )
@@ -94,7 +106,7 @@ void DIALOG_AUTOSAVE_RECOVERY::onItemCheckChanged( wxListEvent& aEvent )
 
 void DIALOG_AUTOSAVE_RECOVERY::updateActionButtons()
 {
-    bool anyChecked = false;
+    bool anyChecked = m_wholeSet && !m_stale.empty();
 
     for( long i = 0; i < m_fileList->GetItemCount(); ++i )
     {

@@ -57,6 +57,8 @@
 #include <macros.h>
 #include <trace_helpers.h>
 #include <wildcards_and_files_ext.h>
+#include <kemi_format_profile.h>
+#include <kemi_project_import.h>
 #include <kiplatform/environment.h>
 #include <core/kicad_algo.h>
 #include <paths.h>
@@ -240,6 +242,29 @@ PROJECT_TREE_PANE::PROJECT_TREE_PANE( KICAD_MANAGER_FRAME* parent ) :
     for( int ii = 0; s_allowedExtensionsToList[ii] != nullptr; ii++ )
         m_filters.emplace_back( s_allowedExtensionsToList[ii] );
 
+    // KemiCAD native extensions, generated from KEMI_FORMAT profiles.
+    // PROJECT_LOCAL (.kemi_prl) is omitted, same as .kicad_prl not being listed above.
+    for( const KEMI_FORMAT::DOC_PROFILE& profile : KEMI_FORMAT::AllProfiles() )
+    {
+        if( profile.doc == KEMI_FORMAT::DOC::PROJECT_LOCAL )
+            continue;
+
+        const bool useNonEmptyPrefix =
+                profile.doc == KEMI_FORMAT::DOC::PCB
+             || profile.doc == KEMI_FORMAT::DOC::DESIGN_RULES
+             || profile.doc == KEMI_FORMAT::DOC::DRAWING_SHEET
+             || profile.doc == KEMI_FORMAT::DOC::FOOTPRINT;
+
+        wxString pat;
+
+        if( useNonEmptyPrefix )
+            pat.Printf( wxT( "^[^$].*\\.%s$" ), wxString::FromUTF8( profile.kemiExt ) );
+        else
+            pat.Printf( wxT( "^.*\\.%s$" ), wxString::FromUTF8( profile.kemiExt ) );
+
+        m_filters.emplace_back( pat );
+    }
+
     m_filters.emplace_back( wxT( "^no KiCad files found" ) );
 
     ReCreateTreePrj();
@@ -355,8 +380,42 @@ void PROJECT_TREE_PANE::onCreateNewDirectory( wxCommandEvent& event )
 }
 
 
+/**
+ * True when aPath uses the KemiCAD native extension for aType.
+ * Legacy / .kicad_* matching stays on GetFileExt(); this covers .kemi_*.
+ */
+static bool matchesKemiExtForType( TREE_FILE_TYPE aType, const wxString& aPath )
+{
+    const wxString ext = wxFileName( aPath ).GetExt();
+
+    switch( aType )
+    {
+    case TREE_FILE_TYPE::JSON_PROJECT:
+        return KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PROJECT, ext );
+    case TREE_FILE_TYPE::SEXPR_SCHEMATIC:
+        return KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SCHEMATIC, ext );
+    case TREE_FILE_TYPE::SEXPR_PCB:
+        return KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PCB, ext );
+    case TREE_FILE_TYPE::DRAWING_SHEET:
+        return KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::DRAWING_SHEET, ext );
+    case TREE_FILE_TYPE::FOOTPRINT_FILE:
+        return KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::FOOTPRINT, ext );
+    case TREE_FILE_TYPE::SEXPR_SYMBOL_LIB_FILE:
+        return KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SYMBOL_LIB, ext );
+    case TREE_FILE_TYPE::DESIGN_RULES:
+        return KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::DESIGN_RULES, ext );
+    case TREE_FILE_TYPE::JOBSET_FILE:
+        return KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::JOBSET, ext );
+    default:
+        return false;
+    }
+}
+
+
 wxString PROJECT_TREE_PANE::GetFileExt( TREE_FILE_TYPE type )
 {
+    // Returns the legacy / .kicad_* extension used for rename prompts and primary matching.
+    // Classification also accepts .kemi_* via matchesKemiExtForType() / KEMI_FORMAT.
     switch( type )
     {
     case TREE_FILE_TYPE::LEGACY_PROJECT:        return FILEEXT::LegacyProjectFileExtension;
@@ -410,7 +469,7 @@ std::vector<wxString> getProjects( const wxDir& dir )
         wxFileName file( dir_filename );
 
         if( file.GetExt() == FILEEXT::LegacyProjectFileExtension
-            || file.GetExt() == FILEEXT::ProjectFileExtension )
+            || KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PROJECT, file.GetExt() ) )
             projects.push_back( file.GetName() );
 
         haveFile = dir.GetNext( &dir_filename );
@@ -474,15 +533,21 @@ wxTreeItemId PROJECT_TREE_PANE::addItemToProjectTree( const wxString& aName,
         for( int i = static_cast<int>( TREE_FILE_TYPE::LEGACY_PROJECT );
                 i < static_cast<int>( TREE_FILE_TYPE::MAX ); i++ )
         {
-            wxString ext = GetFileExt( (TREE_FILE_TYPE) i );
+            TREE_FILE_TYPE candidate = (TREE_FILE_TYPE) i;
+            wxString       ext = GetFileExt( candidate );
 
-            if( ext == wxT( "" ) )
-                continue;
-
-            if( reg.Compile( wxString::FromAscii( "^.*\\." ) + ext + wxString::FromAscii( "$" ), wxRE_ICASE )
-                    && reg.Matches( aName ) )
+            if( ext != wxT( "" )
+                && reg.Compile( wxString::FromAscii( "^.*\\." ) + ext
+                                        + wxString::FromAscii( "$" ), wxRE_ICASE )
+                && reg.Matches( aName ) )
             {
-                type = (TREE_FILE_TYPE) i;
+                type = candidate;
+                break;
+            }
+
+            if( matchesKemiExtForType( candidate, aName ) )
+            {
+                type = candidate;
                 break;
             }
         }
@@ -500,8 +565,11 @@ wxTreeItemId PROJECT_TREE_PANE::addItemToProjectTree( const wxString& aName,
         return wxTreeItemId();
     }
 
-    if( !showAllSchematics && ( currfile.GetExt() == GetFileExt( TREE_FILE_TYPE::LEGACY_SCHEMATIC )
-                                || currfile.GetExt() == GetFileExt( TREE_FILE_TYPE::SEXPR_SCHEMATIC ) ) )
+    // Imported multi-page projects declare roots whose names differ from the project stem.
+    if( !showAllSchematics
+        && ( currfile.GetExt() == GetFileExt( TREE_FILE_TYPE::LEGACY_SCHEMATIC )
+             || KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::SCHEMATIC, currfile.GetExt() ) )
+        && !KEMI_FORMAT::IsProjectTopLevelSchematic( Prj(), aName ) )
     {
         if( aProjectNames )
         {

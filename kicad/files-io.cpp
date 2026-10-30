@@ -33,6 +33,7 @@
 #include <reporter.h>
 #include <settings/settings_manager.h>
 #include <wildcards_and_files_ext.h>
+#include <kemi_format_profile.h>
 #include <local_history.h>
 
 #include "kicad_manager_frame.h"
@@ -50,59 +51,6 @@ void KICAD_MANAGER_FRAME::OnFileHistory( wxCommandEvent& event )
 void KICAD_MANAGER_FRAME::OnClearFileHistory( wxCommandEvent& aEvent )
 {
     ClearFileHistory();
-}
-
-
-/**
- * KEMI: return the single top-level folder name shared by every entry of the zip archive,
- * or an empty string if entries are not all inside one folder (or the archive is unreadable).
- */
-static wxString kemiZipSingleTopFolder( const wxString& aZipFile )
-{
-    wxFFileInputStream stream( aZipFile );
-
-    if( !stream.IsOk() )
-        return wxEmptyString;
-
-    wxZipInputStream zip( stream );
-    wxString         top;
-    bool             any = false;
-
-    for( std::unique_ptr<wxZipEntry> entry( zip.GetNextEntry() ); entry;
-         entry.reset( zip.GetNextEntry() ) )
-    {
-        wxString name = entry->GetName( wxPATH_UNIX );
-
-        while( name.StartsWith( wxS( "/" ) ) )
-            name = name.Mid( 1 );
-
-        if( name.IsEmpty() )
-            continue;
-
-        // A file in the archive root means there is no single top-level folder.
-        if( !name.Contains( wxS( "/" ) ) && !entry->IsDir() )
-            return wxEmptyString;
-
-        wxString first = name.BeforeFirst( '/' );
-
-        if( first.IsEmpty() || first == wxS( "." ) || first == wxS( ".." ) )
-            return wxEmptyString;
-
-        if( !any )
-        {
-            top = first;
-            any = true;
-        }
-        else if( first != top )
-        {
-            return wxEmptyString;
-        }
-    }
-
-    if( zip.GetLastError() == wxSTREAM_READ_ERROR )
-        return wxEmptyString;
-
-    return any ? top : wxString();
 }
 
 
@@ -146,7 +94,7 @@ void KICAD_MANAGER_FRAME::UnarchiveFiles()
     wxFileName parentDir = wxFileName::DirName( parentDlg.GetPath() );
     parentDir.MakeAbsolute();
 
-    const wxString topFolder = kemiZipSingleTopFolder( zipPath );
+    const wxString topFolder = PROJECT_ARCHIVER::FindSingleTopFolder( zipPath );
     const wxString baseName = topFolder.IsEmpty() ? zipFn.GetName() : topFolder;
 
     auto childPath =
@@ -223,13 +171,11 @@ void KICAD_MANAGER_FRAME::UnarchiveFiles()
     // whatever its final name (e.g. demo_1).
     if( PROJECT_ARCHIVER::Unarchive( zipPath, unzipDir, reporter, topFolder ) )
     {
-        wxArrayString projectFiles;
-        wxDir::GetAllFiles( unzipDir, &projectFiles,
-                            wxT( "*." ) + wxString::FromUTF8( FILEEXT::ProjectFileExtension ),
-                            wxDIR_FILES );
+        // KEMI: prefer .kemi_pro, fall back to .kicad_pro; open only a unique project.
+        const wxString projectFile = PROJECT_ARCHIVER::FindExtractedProjectFile( unzipDir );
 
-        if( projectFiles.size() == 1 )
-            LoadProject( wxFileName( projectFiles[0] ) );
+        if( !projectFile.IsEmpty() )
+            LoadProject( wxFileName( projectFile ) );
     }
     else
     {

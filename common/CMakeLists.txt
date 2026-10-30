@@ -370,6 +370,8 @@ set( KICOMMON_SRCS
     ui_events.cpp
     title_block.cpp
     trace_helpers.cpp
+    kemi_format_profile.cpp
+    kemi_project_import.cpp
     wildcards_and_files_ext.cpp
     wx_filename.cpp
     xnode.cpp

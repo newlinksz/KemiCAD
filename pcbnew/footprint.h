@@ -419,6 +419,14 @@ public:
     wxString GetFPIDAsString() const { return m_fpid.Format(); }
     void SetFPIDAsString( const wxString& aFPID ) { m_fpid.Parse( aFPID ); }
 
+    /// Preserve native provenance when copying or detaching a library footprint.
+    bool IsKemiOnly() const;
+    void SetKemiOnly()
+    {
+        m_kemiOnly = true;
+        SetKemiOnlyEmbeddedFiles();
+    }
+
     std::deque<PCB_3D_BODY*>& Bodies()             { return m_bodies; }
     const std::deque<PCB_3D_BODY*>& Bodies() const { return m_bodies; }
 
@@ -1387,6 +1395,7 @@ private:
     TRANSFORM_TRS   m_transform;
     bool            m_flipped = false;
     LIB_ID          m_fpid;
+    bool            m_kemiOnly = false;
     int             m_attributes;        // Flag bits (see FOOTPRINT_ATTR_T)
     int             m_fpStatus = 0;      // For autoplace: flags (PLACED, TO_PLACE)
     int             m_fileFormatVersionAtLoad;

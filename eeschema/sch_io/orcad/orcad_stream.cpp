@@ -284,16 +284,58 @@ wxString FromOrcadString( const std::string& aText )
     if( aText.empty() )
         return wxEmptyString;
 
+    auto normalizeNewlines = []( wxString value )
+    {
+        // OrCAD multi-line text uses CR LF; raw CR renders as replacement glyph in KiCad.
+        value.Replace( wxS( "\r\n" ), wxS( "\n" ) );
+        value.Replace( wxS( "\r" ), wxS( "\n" ) );
+        return value;
+    };
+
+    auto hasHighBytes = [&]()
+    {
+        for( unsigned char byte : aText )
+        {
+            if( byte >= 0x80 )
+                return true;
+        }
+
+        return false;
+    };
+
+    // Pure ASCII is identical in CP936 and CP1252.
+    if( !hasHighBytes() )
+        return normalizeNewlines( wxString::FromUTF8( aText.data(), aText.size() ) );
+
+    // Chinese OrCAD installs write page/symbol names in ANSI/CP936 (GBK).  Try that first;
+    // keep the result when it yields CJK so Western Latin-1 bytes are not forced through GBK.
+    wxString gbk( aText.c_str(), wxCSConv( wxFONTENCODING_CP936 ) );
+    bool     gbkHasCjk = false;
+
+    if( !gbk.IsEmpty() && gbk.Find( wxChar( 0xFFFD ) ) == wxNOT_FOUND )
+    {
+        for( wxUniChar ch : gbk )
+        {
+            const wxUint32 code = ch.GetValue();
+
+            if( ( code >= 0x4E00 && code <= 0x9FFF ) || ( code >= 0x3400 && code <= 0x4DBF ) )
+            {
+                gbkHasCjk = true;
+                break;
+            }
+        }
+    }
+
+    if( gbkHasCjk )
+        return normalizeNewlines( gbk );
+
+    // Western designs stay on Windows-1252 / Latin-1.
     wxString converted( aText.c_str(), wxCSConv( wxFONTENCODING_CP1252 ) );
 
     if( converted.IsEmpty() )
         converted = wxString::From8BitData( aText.c_str(), aText.size() );
 
-    // OrCAD multi-line text uses CR LF; raw CR renders as replacement glyph in KiCad.
-    converted.Replace( wxS( "\r\n" ), wxS( "\n" ) );
-    converted.Replace( wxS( "\r" ), wxS( "\n" ) );
-
-    return converted;
+    return normalizeNewlines( converted );
 }
 
 

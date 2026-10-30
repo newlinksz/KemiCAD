@@ -40,7 +40,7 @@ struct SCH_ELLIPSE_FIXTURE
             m_settingsManager()
     {
         wxString tempDir = wxStandardPaths::Get().GetTempDir();
-        wxString projectPath = tempDir + wxFileName::GetPathSeparator() + wxT( "test_sch_ellipse.kicad_pro" );
+        wxString projectPath = tempDir + wxFileName::GetPathSeparator() + wxS( "test_sch_ellipse.kemi_pro" );
         m_tempFiles.push_back( projectPath );
 
         m_settingsManager.LoadProject( projectPath.ToStdString() );
@@ -79,12 +79,12 @@ struct SCH_ELLIPSE_FIXTURE
         m_schematic->CreateDefaultScreens();
         std::vector<SCH_SHEET*> topSheets = m_schematic->GetTopLevelSheets();
         SCH_SCREEN*             screen = topSheets[0]->GetScreen();
-        screen->SetFileName( "test.kicad_sch" );
+        screen->SetFileName( wxS( "test.kemi_sch" ) );
 
         screen->Append( aShape );
 
         wxString fileName = GetTempFileName( aTag );
-        fileName += ".kicad_sch";
+        fileName += wxS( ".kemi_sch" );
         m_tempFiles.push_back( fileName );
 
         SCH_IO_KICAD_SEXPR io;

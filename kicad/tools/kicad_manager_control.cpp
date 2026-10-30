@@ -27,9 +27,9 @@
 #include <policy_keys.h>
 #include <kiway.h>
 #include <kicad_manager_frame.h>
+#include <kemi_format_profile.h>
+#include <ki_exception.h>
 #include <core/json_serializers.h> // must precede any json+wxString use (job.h) in this TU
-#include <downgrade_target.h>
-#include <project_downgrade.h>
 #include <filesystem>
 #include <system_error>
 #include <wx/msgdlg.h>
@@ -51,8 +51,6 @@
 #include <tools/kicad_manager_actions.h>
 #include <tools/kicad_manager_control.h>
 #include <dialogs/panel_design_block_lib_table.h>
-#include <dialogs/dialog_downgrade_report.h>
-#include <dialogs/dialog_export_older_version.h>
 #include <dialogs/dialog_template_selector.h>
 #include <dialogs/git/dialog_git_repository.h>
 #include <git/git_clone_handler.h>
@@ -91,7 +89,7 @@ wxFileName KICAD_MANAGER_CONTROL::newProjectDirectory( wxString* aFileName, bool
 
     wxString        default_dir = m_frame->GetMruPath();
     wxFileDialog    dlg( m_frame, _( "Create New Project" ), default_dir, default_filename,
-                         ( isRepo ? wxString( "" ) : FILEEXT::ProjectFileWildcard() ),
+                         ( isRepo ? wxString( wxEmptyString ) : _( "KemiCAD project (*.kemi_pro)|*.kemi_pro" ) ),
                          wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
 
     dlg.AddShortcut( PATHS::GetDefaultUserProjectsPath() );
@@ -107,12 +105,23 @@ wxFileName KICAD_MANAGER_CONTROL::newProjectDirectory( wxString* aFileName, bool
 
     wxFileName pro( dlg.GetPath() );
 
-    // wxFileName automatically extracts an extension.  But if it isn't
-    // a .pro extension, we should keep it as part of the filename
-    if( !pro.GetExt().IsEmpty() && pro.GetExt().ToStdString() != FILEEXT::ProjectFileExtension )
-        pro.SetName( pro.GetName() + wxT( "." ) + pro.GetExt() );
+    if( !pro.GetExt().IsEmpty()
+        && !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PROJECT, pro.GetExt() )
+        && !KEMI_FORMAT::HasKemiExt( pro.GetFullPath() ) )
+    {
+        pro.SetName( pro.GetName() + wxS( "." ) + pro.GetExt() );
+    }
 
-    pro.SetExt( FILEEXT::ProjectFileExtension ); // enforce extension
+    try
+    {
+        pro.Assign( KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::PROJECT,
+                                                         pro.GetFullPath(), true ) );
+    }
+    catch( const IO_ERROR& error )
+    {
+        DisplayErrorMessage( m_frame, error.What() );
+        return wxFileName();
+    }
 
     if( !pro.IsAbsolute() )
         pro.MakeAbsolute();
@@ -225,10 +234,10 @@ int KICAD_MANAGER_CONTROL::NewProject( const TOOL_EVENT& aEvent )
         if( !pro.IsOk() )
             return -1;
 
-        m_frame->CreateNewProject( pro );
-        m_frame->LoadProject( pro );
+        if( !m_frame->CreateNewProject( pro ) )
+            return -1;
 
-        return 0;
+        return m_frame->LoadProject( pro ) ? 0 : -1;
     }
 
     // Use RunMainStack to show the dialog on the main stack instead of the coroutine stack.
@@ -296,7 +305,7 @@ int KICAD_MANAGER_CONTROL::NewProject( const TOOL_EVENT& aEvent )
 
     wxString        default_dir = wxFileName( Prj().GetProjectFullName() ).GetPathWithSep();
     wxString        title = _( "New Project Folder" );
-    wxFileDialog    dlg( m_frame, title, default_dir, wxEmptyString, FILEEXT::ProjectFileWildcard(),
+    wxFileDialog    dlg( m_frame, title, default_dir, wxEmptyString, _( "KemiCAD project (*.kemi_pro)|*.kemi_pro" ),
                          wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
 
     dlg.AddShortcut( PATHS::GetDefaultUserProjectsPath() );
@@ -311,10 +320,23 @@ int KICAD_MANAGER_CONTROL::NewProject( const TOOL_EVENT& aEvent )
 
     wxFileName fn( dlg.GetPath() );
 
-    if( !fn.GetExt().IsEmpty() && fn.GetExt().ToStdString() != FILEEXT::ProjectFileExtension )
-        fn.SetName( fn.GetName() + wxT( "." ) + fn.GetExt() );
+    if( !fn.GetExt().IsEmpty()
+        && !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PROJECT, fn.GetExt() )
+        && !KEMI_FORMAT::HasKemiExt( fn.GetFullPath() ) )
+    {
+        fn.SetName( fn.GetName() + wxS( "." ) + fn.GetExt() );
+    }
 
-    fn.SetExt( FILEEXT::ProjectFileExtension );
+    try
+    {
+        fn.Assign( KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::PROJECT,
+                                                         fn.GetFullPath(), true ) );
+    }
+    catch( const IO_ERROR& error )
+    {
+        DisplayErrorMessage( m_frame, error.What() );
+        return -1;
+    }
 
     if( !fn.IsAbsolute() )
         fn.MakeAbsolute();
@@ -354,19 +376,13 @@ int KICAD_MANAGER_CONTROL::NewProject( const TOOL_EVENT& aEvent )
 
         if( !overwrittenFiles.empty() )
         {
-            wxString extendedMsg = _( "Overwriting files:" ) + "\n";
+            wxString extendedMsg = _( "These destination files already exist:" ) + wxS( "\n" );
 
             for( const wxFileName& file : overwrittenFiles )
                 extendedMsg += "\n" + file.GetFullName();
 
-            KIDIALOG msgDlg( m_frame, _( "Similar files already exist in the destination folder." ),
-                             _( "Confirmation" ), wxOK | wxCANCEL | wxICON_WARNING );
-            msgDlg.SetExtendedMessage( extendedMsg );
-            msgDlg.SetOKLabel( _( "Overwrite" ) );
-            msgDlg.DoNotShowCheckbox( __FILE__, __LINE__ );
-
-            if( msgDlg.ShowModal() == wxID_CANCEL )
-                return -1;
+            DisplayErrorMessage( m_frame, _( "Choose a new destination for the project." ), extendedMsg );
+            return -1;
         }
     }
 
@@ -394,9 +410,10 @@ int KICAD_MANAGER_CONTROL::NewProject( const TOOL_EVENT& aEvent )
     if( recentTemplates.size() > 5 )
         recentTemplates.resize( 5 );
 
-    m_frame->CreateNewProject( fn.GetFullPath() );
-    m_frame->LoadProject( fn );
-    return 0;
+    if( !m_frame->CreateNewProject( fn ) )
+        return -1;
+
+    return m_frame->LoadProject( fn ) ? 0 : -1;
 }
 
 
@@ -552,7 +569,12 @@ int KICAD_MANAGER_CONTROL::NewFromRepository( const TOOL_EVENT& aEvent )
 int KICAD_MANAGER_CONTROL::NewJobsetFile( const TOOL_EVENT& aEvent )
 {
     wxString     default_dir = wxFileName( Prj().GetProjectFullName() ).GetPathWithSep();
-    wxFileDialog dlg( m_frame, _( "Create New Jobset" ), default_dir, wxEmptyString, FILEEXT::JobsetFileWildcard(),
+    const bool restricted = !Prj().IsNullProject() && Prj().GetProjectFile().IsKemiOnly();
+    const wxString wildcard = restricted
+            ? _( "KemiCAD Jobset" ) + AddFileExtListToFilter(
+                    { KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::JOBSET, KEMI_FORMAT::FLAVOR::KEMI ) } )
+            : FILEEXT::JobsetFileWildcard();
+    wxFileDialog dlg( m_frame, _( "Create New Jobset" ), default_dir, wxEmptyString, wildcard,
                       wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
 
     KIPLATFORM::UI::AllowNetworkFileSystems( &dlg );
@@ -561,6 +583,17 @@ int KICAD_MANAGER_CONTROL::NewJobsetFile( const TOOL_EVENT& aEvent )
         return -1;
 
     wxFileName jobsetFn( dlg.GetPath() );
+
+    try
+    {
+        jobsetFn.Assign( KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::JOBSET,
+                                                         dlg.GetPath(), restricted ) );
+    }
+    catch( const IO_ERROR& error )
+    {
+        DisplayErrorMessage( m_frame, error.What() );
+        return -1;
+    }
 
     // Check if the file already exists
     bool fileExists = wxFileExists( jobsetFn.GetFullPath() );
@@ -605,7 +638,7 @@ int KICAD_MANAGER_CONTROL::openProject( const wxString& aDefaultDir )
 
     // You'd think wxFD_FILE_MUST_EXIST and the wild-cards would enforce these.  Sentry
     // indicates otherwise (at least on MSW).
-    if( !pro.Exists() || (   pro.GetExt() != FILEEXT::ProjectFileExtension
+    if( !pro.Exists() || (   !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PROJECT, pro.GetExt() )
                           && pro.GetExt() != FILEEXT::LegacyProjectFileExtension ) )
     {
         return -1;
@@ -700,160 +733,6 @@ int KICAD_MANAGER_CONTROL::UnarchiveProject( const TOOL_EVENT& aEvent )
 }
 
 
-int KICAD_MANAGER_CONTROL::ExportForOlderVersion( const TOOL_EVENT& aEvent )
-{
-    wxFileName proFn( Prj().GetProjectFullName() );
-    wxString   projectDir = proFn.GetPath();
-    wxString   projectName = proFn.GetName();
-
-    // The export reads the files on disk, so it should match what is on screen.
-    KIWAY_PLAYER* schFrame = m_frame->Kiway().Player( FRAME_SCH, false );
-    KIWAY_PLAYER* pcbFrame = m_frame->Kiway().Player( FRAME_PCB_EDITOR, false );
-
-    if( ( schFrame && schFrame->IsContentModified() ) || ( pcbFrame && pcbFrame->IsContentModified() ) )
-    {
-        int answer =
-                wxMessageBox( _( "You have unsaved changes. Save them before exporting?" ),
-                              _( "Export for Older KiCad Version" ), wxYES_NO | wxCANCEL | wxICON_WARNING, m_frame );
-
-        if( answer == wxCANCEL )
-            return 0;
-
-        if( answer == wxYES )
-        {
-            // The handlers set the payload only when the save actually happened. A failed or
-            // cancelled save must not export stale files behind a success message.
-            if( schFrame && schFrame->IsContentModified() )
-            {
-                std::string payload;
-                m_frame->Kiway().ExpressMail( FRAME_SCH, MAIL_SCH_SAVE, payload );
-
-                if( payload != "success" )
-                {
-                    wxMessageBox( _( "The schematic was not saved. Nothing was exported." ),
-                                  _( "Export for Older KiCad Version" ), wxOK | wxICON_ERROR, m_frame );
-                    return 0;
-                }
-            }
-
-            if( pcbFrame && pcbFrame->IsContentModified() )
-            {
-                std::string payload;
-                m_frame->Kiway().ExpressMail( FRAME_PCB_EDITOR, MAIL_PCB_SAVE, payload );
-
-                if( payload != "success" )
-                {
-                    wxMessageBox( _( "The board was not saved. Nothing was exported." ),
-                                  _( "Export for Older KiCad Version" ), wxOK | wxICON_ERROR, m_frame );
-                    return 0;
-                }
-            }
-        }
-    }
-
-    // The export converts the saved project-local library files, which the library editors do
-    // not save through the mails above.
-    KIWAY_PLAYER* symFrame = m_frame->Kiway().Player( FRAME_SCH_SYMBOL_EDITOR, false );
-    KIWAY_PLAYER* fpFrame = m_frame->Kiway().Player( FRAME_FOOTPRINT_EDITOR, false );
-
-    if( ( symFrame && symFrame->IsContentModified() ) || ( fpFrame && fpFrame->IsContentModified() ) )
-    {
-        if( wxMessageBox( _( "A library editor has unsaved changes. The export uses the last saved "
-                             "library files. Continue?" ),
-                          _( "Export for Older KiCad Version" ), wxYES_NO | wxICON_WARNING, m_frame )
-            != wxYES )
-        {
-            return 0;
-        }
-    }
-
-    const std::vector<DOWNGRADE_TARGET>& targets = GetDowngradeTargets();
-    wxArrayString                        names;
-
-    for( const DOWNGRADE_TARGET& target : targets )
-        names.Add( target.m_name );
-
-    // Probe against the oldest target. It drops the most, so its variant list covers the
-    // picker no matter which target the user chooses.
-    const wxString&       probeTarget = targets.back().m_name;
-    COMPATIBILITY_REPORT  probeReport;
-    wxString              error;
-    std::vector<wxString> foundVariants;
-
-    if( !ClassifyProjectForDowngrade( m_frame->Kiway(), projectDir, projectName, probeTarget, probeReport, error,
-                                      &foundVariants ) )
-    {
-        wxMessageBox( error, _( "Export for Older KiCad Version" ), wxOK | wxICON_ERROR, m_frame );
-        return 0;
-    }
-
-    wxArrayString variantNames;
-
-    for( const wxString& name : foundVariants )
-        variantNames.Add( name );
-
-    DIALOG_EXPORT_OLDER_VERSION setupDlg( m_frame, names, variantNames, m_frame->GetMruPath() );
-
-    if( setupDlg.ShowModal() != wxID_OK )
-        return 0;
-
-    wxString target = setupDlg.GetTarget();
-    bool     dropInsteadOfApproximate = setupDlg.GetDropInsteadOfApproximate();
-    wxString variant = setupDlg.GetVariant();
-
-    // A self-contained subfolder so we never write into the folder the user picked directly.
-    wxString destDir = setupDlg.GetPath() + wxFileName::GetPathSeparator() + projectName;
-
-    // Early feedback only. The export enforces this again when it creates the folder.
-    std::error_code ec;
-
-    if( std::filesystem::exists( destDir.ToStdWstring(), ec )
-        && !std::filesystem::is_empty( destDir.ToStdWstring(), ec ) )
-    {
-        wxMessageBox( wxString::Format( _( "The folder '%s' is not empty. Choose a location where it "
-                                           "does not exist yet." ),
-                                        destDir ),
-                      _( "Export for Older KiCad Version" ), wxOK | wxICON_ERROR, m_frame );
-        return 0;
-    }
-
-    COMPATIBILITY_REPORT report;
-    foundVariants.clear();
-
-    // The probe used the base design and default approximation policy.
-    if( target == probeTarget && !dropInsteadOfApproximate && variant.IsEmpty() )
-    {
-        report = probeReport;
-        foundVariants.assign( variantNames.begin(), variantNames.end() );
-    }
-    else if( !ClassifyProjectForDowngrade( m_frame->Kiway(), projectDir, projectName, target, report, error,
-                                           &foundVariants, dropInsteadOfApproximate, variant ) )
-    {
-        wxMessageBox( error, _( "Export for Older KiCad Version" ), wxOK | wxICON_ERROR, m_frame );
-        return 0;
-    }
-
-    if( report.IsBlocked() || report.IsLossy() )
-    {
-        DIALOG_DOWNGRADE_REPORT reportDlg( m_frame, target, report );
-
-        if( reportDlg.ShowModal() != wxID_OK || report.IsBlocked() )
-            return 0;
-    }
-
-    if( !ExportProjectForDowngrade( m_frame->Kiway(), projectDir, projectName, target, destDir, error, variant,
-                                    dropInsteadOfApproximate ) )
-    {
-        wxMessageBox( error, _( "Export for Older KiCad Version" ), wxOK | wxICON_ERROR, m_frame );
-        return 0;
-    }
-
-    wxMessageBox( wxString::Format( _( "Exported to '%s'." ), destDir ), _( "Export for Older KiCad Version" ),
-                  wxOK | wxICON_INFORMATION, m_frame );
-    return 0;
-}
-
-
 int KICAD_MANAGER_CONTROL::ExploreProject( const TOOL_EVENT& aEvent )
 {
     // Open project directory in host OS's file explorer
@@ -900,6 +779,12 @@ int KICAD_MANAGER_CONTROL::SaveProjectAs( const TOOL_EVENT& aEvent )
     wxString     currentProjectDirPath = currentProjectFile.GetPath();
     wxString     currentProjectName = Prj().GetProjectName();
 
+    if( KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT, currentProjectFile.GetExt() ) )
+    {
+        DisplayErrorMessage( m_frame, _( "Official KiCad projects must be imported into a new directory." ) );
+        return -1;
+    }
+
     wxString     default_dir = m_frame->GetMruPath();
 
     Prj().GetProjectFile().SaveToFile( currentProjectDirPath );
@@ -935,6 +820,34 @@ int KICAD_MANAGER_CONTROL::SaveProjectAs( const TOOL_EVENT& aEvent )
         return -1;
     }
 
+    const wxString&   newProjectDirPath = newProjectDir.GetFullPath();
+    const wxString&   newProjectName = newProjectDir.GetDirs().Last();
+    wxDir             currentProjectDir( currentProjectDirPath );
+
+    if( !currentProjectDir.IsOpened() )
+    {
+        DisplayErrorMessage( m_frame, _( "Could not open source project directory." ) );
+        return -1;
+    }
+
+    PROJECT_TREE_TRAVERSER traverser( m_frame, currentProjectDirPath, currentProjectName,
+                                     newProjectDirPath, newProjectName,
+                                     Prj().GetProjectFile().IsKemiOnly() );
+
+    currentProjectDir.Traverse( traverser );
+
+    if( !traverser.GetErrors().empty() )
+    {
+        DisplayErrorMessage( m_frame, traverser.GetErrors() );
+        return -1;
+    }
+
+    if( !traverser.GetNewProjectFile().IsOk() )
+    {
+        DisplayErrorMessage( m_frame, _( "Could not find the source project file." ) );
+        return -1;
+    }
+
     if( !wxMkdir( newProjectDir.GetFullPath() ) )
     {
         DisplayErrorMessage( m_frame, wxString::Format( _( "Folder '%s' could not be created.\n\n"
@@ -950,20 +863,17 @@ int KICAD_MANAGER_CONTROL::SaveProjectAs( const TOOL_EVENT& aEvent )
         return -1;
     }
 
-    const wxString&   newProjectDirPath = newProjectDir.GetFullPath();
-    const wxString&   newProjectName = newProjectDir.GetDirs().Last();
-    wxDir             currentProjectDir( currentProjectDirPath );
-
-    PROJECT_TREE_TRAVERSER traverser( m_frame, currentProjectDirPath, currentProjectName,
-                                     newProjectDirPath, newProjectName );
-
-    currentProjectDir.Traverse( traverser );
-
-    if( !traverser.GetErrors().empty() )
+    if( !traverser.CopyFiles() )
+    {
         DisplayErrorMessage( m_frame, traverser.GetErrors() );
+        return -1;
+    }
 
     if( !traverser.GetNewProjectFile().FileExists() )
-        m_frame->CreateNewProject( traverser.GetNewProjectFile() );
+    {
+        DisplayErrorMessage( m_frame, _( "The copied project file could not be found." ) );
+        return -1;
+    }
 
     m_frame->LoadProject( traverser.GetNewProjectFile() );
 
@@ -1217,7 +1127,6 @@ void KICAD_MANAGER_CONTROL::setTransitions()
 
     Go( &KICAD_MANAGER_CONTROL::ArchiveProject,     KICAD_MANAGER_ACTIONS::archiveProject.MakeEvent() );
     Go( &KICAD_MANAGER_CONTROL::UnarchiveProject,   KICAD_MANAGER_ACTIONS::unarchiveProject.MakeEvent() );
-    Go( &KICAD_MANAGER_CONTROL::ExportForOlderVersion, KICAD_MANAGER_ACTIONS::exportForOlderVersion.MakeEvent() );
     Go( &KICAD_MANAGER_CONTROL::ExploreProject,     KICAD_MANAGER_ACTIONS::openProjectDirectory.MakeEvent() );
     Go( &KICAD_MANAGER_CONTROL::RestoreLocalHistory, KICAD_MANAGER_ACTIONS::restoreLocalHistory.MakeEvent() );
     Go( &KICAD_MANAGER_CONTROL::ToggleLocalHistory, KICAD_MANAGER_ACTIONS::showLocalHistory.MakeEvent() );

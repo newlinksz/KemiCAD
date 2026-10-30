@@ -53,6 +53,8 @@
 #include <lib_symbol.h>
 #include <sch_symbol.h>
 #include <pin_map.h>
+#include <pin_pad_connection.h>
+#include <footprint_pad_query.h>
 #include <drawing_sheet/ds_draw_item.h>
 #include <drawing_sheet/ds_proxy_view_item.h>
 #include <vector>
@@ -421,26 +423,17 @@ int ERC_TESTER::TestPinMap( KIFACE* aCvPcb, PROJECT* aProject )
     const bool checkDuplicate = m_settings.IsTestEnabled( ERCE_PIN_MAP_DUPLICATE_PAD );
     const bool checkBadPad = m_settings.IsTestEnabled( ERCE_PIN_MAP_BAD_PAD );
 
-    typedef void ( *PAD_NUMBERS_FN_PTR )( const wxString&, PROJECT*, std::set<wxString>& );
+    std::map<wxString, FOOTPRINT_PAD_QUERY> padCache;
 
-    PAD_NUMBERS_FN_PTR padFetcher =
-            aCvPcb ? (PAD_NUMBERS_FN_PTR) aCvPcb->IfaceOrAddress( KIFACE_FOOTPRINT_PAD_NUMBERS ) : nullptr;
-
-    std::map<wxString, std::set<wxString>> padCache;
-
-    auto getPads = [&]( const wxString& aFootprintId ) -> const std::set<wxString>&
+    auto getPads = [&]( const wxString& aFootprintId ) -> const FOOTPRINT_PAD_QUERY&
     {
         auto it = padCache.find( aFootprintId );
 
         if( it != padCache.end() )
             return it->second;
 
-        std::set<wxString>& pads = padCache[aFootprintId];
-
-        if( padFetcher && !aFootprintId.IsEmpty() )
-            padFetcher( aFootprintId, aProject, pads );
-
-        return pads;
+        return padCache.emplace( aFootprintId,
+                QueryFootprintPadNumbers( aCvPcb, aFootprintId, aProject ) ).first->second;
     };
 
     // Pin maps and the symbol's pin numbers are library-symbol properties, so iterate unique
@@ -529,7 +522,7 @@ int ERC_TESTER::TestPinMap( KIFACE* aCvPcb, PROJECT* aProject )
                 }
             }
 
-            if( checkBadPad && padFetcher )
+            if( checkBadPad && aCvPcb )
             {
                 for( const ASSOCIATED_FOOTPRINT& assoc : source.footprints )
                 {
@@ -538,10 +531,12 @@ int ERC_TESTER::TestPinMap( KIFACE* aCvPcb, PROJECT* aProject )
                     if( !boundMap )
                         continue;
 
-                    const std::set<wxString>& pads = getPads( assoc.m_FootprintLibId.GetUniStringLibId() );
+                    const FOOTPRINT_PAD_QUERY& query = getPads( assoc.m_FootprintLibId.GetUniStringLibId() );
 
-                    if( pads.empty() )
+                    if( !query.loaded )
                         continue;
+
+                    const std::set<wxString>& pads = query.numbers;
 
                     for( const PIN_MAP_ENTRY& entry : boundMap->GetEntries() )
                     {
@@ -564,78 +559,68 @@ int ERC_TESTER::TestPinMap( KIFACE* aCvPcb, PROJECT* aProject )
         }
     }
 
-    if( m_settings.IsTestEnabled( ERCE_PIN_MAP_UNMAPPED_PIN ) && padFetcher )
+    if( m_settings.IsTestEnabled( ERCE_PIN_MAP_UNMAPPED_PIN ) && aCvPcb )
     {
         auto report = [&]( const SCH_SHEET_PATH& sheet, const KIID& pin, const VECTOR2I& position,
-                           const wxString& number, const wxString& footprint )
+                           const wxString& number, const wxString& footprint,
+                           PIN_PAD_CONNECTION_KIND kind )
         {
             auto error = ERC_ITEM::Create( ERCE_PIN_MAP_UNMAPPED_PIN );
             error->SetItems( pin );
             error->SetSheetSpecificPath( sheet );
             error->SetItemsSheetPaths( sheet );
-            error->SetErrorMessage( wxString::Format(
-                    _( "Pin '%s' is connected but maps to no pad on footprint '%s'" ), number, footprint ) );
+            const wxString message = kind == PIN_PAD_CONNECTION_KIND::CONNECTED
+                    ? _( "Pin '%s' is connected but maps to no pad on footprint '%s'" )
+                    : kind == PIN_PAD_CONNECTION_KIND::EXPLICIT_NO_CONNECT
+                            ? _( "No-connect pin '%s' maps to no pad on footprint '%s'" )
+                            : _( "Unconnected pin '%s' maps to no pad on footprint '%s'" );
+            error->SetErrorMessage( wxString::Format( message, number, footprint ) );
             sheet.LastScreen()->Append( new SCH_MARKER( std::move( error ), position ) );
             ++errors;
         };
 
-        if( ADVANCED_CFG::GetCfg().m_ConnectivityEngine )
-        {
-            ERC_MARKER_PLACER sheets( *m_schematic );
+        const wxString variant = m_schematic->GetCurrentVariant();
+        const PIN_PAD_CONNECTIONS connections = CollectPinPadConnections( *m_schematic );
 
-            for( const auto& pin : m_schematic->Connectivity().Engine().UnmappedPinCandidates() )
-            {
-                const SCH_SHEET_PATH* sheet = sheets.Find( pin.sheet );
-
-                if( !sheet )
-                    continue;
-
-                LIB_ID footprint;
-                footprint.Parse( pin.footprint, true );
-                const auto& pads = getPads( footprint.GetUniStringLibId() );
-
-                if( !pads.empty() && !SCH_PIN::HasIdentityPad( pin.number, pads ) )
-                    report( *sheet, pin.item, pin.position, pin.number, pin.footprint );
-            }
-
-            return errors;
-        }
-
-        const wxString variant = m_schematic ? m_schematic->GetCurrentVariant() : wxString();
-
+        // A normal Footprint field is enough to resolve physical pads.  AssociatedFootprints
+        // is optional and must not suppress diagnostics for imported or ordinary symbols.
         for( SCH_SHEET_PATH& sheet : m_sheetList )
         {
             for( SCH_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
             {
                 SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
-                LIB_SYMBOL* lib = symbol->GetLibSymbolRef().get();
-
-                if( !lib || lib->GetEffectiveAssociatedFootprints().empty() )
-                    continue;
-
-                wxString fpText = symbol->GetFootprintFieldText( &sheet, RESOLVED );
-                LIB_ID   fpId;
+                const wxString fpText = symbol->GetFootprintFieldText( &sheet, RESOLVED, variant );
+                LIB_ID fpId;
 
                 if( fpText.IsEmpty() || fpId.Parse( fpText, true ) >= 0 )
                     continue;
 
-                const std::set<wxString>& pads = getPads( fpId.GetUniStringLibId() );
+                const FOOTPRINT_PAD_QUERY& query = getPads( fpId.GetUniStringLibId() );
 
-                if( pads.empty() )
+                if( !query.loaded )
                     continue;
 
                 for( SCH_PIN* pin : symbol->GetPins( &sheet ) )
                 {
-                    if( pin->IsDangling() )
+                    const auto connection = connections.find( { pin->m_Uuid, sheet.Path() } );
+                    const PIN_PAD_CONNECTION_KIND kind = connection == connections.end()
+                            ? PIN_PAD_CONNECTION_KIND::CONNECTED : connection->second;
+                    const LIB_SYMBOL* lib = symbol->GetLibSymbolRef().get();
+
+                    // Preserve the existing associated-footprint check: NC/NIC pins report
+                    // !IsDangling even without a wire.  New Footprint-only coverage uses actual
+                    // connectivity, but must not remove these previously reported markers.
+                    const bool existingCheck = lib && !lib->GetEffectiveAssociatedFootprints().empty()
+                                               && !query.numbers.empty() && !pin->IsDangling();
+
+                    if( kind != PIN_PAD_CONNECTION_KIND::CONNECTED && !existingCheck )
                         continue;
 
                     SCH_PIN::PAD_RESOLUTION state = SCH_PIN::PAD_RESOLUTION::MAPPED;
-                    pin->GetEffectivePadNumber( sheet, variant, fpId, &pads, &state );
+                    pin->GetEffectivePadNumber( sheet, variant, fpId, &query.numbers, &state );
 
-                    if( state != SCH_PIN::PAD_RESOLUTION::UNMAPPED )
-                        continue;
-
-                    report( sheet, pin->m_Uuid, pin->GetPosition(), pin->GetNumber(), fpText );
+                    if( state == SCH_PIN::PAD_RESOLUTION::UNMAPPED )
+                        report( sheet, pin->m_Uuid, pin->GetPosition(), pin->GetNumber(), fpText, kind );
                 }
             }
         }

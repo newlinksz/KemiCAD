@@ -32,6 +32,7 @@ BOOST_AUTO_TEST_CASE( NonGuiProgramsHaveNoId )
     // Executables without an installed .desktop launcher must not claim an application id.
     BOOST_CHECK( PGM_BASE::DesktopAppIdForProgram( wxT( "pl_editor" ) ).IsEmpty() );
     BOOST_CHECK( PGM_BASE::DesktopAppIdForProgram( wxT( "kicad-cli" ) ).IsEmpty() );
+    BOOST_CHECK( PGM_BASE::DesktopAppIdForProgram( wxT( "kemicad-cli" ) ).IsEmpty() );
     BOOST_CHECK( PGM_BASE::DesktopAppIdForProgram( wxT( "something-else" ) ).IsEmpty() );
 }
 

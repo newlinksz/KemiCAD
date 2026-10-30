@@ -34,6 +34,7 @@
 #include <zstd.h>
 
 #include <kiid.h>
+#include <kiplatform/io.h>
 #include <mmh3_hash.h>
 #include <paths.h>
 #include <picosha2.h>
@@ -103,7 +104,7 @@ EMBEDDED_FILES::EMBEDDED_FILE* EMBEDDED_FILES::AddFile( const wxFileName& aName,
     {
         efile->type = EMBEDDED_FILE::FILE_TYPE::DATASHEET;
     }
-    else if( ext == "KICAD_WKS" )
+    else if( ext == "KICAD_WKS" || ext == "KEMI_WKS" )
     {
         efile->type = EMBEDDED_FILE::FILE_TYPE::WORKSHEET;
     }
@@ -191,6 +192,7 @@ void EMBEDDED_FILES::AssignSharedFrom( const EMBEDDED_FILES& aSource,
     }
 
     m_files = std::move( filtered );
+    m_kemiOnly |= aSource.m_kemiOnly;
 }
 
 
@@ -598,6 +600,14 @@ void EMBEDDED_FILES_PARSER::ParseEmbedded( EMBEDDED_FILES* aFiles )
 
 wxFileName EMBEDDED_FILES::GetTemporaryFileName( const wxString& aName ) const
 {
+    // Reject before even creating a cache directory.  Official attachments require
+    // conversion by their document writer, never a suffix-only rename of their bytes.
+    if( m_kemiOnly && wxFileName( aName ).GetFullName().Lower().Contains( wxS( ".kicad_" ) ) )
+    {
+        wxLogTrace( wxT( "KICAD_EMBED" ), wxT( "Refusing official KiCad embedded cache output." ) );
+        return wxFileName();
+    }
+
     wxFileName cacheFile;
 
     auto it = m_files.find( aName );
@@ -617,6 +627,25 @@ wxFileName EMBEDDED_FILES::GetTemporaryFileName( const wxString& aName ) const
         cacheFile.SetPath( wxFileName::GetTempDir() );
     }
 
+    return WriteCacheFile( aName, cacheFile.GetPath() );
+}
+
+
+wxFileName EMBEDDED_FILES::WriteCacheFile( const wxString& aName, const wxString& aDirectory ) const
+{
+    wxFileName cacheFile;
+    auto it = m_files.find( aName );
+
+    if( it == m_files.end() )
+        return cacheFile;
+
+    if( m_kemiOnly && wxFileName( aName ).GetFullName().Lower().Contains( wxS( ".kicad_" ) ) )
+    {
+        wxLogTrace( wxT( "KICAD_EMBED" ), wxT( "Refusing official KiCad embedded cache output." ) );
+        return cacheFile;
+    }
+
+    cacheFile.AssignDir( aDirectory );
     wxFileName inputName( aName );
 
     // Store the cache file name using the data hash to allow for shared data between
@@ -624,18 +653,18 @@ wxFileName EMBEDDED_FILES::GetTemporaryFileName( const wxString& aName ) const
     cacheFile.SetName( "kicad_embedded_" + it->second->data_hash );
     cacheFile.SetExt( inputName.GetExt() );
 
-    if( cacheFile.FileExists() && cacheFile.IsFileReadable() )
+    if( cacheFile.FileExists() && cacheFile.IsFileReadable()
+        && cacheFile.GetSize().GetValue() == it->second->decompressedData.size() )
         return cacheFile;
 
-    wxFFileOutputStream out( cacheFile.GetFullPath() );
+    wxString error;
 
-    if( !out.IsOk() )
+    if( !KIPLATFORM::IO::AtomicWriteFile( cacheFile.GetFullPath(),
+            it->second->decompressedData.data(), it->second->decompressedData.size(), &error ) )
     {
+        wxLogTrace( wxT( "KICAD_EMBED" ), wxT( "Could not write embedded cache output: %s" ), error );
         cacheFile.Clear();
-        return cacheFile;
     }
-
-    out.Write( it->second->decompressedData.data(), it->second->decompressedData.size() );
 
     return cacheFile;
 }
@@ -666,6 +695,7 @@ EMBEDDED_FILES::EMBEDDED_FILES( EMBEDDED_FILES&& other ) noexcept :
         m_files( std::move( other.m_files ) ),
         m_fontFiles( std::move( other.m_fontFiles ) ),
         m_fileAddedCallback( std::move( other.m_fileAddedCallback ) ),
+        m_kemiOnly( other.m_kemiOnly ),
         m_embedFonts( other.m_embedFonts )
 {
     other.m_embedFonts = false;
@@ -681,6 +711,7 @@ EMBEDDED_FILES& EMBEDDED_FILES::operator=(EMBEDDED_FILES&& other) noexcept
         m_files = std::move( other.m_files );
         m_fontFiles = std::move( other.m_fontFiles );
         m_fileAddedCallback = std::move( other.m_fileAddedCallback );
+        m_kemiOnly = other.m_kemiOnly;
         m_embedFonts = other.m_embedFonts;
         other.m_embedFonts = false;
     }
@@ -701,6 +732,7 @@ EMBEDDED_FILES::EMBEDDED_FILES( const EMBEDDED_FILES& other ) :
         m_files( other.m_files ),
         m_fontFiles( other.m_fontFiles ),
         m_fileAddedCallback( other.m_fileAddedCallback ),
+        m_kemiOnly( other.m_kemiOnly ),
         m_embedFonts( other.m_embedFonts )
 {
 }
@@ -708,6 +740,7 @@ EMBEDDED_FILES::EMBEDDED_FILES( const EMBEDDED_FILES& other ) :
 
 EMBEDDED_FILES::EMBEDDED_FILES( const EMBEDDED_FILES& other, bool aDeepCopy ) :
         m_fileAddedCallback( other.m_fileAddedCallback ),
+        m_kemiOnly( other.m_kemiOnly ),
         m_embedFonts( other.m_embedFonts )
 {
     if( aDeepCopy )
@@ -741,6 +774,7 @@ EMBEDDED_FILES& EMBEDDED_FILES::operator=( const EMBEDDED_FILES& other )
 
         m_fontFiles = other.m_fontFiles;
         m_fileAddedCallback = other.m_fileAddedCallback;
+        m_kemiOnly = other.m_kemiOnly;
         m_embedFonts = other.m_embedFonts;
     }
 

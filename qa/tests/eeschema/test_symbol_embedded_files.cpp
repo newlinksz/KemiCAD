@@ -349,7 +349,7 @@ BOOST_AUTO_TEST_CASE( AddEmbeddedFileToPlacedSymbolSurvivesSave )
     BOOST_REQUIRE( screen->Remove( schSymbol ) );
     screen->Append( schSymbol );
 
-    wxString fileName = wxFileName( GetTempDir(), wxS( "embedded_roundtrip.kicad_sch" ) ).GetFullPath();
+    wxString fileName = wxFileName( GetTempDir(), wxS( "embedded_roundtrip.kemi_sch" ) ).GetFullPath();
 
     SCH_IO_KICAD_SEXPR io;
     io.SaveSchematicFile( fileName, rootSheet, schematic.get() );

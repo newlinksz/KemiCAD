@@ -465,6 +465,7 @@ BOOST_AUTO_TEST_CASE( BinaryNetLabelAndHighVariantImported )
     int symbolCount = 0;
     SCH_SYMBOL* c4 = nullptr;
     SCH_LABEL_BASE* netLabel = nullptr;
+    int             vssLabelCount = 0;
 
     for( const SCH_SHEET_PATH& sheetPath : schematic->BuildSheetListSortedByPageNumbers() )
     {
@@ -478,7 +479,14 @@ BOOST_AUTO_TEST_CASE( BinaryNetLabelAndHighVariantImported )
             if( item->Type() == SCH_LABEL_T || item->Type() == SCH_GLOBAL_LABEL_T
                 || item->Type() == SCH_HIER_LABEL_T )
             {
-                netLabel = static_cast<SCH_LABEL_BASE*>( item );
+                SCH_LABEL_BASE* label = static_cast<SCH_LABEL_BASE*>( item );
+
+                // RTree iteration order is not guaranteed; pick the VSS label by text.
+                if( label->GetText() == wxS( "VSS" ) )
+                {
+                    ++vssLabelCount;
+                    netLabel = label;
+                }
             }
             else if( item->Type() == SCH_SYMBOL_T )
             {
@@ -494,6 +502,7 @@ BOOST_AUTO_TEST_CASE( BinaryNetLabelAndHighVariantImported )
     // single placed net label on VSS, previously dropped entirely
     BOOST_REQUIRE_MESSAGE( netLabel, "placed net label was not imported" );
     BOOST_CHECK_EQUAL( netLabel->GetText(), wxS( "VSS" ) );
+    BOOST_CHECK_EQUAL( vssLabelCount, 1 );
 
     // 36 placed instances, C4 is CPOL-EU with variant ordinal 131
     BOOST_CHECK_EQUAL( symbolCount, 36 );

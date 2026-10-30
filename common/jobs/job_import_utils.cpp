@@ -84,7 +84,7 @@ bool LoadLayerMapFile( const wxString& aFile, std::map<wxString, wxString>& aMap
     if( !json.is_object() )
     {
         aError = wxString::Format( _( "Layer map file '%s' must be a JSON object mapping source "
-                                      "layer names to KiCad layer names" ), aFile );
+                                      "layer names to KemiCAD layer names" ), aFile );
         return false;
     }
 

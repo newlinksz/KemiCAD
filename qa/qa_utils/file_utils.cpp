@@ -31,6 +31,7 @@
 #include <wx_filename.h>
 
 #include <settings/settings_manager.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 
 
@@ -275,7 +276,8 @@ SCOPED_TEMP_PROJECT::SCOPED_TEMP_PROJECT( SETTINGS_MANAGER& aManager, const wxSt
         m_manager( aManager ),
         m_project( nullptr )
 {
-    wxFileName projectFile( m_dir.PathStr(), aName, FILEEXT::ProjectFileExtension );
+    wxFileName projectFile( m_dir.PathStr(), aName,
+                            KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) );
 
     m_manager.LoadProject( projectFile.GetFullPath() );
     m_project = m_manager.GetProject( projectFile.GetFullPath() );

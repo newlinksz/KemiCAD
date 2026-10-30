@@ -166,7 +166,7 @@ BOOST_AUTO_TEST_CASE( Archive_ReportsUnreadableFileWhenNotVerbose )
 }
 
 
-BOOST_AUTO_TEST_CASE( Archive_KeepsPartialArchiveWhenAFileIsUnreadable )
+BOOST_AUTO_TEST_CASE( Archive_ReportsFailureAndKeepsPartialArchiveWhenAFileIsUnreadable )
 {
     wxString dir = makeProjectDir( wxT( "partial" ) );
     wxString board = dir + wxFileName::GetPathSeparator() + wxT( "board.kicad_pcb" );
@@ -186,7 +186,8 @@ BOOST_AUTO_TEST_CASE( Archive_KeepsPartialArchiveWhenAFileIsUnreadable )
     wxLogNull          noLog;
     WX_STRING_REPORTER reporter;
 
-    BOOST_REQUIRE( PROJECT_ARCHIVER::Archive( dir, zip, reporter ) );
+    BOOST_REQUIRE( !PROJECT_ARCHIVER::Archive( dir, zip, reporter ) );
+    BOOST_CHECK( reporter.HasMessageOfSeverity( RPT_SEVERITY_ERROR ) );
 
     std::set<wxString> names = zipEntryNames( zip );
     BOOST_REQUIRE( names.count( wxT( "board.kicad_pcb" ) ) == 1 );

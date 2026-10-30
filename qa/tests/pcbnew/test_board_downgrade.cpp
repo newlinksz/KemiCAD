@@ -501,6 +501,18 @@ BOOST_AUTO_TEST_CASE( BoardExportIgnoresAPredictableStagingSymlink )
             dest + wxString::Format( wxT( ".downgrade_tmp.%lu" ), (unsigned long) wxGetProcessId() );
     std::error_code ec;
     std::filesystem::create_symlink( victim.ToStdString(), decoy.ToStdString(), ec );
+
+#ifdef __WINDOWS__
+    // Unprivileged Windows accounts cannot create symlinks (no SeCreateSymbolicLinkPrivilege
+    // without Developer Mode).  A hard link at the predictable name is the same trap: writing
+    // through it would overwrite the victim, so the promise under test is unchanged.
+    if( ec )
+    {
+        ec.clear();
+        std::filesystem::create_hard_link( victim.ToStdString(), decoy.ToStdString(), ec );
+    }
+#endif
+
     BOOST_REQUIRE( !ec );
 
     COMPATIBILITY_REPORT report;

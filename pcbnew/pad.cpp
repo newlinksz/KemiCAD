@@ -3021,6 +3021,9 @@ const BOX2I PAD::ViewBBox() const
 
 void PAD::ImportSettingsFrom( const PAD& aMasterPad )
 {
+    // SetAttribute( NPTH ) clears the number; KemiCAD keeps it on NPTH pads.
+    const wxString number = m_number;
+
     SetPadstack( aMasterPad.Padstack() );
     // Layer Set should be updated before calling SetAttribute()
     SetLayerSet( aMasterPad.GetLayerSet() );
@@ -3030,9 +3033,12 @@ void PAD::ImportSettingsFrom( const PAD& aMasterPad )
     SetLayerSet( aMasterPad.GetLayerSet() );
     SetProperty( aMasterPad.GetProperty() );
 
-    // Must be after setting attribute and layerSet
-    if( !CanHaveNumber() )
+    // Must be after setting attribute and layerSet.  Only aperture pads lose their number;
+    // NPTH pads keep it (KemiCAD).
+    if( IsAperturePad() && GetAttribute() != PAD_ATTRIB::NPTH )
         SetNumber( wxEmptyString );
+    else if( GetAttribute() == PAD_ATTRIB::NPTH )
+        SetNumber( number );
 
     // I am not sure the m_LengthPadToDie should be imported, because this is a parameter
     // really specific to a given pad (JPC).

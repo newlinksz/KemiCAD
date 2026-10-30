@@ -52,6 +52,7 @@
 #include <dialogs/html_message_box.h>
 #include <string_utils.h>
 #include <kiface_base.h>
+#include <kemi_project_paths.h>
 #include <kiplatform/app.h>
 #include <kiplatform/ui.h>
 #include <kiway.h>
@@ -1434,19 +1435,22 @@ void SCH_EDIT_FRAME::OnUpdatePCB()
     KIWAY_PLAYER* frame = Kiway().Player( FRAME_PCB_EDITOR, false );
     wxEventBlocker blocker( this );
 
-    if( !frame )
+    if( !frame || !frame->IsVisible() )
     {
-        wxFileName fn = Prj().GetProjectFullName();
-        fn.SetExt( FILEEXT::PcbFileExtension );
+        wxFileName fn( KEMI_FORMAT::RelatedDocumentPath(
+                KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::DOC::PCB,
+                Prj().GetProjectFullName() ) );
 
-        frame = Kiway().Player( FRAME_PCB_EDITOR, true );
+        if( !frame )
+            frame = Kiway().Player( FRAME_PCB_EDITOR, true );
 
         // If Kiway() cannot create the Pcbnew frame, it shows a error message, and
         // frame is null
         if( !frame )
             return;
 
-        frame->OpenProjectFiles( std::vector<wxString>( 1, fn.GetFullPath() ) );
+        if( !frame->OpenProjectFiles( std::vector<wxString>( 1, fn.GetFullPath() ) ) )
+            return;
     }
 
     if( !frame->IsVisible() )
@@ -1605,7 +1609,9 @@ void SCH_EDIT_FRAME::OnOpenPcbnew()
 
     if( kicad_board.IsOk() && !kicad_board.GetName().IsEmpty() )
     {
-        kicad_board.SetExt( FILEEXT::PcbFileExtension );
+        kicad_board = KEMI_FORMAT::RelatedDocumentPath(
+                projectName.IsEmpty() ? KEMI_FORMAT::DOC::SCHEMATIC : KEMI_FORMAT::DOC::PROJECT,
+                KEMI_FORMAT::DOC::PCB, kicad_board.GetFullPath() );
         wxFileName legacy_board( kicad_board );
         legacy_board.SetExt( FILEEXT::LegacyPcbFileExtension );
         wxFileName& boardfn = legacy_board;
@@ -1622,16 +1628,18 @@ void SCH_EDIT_FRAME::OnOpenPcbnew()
             wxEventBlocker blocker(this);
             KIWAY_PLAYER* frame = Kiway().Player( FRAME_PCB_EDITOR, false );
 
-            if( !frame )
+            if( !frame || !frame->IsVisible() )
             {
-                frame = Kiway().Player( FRAME_PCB_EDITOR, true );
+                if( !frame )
+                    frame = Kiway().Player( FRAME_PCB_EDITOR, true );
 
                 // frame can be null if Cvpcb cannot be run. No need to show a warning
                 // Kiway() generates the error messages
                 if( !frame )
                     return;
 
-                frame->OpenProjectFiles( std::vector<wxString>( 1, boardfn.GetFullPath() ) );
+                if( !frame->OpenProjectFiles( std::vector<wxString>( 1, boardfn.GetFullPath() ) ) )
+                    return;
             }
 
             if( !frame->IsVisible() )

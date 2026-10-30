@@ -52,6 +52,7 @@
 #include <sch_symbol.h>
 #include <schematic.h>
 #include <string_utils.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 
 
@@ -2389,7 +2390,7 @@ SCH_SCREEN* SCH_PARSER::getOrCreateSheet( int aSheetIndex )
 
     wxFileName fn( m_fileName );
     fn.SetName( fn.GetName() + wxString::Format( wxT( "_%d" ), aSheetIndex ) );
-    fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+    fn.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
     newScreen->SetFileName( fn.GetFullPath() );
     newSheet->SetScreen( newScreen );

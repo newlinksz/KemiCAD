@@ -32,6 +32,8 @@
 #include <confirm.h>
 #include <progress_reporter.h>
 #include <kiid.h>
+#include <kemi_format_profile.h>
+#include <ki_exception.h>
 
 #include <kiplatform/io.h>
 
@@ -308,8 +310,150 @@ static bool isProjectDirectory( const wxString& aProjectPath )
     wxDir    dir( aProjectPath );
     wxString name;
 
-    return dir.IsOpened()
-           && dir.GetFirst( &name, wxString( wxS( "*." ) ) + FILEEXT::ProjectFileExtension, wxDIR_FILES );
+    if( !dir.IsOpened() )
+        return false;
+
+    for( bool more = dir.GetFirst( &name, wxEmptyString, wxDIR_FILES ); more;
+         more = dir.GetNext( &name ) )
+    {
+        if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PROJECT, wxFileName( name ).GetExt() ) )
+            return true;
+    }
+
+    return false;
+}
+
+
+static bool hasKemiProjectData( const wxString& aProjectPath )
+{
+    if( aProjectPath.IsEmpty() || !wxDirExists( aProjectPath ) )
+        return false;
+
+    wxDir dir( aProjectPath );
+    wxString name;
+
+    if( !dir.IsOpened() )
+        return false;
+
+    bool officialProject = false;
+    bool nativeDocument = false;
+
+    for( bool more = dir.GetFirst( &name, wxEmptyString, wxDIR_FILES ); more;
+         more = dir.GetNext( &name ) )
+    {
+        const wxString ext = wxFileName( name ).GetExt();
+
+        if( KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PROJECT, ext ) )
+            return true;
+
+        officialProject |= KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT, ext );
+        nativeDocument |= KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SCHEMATIC, ext )
+                          || KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PCB, ext );
+    }
+
+    // An official project owns its directory even if an unrelated native library is
+    // present. With no project file, retain protection for standalone native documents.
+    return !officialProject && nativeDocument;
+}
+
+
+// Saver payloads are already serialized. Never rename an official payload to a native
+// suffix here; reject the bad saver before any autosave or history output is created.
+static bool checkHistoryOutputPath( const wxString& aPath, bool aRestricted )
+{
+    if( !aRestricted && !KEMI_FORMAT::IsRestrictedOutput( aPath ) )
+        return true;
+
+    KEMI_FORMAT::DOC doc = KEMI_FORMAT::DOC::PROJECT;
+
+    for( const KEMI_FORMAT::DOC_PROFILE& profile : KEMI_FORMAT::AllProfiles() )
+    {
+        if( KEMI_FORMAT::IsReadableExt( profile.doc, wxFileName( aPath ).GetExt() ) )
+        {
+            doc = profile.doc;
+            break;
+        }
+    }
+
+    try
+    {
+        KEMI_FORMAT::CheckPersistentOutput( doc, aPath, KEMI_FORMAT::FLAVOR::KEMI, true );
+        return true;
+    }
+    catch( const IO_ERROR& error )
+    {
+        wxLogTrace( traceAutoSave, wxS( "[history] rejected non-native output: %s" ), error.What() );
+        return false;
+    }
+}
+
+
+static bool hasNativeHistoryData( const std::vector<HISTORY_FILE_DATA>& aFileData )
+{
+    return std::any_of( aFileData.begin(), aFileData.end(),
+                       []( const HISTORY_FILE_DATA& entry )
+                       {
+                           return KEMI_FORMAT::HasKemiExt( entry.relativePath )
+                                  || KEMI_FORMAT::HasKemiExt( entry.sourcePath );
+                       } );
+}
+
+
+static bool checkHistoryFileData( const wxString& aProjectPath,
+                                  const std::vector<HISTORY_FILE_DATA>& aFileData )
+{
+    // The first autosave may precede every native file on disk. Determine the policy
+    // for the whole pending batch before validating any individual destination.
+    const bool restricted = hasKemiProjectData( aProjectPath ) || hasNativeHistoryData( aFileData );
+
+    for( const HISTORY_FILE_DATA& entry : aFileData )
+    {
+        if( !checkHistoryOutputPath( entry.relativePath, restricted ) )
+            return false;
+    }
+
+    return true;
+}
+
+
+static bool checkHistoryTree( const wxString&, git_tree* aTree )
+{
+    // Preflight the entire tree before extracting any member, including temporary copies
+    // used by restore and compare. A legacy snapshot must never partially restore native data.
+    auto checkEntry = []( const char* aRoot, const git_tree_entry* aEntry, void* ) -> int
+    {
+        if( git_tree_entry_type( aEntry ) != GIT_OBJECT_BLOB )
+            return 0;
+
+        const wxString path = wxString::FromUTF8( aRoot )
+                              + wxString::FromUTF8( git_tree_entry_name( aEntry ) );
+        return checkHistoryOutputPath( path, false ) ? 0 : -1;
+    };
+
+    return git_tree_walk( aTree, GIT_TREEWALK_PRE, checkEntry, nullptr ) == 0;
+}
+
+
+static bool removeOfficialHistoryEntries( const wxString& aProjectPath, git_index* aIndex,
+                                          bool aNativeBatch = false )
+{
+    if( !aNativeBatch && !hasKemiProjectData( aProjectPath ) )
+        return true;
+
+    // A history created before conversion can still have official entries in its index.
+    // Drop only those index entries; retain the user's source files and earlier commits.
+    for( size_t i = git_index_entrycount( aIndex ); i > 0; --i )
+    {
+        const git_index_entry* entry = git_index_get_byindex( aIndex, i - 1 );
+        const std::string path( entry->path );
+        const wxFileName file( wxString::FromUTF8( path ) );
+
+        if( file.GetFullName().Lower().Contains( wxS( ".kicad_" ) )
+            && git_index_remove_bypath( aIndex, path.c_str() ) != 0 )
+            return false;
+    }
+
+    return true;
 }
 
 
@@ -429,8 +573,6 @@ bool LOCAL_HISTORY::RunRegisteredSaversAndCommit( const wxString& aProjectPath, 
     if( !isProjectDirectory( aProjectPath ) )
         return false;
 
-    Init( aProjectPath );
-
     wxLogTrace( traceAutoSave,
                 wxS( "[history] RunRegisteredSaversAndCommit start project='%s' title='%s' savers=%zu tag='%s'" ),
                 aProjectPath, aTitle, m_savers.size(), aTagFileType );
@@ -487,6 +629,12 @@ bool LOCAL_HISTORY::RunRegisteredSaversAndCommit( const wxString& aProjectPath, 
         return false;
     }
 
+    if( !checkHistoryFileData( aProjectPath, fileData ) )
+        return false;
+
+    if( !Init( aProjectPath ) )
+        return false;
+
     // Phase 2: submit Prettify + file I/O + git to background thread
     m_saveInProgress.store( true, std::memory_order_release );
 
@@ -536,12 +684,6 @@ bool LOCAL_HISTORY::RunRegisteredSaversAsAutosaveFiles( const wxString& aProject
     BACKUP_LOCATION   location = mgr.GetCommonSettings()->m_Backup.location;
     wxString          autosaveRoot = mgr.GetAutosaveRootForProject( mgr.GetProjectForPath( aProjectPath ) );
 
-    if( !PATHS::EnsurePathExists( autosaveRoot ) )
-    {
-        wxLogTrace( traceAutoSave, wxS( "[autosave] cannot create autosave root '%s'" ), autosaveRoot );
-        return false;
-    }
-
     pruneExpiredSavers();
 
     std::vector<HISTORY_FILE_DATA> fileData;
@@ -549,14 +691,31 @@ bool LOCAL_HISTORY::RunRegisteredSaversAsAutosaveFiles( const wxString& aProject
     for( const auto& [saverObject, entry] : m_savers )
         entry.saver( aProjectPath, fileData );
 
+    return WriteAutosaveFiles( autosaveRoot, aProjectPath, location, std::move( fileData ) );
+}
+
+
+bool LOCAL_HISTORY::WriteAutosaveFiles( const wxString& aAutosaveRoot, const wxString& aProjectPath,
+                                       BACKUP_LOCATION aLocation,
+                                       std::vector<HISTORY_FILE_DATA> aFileData )
+{
+    if( !checkHistoryFileData( aProjectPath, aFileData ) )
+        return false;
+
+    if( !PATHS::EnsurePathExists( aAutosaveRoot ) )
+    {
+        wxLogTrace( traceAutoSave, wxS( "[autosave] cannot create autosave root '%s'" ), aAutosaveRoot );
+        return false;
+    }
+
     bool anyWritten = false;
 
-    for( HISTORY_FILE_DATA& entry : fileData )
+    for( HISTORY_FILE_DATA& entry : aFileData )
     {
         if( entry.relativePath.IsEmpty() || wxFileName( entry.relativePath ).IsAbsolute() )
             continue;
 
-        wxString dst = resolveAutosaveDestination( autosaveRoot, entry.relativePath, location );
+        wxString dst = resolveAutosaveDestination( aAutosaveRoot, entry.relativePath, aLocation );
         wxFileName dstFn( dst );
 
         if( !PATHS::EnsurePathExists( dstFn.GetPath() ) )
@@ -694,7 +853,8 @@ findAutosaveFilePairs( const wxString& aProjectPath )
 
 
 std::vector<std::pair<wxString, wxString>>
-LOCAL_HISTORY::FindStaleAutosaveFiles( const wxString& aProjectPath, const std::vector<wxString>& aExtensions ) const
+LOCAL_HISTORY::FindStaleAutosaveFiles( const wxString& aProjectPath, const std::vector<wxString>& aExtensions,
+                                      bool aIncludeUnchanged ) const
 {
     std::vector<std::pair<wxString, wxString>> results;
 
@@ -731,11 +891,70 @@ LOCAL_HISTORY::FindStaleAutosaveFiles( const wxString& aProjectPath, const std::
                      || ( autosaveTime.IsLaterThan( srcTime )
                           && !filesContentEqual( pair.first, pair.second ) );
 
-        if( stale )
+        if( stale || aIncludeUnchanged )
             results.emplace_back( std::move( pair ) );
     }
 
     return results;
+}
+
+
+bool LOCAL_HISTORY::RestoreAutosaveFiles(
+        const std::vector<std::pair<wxString, wxString>>& aFiles,
+        const std::map<wxString, wxString>& aTargets )
+{
+    std::vector<std::pair<wxString, std::string>> writes;
+
+    try
+    {
+        for( const auto& [autosave, source] : aFiles )
+        {
+            auto target = aTargets.find( source );
+            std::string content;
+
+            if( target == aTargets.end() || !readFileContent( autosave, content ) )
+                return false;
+
+            bool recognized = false;
+
+            for( const KEMI_FORMAT::DOC_PROFILE& profile : KEMI_FORMAT::AllProfiles() )
+            {
+                if( !KEMI_FORMAT::IsReadableExt( profile.doc, wxFileName( target->second ).GetExt() ) )
+                    continue;
+
+                KEMI_FORMAT::CheckPersistentOutput( profile.doc, target->second,
+                                                    KEMI_FORMAT::FLAVOR::KEMI, true );
+                recognized = true;
+
+                if( profile.doc == KEMI_FORMAT::DOC::SCHEMATIC )
+                    KEMI_FORMAT::RemapSchematicSheetPaths( content, source, target->second, aTargets );
+            }
+
+            if( !recognized )
+                return false;
+
+            writes.emplace_back( target->second, std::move( content ) );
+        }
+    }
+    catch( const IO_ERROR& error )
+    {
+        wxLogTrace( traceAutoSave, wxS( "Recovery preflight failed: %s" ), error.What() );
+        return false;
+    }
+
+    // Keep every autosave until the entire group is written. A later write failure is retryable.
+    for( const auto& [target, content] : writes )
+    {
+        wxFileName path( target );
+
+        if( !path.DirExists() && !path.Mkdir( wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) )
+            return false;
+
+        if( !KIPLATFORM::IO::AtomicWriteFile( target, content.data(), content.size() ) )
+            return false;
+    }
+
+    return true;
 }
 
 
@@ -794,6 +1013,9 @@ SNAPSHOT_COMMIT_RESULT LOCAL_HISTORY::commitInBackground( const wxString& aProje
                                                           const std::vector<HISTORY_FILE_DATA>& aFileData,
                                                           bool aIsManualSave )
 {
+    if( !checkHistoryFileData( aProjectPath, aFileData ) )
+        return SNAPSHOT_COMMIT_RESULT::Error;
+
     wxLogTrace( traceAutoSave, wxS( "[history] background: writing %zu entries for '%s'" ),
                 aFileData.size(), aProjectPath );
 
@@ -849,6 +1071,9 @@ SNAPSHOT_COMMIT_RESULT LOCAL_HISTORY::commitInBackground( const wxString& aProje
 
     git_repository* repo = lock.GetRepository();
     git_index* index = lock.GetIndex();
+
+    if( !removeOfficialHistoryEntries( aProjectPath, index, hasNativeHistoryData( aFileData ) ) )
+        return SNAPSHOT_COMMIT_RESULT::Error;
 
     removeLegacyWorkingCopies( repo, hist );
 
@@ -1093,12 +1318,12 @@ bool LOCAL_HISTORY::Init( const wxString& aProjectPath )
 
             if( f.IsOpened() )
             {
-                f.Write( wxS( "KiCad Local History Directory\n"
-                              "=============================\n\n"
+                f.Write( wxS( "KemiCAD Local History Directory\n"
+                              "===============================\n\n"
                               "This directory contains automatic snapshots of your project files.\n"
-                              "KiCad periodically saves copies of your work here, allowing you to\n"
+                              "KemiCAD periodically saves copies of your work here, allowing you to\n"
                               "recover from accidental changes or data loss.\n\n"
-                              "You can browse and restore previous versions through KiCad's\n"
+                              "You can browse and restore previous versions through KemiCAD's\n"
                               "File > Local History menu.\n\n"
                               "To disable this feature:\n"
                               "  Preferences > Common > Project Backup > Enable automatic backups\n\n"
@@ -1122,6 +1347,18 @@ static SNAPSHOT_COMMIT_RESULT commitSnapshotWithLock( git_repository* repo, git_
                                                       const wxString& aHistoryPath, const wxString& aProjectPath,
                                                       const std::vector<wxString>& aFiles, const wxString& aTitle )
 {
+    if( hasKemiProjectData( aProjectPath ) )
+    {
+        for( const wxString& file : aFiles )
+        {
+            if( !checkHistoryOutputPath( file, true ) )
+                return SNAPSHOT_COMMIT_RESULT::Error;
+        }
+    }
+
+    if( !removeOfficialHistoryEntries( aProjectPath, index ) )
+        return SNAPSHOT_COMMIT_RESULT::Error;
+
     std::vector<std::string> filesArrStr;
 
     for( const wxString& file : aFiles )
@@ -1347,35 +1584,38 @@ bool LOCAL_HISTORY::CommitSnapshot( const std::vector<wxString>& aFiles, const w
 }
 
 
-// Limit snapshots to KiCad project artifacts (kicad_* extensions and the no-extension
+// Limit snapshots to project artifacts (kicad_*/kemi_* extensions and the no-extension
 // lib-tables) so unrelated files in the project dir don't end up in .history.
 static bool isKiCadProjectFile( const wxFileName& aFile )
 {
     wxString name = aFile.GetFullName();
 
-    if( name == wxS( "sym-lib-table" ) || name == wxS( "fp-lib-table" ) )
+    if( name == FILEEXT::SymbolLibraryTableFileName || name == FILEEXT::FootprintLibraryTableFileName
+        || name == FILEEXT::DesignBlockLibraryTableFileName )
         return true;
 
-    return aFile.GetExt().StartsWith( wxS( "kicad_" ) );
+    return aFile.GetExt().Lower().StartsWith( wxS( "kicad_" ) )
+           || KEMI_FORMAT::HasKemiExt( aFile.GetFullPath() );
 }
 
 
 // Helper to collect KiCad project files (excluding .history, backups, transient caches,
 // and any non-KiCad files such as user PDFs or notes).
-// Skips subtrees that contain a kicad_pro file since they belong to nested projects.
-static void collectProjectFiles( const wxString& aProjectPath, std::vector<wxString>& aFiles )
+// Skips subtrees that contain a project file since they belong to nested projects.
+std::vector<wxString> LOCAL_HISTORY::CollectProjectFiles( const wxString& aProjectPath )
 {
+    std::vector<wxString> files;
     wxDir dir( aProjectPath );
 
     if( !dir.IsOpened() )
-        return;
+        return files;
 
     // Same loop hazard as the autosave scan: a project directory holding a root-escape
     // symlink would otherwise recurse across the whole filesystem.
     DIR_LOOP_GUARD guard( aProjectPath );
 
     if( !guard.IsRooted() )
-        return;
+        return files;
 
     // Collect recursively. Flag top-level to avoid hitting the same logic for nested projects
     std::function<void( const wxString&, bool )> collect =
@@ -1413,9 +1653,12 @@ static void collectProjectFiles( const wxString& aProjectPath, std::vector<wxStr
                         if( guard.ShouldDescend( fullPath ) )
                             collect( fullPath, false );
                     }
-                    else if( fn.FileExists() && fn.GetFullName() != wxS( "fp-info-cache" ) && isKiCadProjectFile( fn ) )
+                    else if( fn.FileExists() && fn.GetFullName() != wxS( "fp-info-cache" )
+                             && isKiCadProjectFile( fn )
+                             && !( KEMI_FORMAT::IsRestrictedOutput( fullPath )
+                                   && !KEMI_FORMAT::HasKemiExt( fullPath ) ) )
                     {
-                        aFiles.push_back( fn.GetFullPath() );
+                        files.push_back( fn.GetFullPath() );
                     }
 
                     cont = d.GetNext( &name );
@@ -1423,6 +1666,7 @@ static void collectProjectFiles( const wxString& aProjectPath, std::vector<wxStr
             };
 
     collect( aProjectPath, true );
+    return files;
 }
 
 
@@ -1431,8 +1675,7 @@ bool LOCAL_HISTORY::CommitFullProjectSnapshot( const wxString& aProjectPath, con
     if( !isProjectDirectory( aProjectPath ) || !localHistoryEnabled() )
         return false;
 
-    std::vector<wxString> files;
-    collectProjectFiles( aProjectPath, files );
+    std::vector<wxString> files = CollectProjectFiles( aProjectPath );
 
     if( files.empty() )
         return false;
@@ -2835,7 +3078,12 @@ bool LOCAL_HISTORY::RestoreCommit( const wxString& aProjectPath, const wxString&
     }
 
     git_tree* tree = nullptr;
-    git_commit_tree( &tree, commit );
+    if( git_commit_tree( &tree, commit ) != 0 || !checkHistoryTree( aProjectPath, tree ) )
+    {
+        git_tree_free( tree );
+        git_commit_free( commit );
+        return false;
+    }
 
     // Confirm before overwriting working files. The recovery prompt already asked, so it passes
     // aConfirm = false. Nothing is changed yet, so cancel just returns.
@@ -2865,8 +3113,7 @@ bool LOCAL_HISTORY::RestoreCommit( const wxString& aProjectPath, const wxString&
     // Create pre-restore backup snapshot using the existing lock
     wxLogTrace( traceAutoSave, wxS( "[history] RestoreCommit: Creating pre-restore backup" ) );
 
-    std::vector<wxString> backupFiles;
-    collectProjectFiles( aProjectPath, backupFiles );
+    std::vector<wxString> backupFiles = CollectProjectFiles( aProjectPath );
 
     if( !backupFiles.empty() )
     {
@@ -2953,8 +3200,7 @@ bool LOCAL_HISTORY::RestoreCommit( const wxString& aProjectPath, const wxString&
     wxFileName::Rmdir( tempRestorePath, wxPATH_RMDIR_RECURSIVE );
 
     // Commit the full post-overlay project so HEAD and the saved baseline match the disk.
-    std::vector<wxString> resultFiles;
-    collectProjectFiles( aProjectPath, resultFiles );
+    std::vector<wxString> resultFiles = CollectProjectFiles( aProjectPath );
     commitSnapshotWithLock( repo, lock.GetIndex(), historyPath( aProjectPath ), aProjectPath, resultFiles,
                             wxString::Format( wxS( "Restored from %s" ), aHash ) );
 
@@ -3154,6 +3400,14 @@ bool LOCAL_HISTORY::ExtractAllFilesAtCommit( const wxString& aProjectPath, const
 
     if( git_commit_tree( &tree, commit ) != 0 )
     {
+        git_commit_free( commit );
+        git_repository_free( repo );
+        return false;
+    }
+
+    if( !checkHistoryTree( aProjectPath, tree ) )
+    {
+        git_tree_free( tree );
         git_commit_free( commit );
         git_repository_free( repo );
         return false;

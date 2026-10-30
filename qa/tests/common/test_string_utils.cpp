@@ -23,6 +23,9 @@
 
 #include <string_utils.h>
 
+#include <wx/filefn.h>
+#include <wx/utils.h>
+
 
 BOOST_AUTO_TEST_SUITE( StringUtilsTests )
 
@@ -129,8 +132,19 @@ BOOST_AUTO_TEST_CASE( ReplaceIllegalFileNameChars_WxString_ReplacementChar )
 
 BOOST_AUTO_TEST_CASE( ConvertPathToFileUri_UnixAbsolutePath )
 {
+#ifdef __WINDOWS__
+    // "/tmp" is a drive-relative path on Windows and normally does not exist, so the function
+    // correctly returns it unchanged.  Check the same existing-absolute-directory conversion
+    // with a directory that always exists on Windows.
+    wxString dir = wxGetenv( wxS( "SystemRoot" ) );
+    BOOST_REQUIRE( wxDirExists( dir ) );
+    wxString expected = dir;
+    expected.Replace( wxS( "\\" ), wxS( "/" ) );
+    BOOST_TEST( ConvertPathToFileUri( dir, nullptr ) == wxS( "file:///" ) + expected );
+#else
     // /tmp exists on all Unix CI machines
     BOOST_TEST( ConvertPathToFileUri( wxS( "/tmp" ), nullptr ) == wxString( "file:///tmp" ) );
+#endif
 }
 
 BOOST_AUTO_TEST_CASE( ConvertPathToFileUri_AlreadyHasScheme )

@@ -24,6 +24,8 @@
 #include <connection_graph.h>
 #include <invoke_sch_dialog.h>
 #include <kiway.h>
+#include <kemi_format_profile.h>
+#include <gestfich.h>
 #include <symbol_viewer_frame.h>
 #include <project_rescue.h>
 #include <project_sch.h>
@@ -31,6 +33,7 @@
 #include <string_utils.h>
 #include <wildcards_and_files_ext.h>
 #include <wx/msgdlg.h>
+#include <wx/log.h>
 
 #include <cctype>
 #include <map>
@@ -527,14 +530,19 @@ bool RESCUER::DoRescues()
 
 void RESCUER::UndoRescues()
 {
-    for( RESCUE_LOG& each_logitem : m_rescue_log )
+    for( auto it = m_rescue_log.rbegin(); it != m_rescue_log.rend(); ++it )
     {
-        LIB_ID libId;
+        // Preserve the nickname as well as names containing legacy, unescaped characters.
+        const wxString& oldName = it->old_name;
+        LIB_ID libId = oldName.Contains( wxS( ":" ) )
+                ? LIB_ID( oldName.BeforeFirst( ':' ), oldName.AfterFirst( ':' ) )
+                : LIB_ID( wxEmptyString, oldName );
 
-        libId.SetLibItemName( each_logitem.old_name );
-        each_logitem.symbol->SetLibId( libId );
-        each_logitem.symbol->ClearFlags();
+        it->symbol->SetLibId( libId );
+        it->symbol->ClearFlags();
     }
+
+    m_rescue_log.clear();
 }
 
 
@@ -572,13 +580,11 @@ bool RESCUER::RescueProject( wxWindow* aParent, RESCUER& aRescuer, bool aRunning
 
     aRescuer.OpenRescueLibrary();
 
-    if( !aRescuer.DoRescues() )
+    if( !aRescuer.DoRescues() || !aRescuer.WriteRescueLibrary( aParent ) )
     {
         aRescuer.UndoRescues();
         return false;
     }
-
-    aRescuer.WriteRescueLibrary( aParent );
 
     return true;
 }
@@ -659,81 +665,19 @@ void LEGACY_RESCUER::OpenRescueLibrary()
 }
 
 
-bool LEGACY_RESCUER::WriteRescueLibrary( wxWindow *aParent )
+bool LEGACY_RESCUER::WriteRescueLibrary( wxWindow* aParent )
 {
-    try
-    {
-        m_rescue_lib->Save( false );
-    }
-    catch( ... /* IO_ERROR ioe */ )
-    {
-        DisplayError( aParent, wxString::Format( _( "Failed to create symbol library file '%s'." ),
-                                                 m_rescue_lib->GetFullFileName() ) );
-        return false;
-    }
+    // Legacy rescues depend on unqualified symbol names and cannot be published as a modern
+    // library without remapping.  Returning false makes RescueProject undo the proposed edits.
+    const wxString message = _( "Legacy KiCad symbol libraries are import-only. "
+                                "Map the schematic symbols to native symbol libraries before rescuing." );
 
-    wxArrayString libNames;
-    wxString libPaths;
+    if( aParent )
+        DisplayError( aParent, message );
+    else
+        wxLogError( wxS( "%s" ), message );
 
-    wxString libName = m_rescue_lib->GetName();
-    LEGACY_SYMBOL_LIBS* libs = dynamic_cast<LEGACY_SYMBOL_LIBS*>( m_prj->GetElem( PROJECT::ELEM::LEGACY_SYMBOL_LIBS ) );
-
-    if( !libs )
-    {
-        libs = new LEGACY_SYMBOL_LIBS();
-        m_prj->SetElem( PROJECT::ELEM::LEGACY_SYMBOL_LIBS, libs );
-    }
-
-    try
-    {
-        LEGACY_SYMBOL_LIBS::GetLibNamesAndPaths( m_prj, &libPaths, &libNames );
-
-        // Make sure the library is not already in the list
-        while( libNames.Index( libName ) != wxNOT_FOUND )
-            libNames.Remove( libName );
-
-        // Add the library to the top of the list and save.
-        libNames.Insert( libName, 0 );
-        LEGACY_SYMBOL_LIBS::SetLibNamesAndPaths( m_prj, libPaths, libNames );
-    }
-    catch( const IO_ERROR& )
-    {
-        // Could not get or save the current libraries.
-        return false;
-    }
-
-    // Save the old libraries in case there is a problem after clear(). We'll
-    // put them back in.
-    boost::ptr_vector<LEGACY_SYMBOL_LIB> libsSave;
-    libsSave.transfer( libsSave.end(), libs->begin(), libs->end(), *libs );
-
-    m_prj->SetElem( PROJECT::ELEM::LEGACY_SYMBOL_LIBS, nullptr );
-
-    libs = new LEGACY_SYMBOL_LIBS();
-
-    try
-    {
-        libs->LoadAllLibraries( m_prj );
-    }
-    catch( const PARSE_ERROR& )
-    {
-        // Some libraries were not found. There's no point in showing the error,
-        // because it was already shown. Just don't do anything.
-    }
-    catch( const IO_ERROR& )
-    {
-        // Restore the old list
-        libs->clear();
-        libs->transfer( libs->end(), libsSave.begin(), libsSave.end(), libsSave );
-        return false;
-    }
-
-    m_prj->SetElem( PROJECT::ELEM::LEGACY_SYMBOL_LIBS, libs );
-
-    // Update the schematic symbol library links since the library list has changed.
-    SCH_SCREENS schematic( m_schematic->Root() );
-    schematic.UpdateSymbolLinks();
-    return true;
+    return false;
 }
 
 
@@ -782,83 +726,129 @@ void SYMBOL_LIB_TABLE_RESCUER::OpenRescueLibrary()
     if( std::optional<const LIBRARY_TABLE_ROW*> optRow =
             manager.GetRow( LIBRARY_TABLE_TYPE::SYMBOL, fn.GetName() ) )
     {
-        const LIBRARY_TABLE_ROW* row = *optRow;
-
-        if( SCH_IO_MGR::EnumFromStr( row->Type() ) == SCH_IO_MGR::SCH_KICAD )
-            fn.SetExt( FILEEXT::KiCadSymbolLibFileExtension );
-
         for( LIB_SYMBOL* symbol : adapter->GetSymbols( fn.GetName() ) )
             m_rescueLibSymbols.emplace_back( std::make_unique<LIB_SYMBOL>( *symbol ) );
     }
 }
 
 
-bool SYMBOL_LIB_TABLE_RESCUER::WriteRescueLibrary( wxWindow *aParent )
+bool SYMBOL_LIB_TABLE_RESCUER::WriteRescueLibrary( wxWindow* aParent )
 {
     LIBRARY_MANAGER& manager = Pgm().GetLibraryManager();
-
     wxFileName fn = GetRescueLibraryFileName( m_schematic );
+    fn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB, KEMI_FORMAT::FLAVOR::KEMI ) );
+    fn.MakeAbsolute( m_prj->GetProjectPath() );
 
-    std::optional<const LIBRARY_TABLE_ROW*> optRow = manager.GetRow( LIBRARY_TABLE_TYPE::SYMBOL, fn.GetName() );
-
-    fn.SetExt( FILEEXT::KiCadSymbolLibFileExtension );
+    std::optional<LIBRARY_TABLE*> optTable = manager.Table( LIBRARY_TABLE_TYPE::SYMBOL,
+                                                            LIBRARY_TABLE_SCOPE::PROJECT );
+    wxCHECK( optTable, false );
+    LIBRARY_TABLE* projectTable = *optTable;
+    const wxString libNickname = fn.GetName();
+    wxFileName relative( fn );
+    const wxString uri = relative.MakeRelativeTo( m_prj->GetProjectPath() )
+            ? wxS( "${KIPRJMOD}/" ) + relative.GetFullPath( wxPATH_UNIX )
+            : fn.GetFullPath( wxPATH_UNIX );
+    const std::optional<wxString> registered = manager.GetFullURI( LIBRARY_TABLE_TYPE::SYMBOL,
+                                                                  libNickname, true );
+    const bool replaceNativeLibrary = fn.FileExists();
+    SCOPED_TEMP_PATH staging;
+    wxFileName stagedLibrary;
 
     try
     {
+        KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SYMBOL_LIB, fn.GetFullPath(),
+                                            KEMI_FORMAT::FLAVOR::KEMI, true );
+
+        // An unrelated native file must not be overwritten while importing an official library.
+        if( fn.Exists() && ( !registered
+                || !LIBRARY_MANAGER::UrisAreEquivalent( *registered, fn.GetFullPath() ) ) )
+        {
+            THROW_IO_ERROR( _( "The native rescue library already exists at a different library URI." ) );
+        }
+
+        if( projectTable->IsReadOnly() )
+            THROW_IO_ERROR( _( "The project symbol library table is read-only." ) );
+
+        // Keep the final native name available for retry until the table has been saved.
+        if( !staging.MakeDirectory( fn.GetFullPath() + wxS( ".tmp-" ) ) )
+            THROW_IO_ERROR( _( "Could not create a temporary rescue library folder." ) );
+
+        stagedLibrary.Assign( staging.Path(), fn.GetFullName() );
         IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
 
         for( const std::unique_ptr<LIB_SYMBOL>& symbol : m_rescueLibSymbols )
-            pi->SaveSymbol( fn.GetFullPath(), std::make_unique<LIB_SYMBOL>( *symbol ),
+            pi->SaveSymbol( stagedLibrary.GetFullPath(), std::make_unique<LIB_SYMBOL>( *symbol ),
                             m_properties.get() );
 
-        pi->SaveLibrary( fn.GetFullPath() );
+        pi->SaveLibrary( stagedLibrary.GetFullPath() );
     }
     catch( const IO_ERROR& ioe )
     {
         wxString msg;
         msg.Printf( _( "Failed to save rescue library %s." ), fn.GetFullPath() );
-        DisplayErrorMessage( aParent, msg, ioe.What() );
+        if( aParent )
+            DisplayErrorMessage( aParent, msg, ioe.What() );
+        else
+            wxLogError( wxS( "%s: %s" ), msg, ioe.What() );
+
         return false;
     }
 
-    // If the rescue library already exists in the symbol library table no need save it to add
-    // it to the table.
-    if( !optRow || ( SCH_IO_MGR::EnumFromStr( ( *optRow )->Type() ) == SCH_IO_MGR::SCH_LEGACY ) )
+    LIBRARY_TABLE_ROW* row = nullptr;
+    std::optional<LIBRARY_TABLE_ROW> oldRow;
+
+    if( std::optional<LIBRARY_TABLE_ROW*> existing = projectTable->Row( libNickname ) )
     {
-        wxString uri = wxS( "${KIPRJMOD}/" ) + fn.GetFullName();
-        wxString libNickname = fn.GetName();
-
-        std::optional<LIBRARY_TABLE*> optTable = manager.Table( LIBRARY_TABLE_TYPE::SYMBOL,
-                                                                LIBRARY_TABLE_SCOPE::PROJECT );
-        wxCHECK( optTable, false );
-        LIBRARY_TABLE* projectTable = *optTable;
-        LIBRARY_TABLE_ROW* row = nullptr;
-
-        if( std::optional<LIBRARY_TABLE_ROW*> oldRow = projectTable->Row( libNickname ); oldRow )
-            row = *oldRow;
-        else
-            row = &projectTable->InsertRow();
-
-        row->SetNickname( libNickname );
-        row->SetURI( uri );
-        row->SetType( wxT( "KiCad" ) );
-
-        bool success = true;
-
-        projectTable->Save().map_error(
-                [&success]( const LIBRARY_ERROR& aError )
-                {
-                    wxMessageBox( _( "Error saving library table:\n\n" ) + aError.message,
-                                  _( "File Save Error" ), wxOK | wxICON_ERROR );
-
-                    success = false;
-                } );
-
-        if( !success )
-            return false;
+        row = *existing;
+        oldRow = *row;
+    }
+    else
+    {
+        row = &projectTable->InsertRow();
     }
 
-    // Update the schematic symbol library links since the library list has changed.
+    row->SetNickname( libNickname );
+    row->SetURI( uri );
+    row->SetType( wxS( "KiCad" ) );
+
+    auto restoreRow = [&]()
+    {
+        if( oldRow )
+            *row = *oldRow;
+        else
+            projectTable->Rows().pop_back();
+    };
+
+    if( LIBRARY_RESULT<void> result = projectTable->Save(); !result )
+    {
+        restoreRow();
+
+        if( aParent )
+            DisplayErrorMessage( aParent, _( "Error saving library table." ), result.error().message );
+        else
+            wxLogError( wxS( "%s" ), result.error().message );
+
+        return false;
+    }
+
+    if( !wxRenameFile( stagedLibrary.GetFullPath(), fn.GetFullPath(), replaceNativeLibrary ) )
+    {
+        restoreRow();
+        wxString message = _( "Could not publish the native rescue library." );
+
+        if( LIBRARY_RESULT<void> rollback = projectTable->Save(); !rollback )
+            message += wxS( "\n" ) + rollback.error().message;
+
+        if( aParent )
+            DisplayError( aParent, message );
+        else
+            wxLogError( wxS( "%s" ), message );
+
+        return false;
+    }
+
+    // Invalidate cached official-library symbols before resolving the new native URI.
+    manager.LoadProjectTables( m_prj->GetProjectPath(), { LIBRARY_TABLE_TYPE::SYMBOL } );
     SCH_SCREENS schematic( m_schematic->Root() );
     schematic.UpdateSymbolLinks();
     return true;

@@ -35,6 +35,11 @@ class SCH_IO;
 class SYMBOL_LIBRARY_ADAPTER;
 class UTF8;
 
+namespace KEMI_FORMAT
+{
+class KEMI_ONLY_OUTPUT_POLICY;
+}
+
 /**
  * Outcome of a post-import symbol-library reconciliation pass.
  */
@@ -55,7 +60,7 @@ struct SYMBOL_IMPORT_RECONCILE_RESULT
  * This is the schematic counterpart of #FOOTPRINT_IMPORT_RECONCILER and follows the same policy.
  * A symbol whose definition provably lives in a provenance source library is re-linked there
  * ("prefer source"); anything left over is written into a single caller-chosen generated cache
- * (.kicad_sym) registered in the project symbol-library table ("generate residual").  The service
+ * (.kemi_sym) registered in the project symbol-library table ("generate residual").  The service
  * never scans arbitrary loaded/global libraries and never deletes a user library.
  *
  * The symbol-library adapter and project path are injected so the service can be exercised with a
@@ -83,7 +88,7 @@ public:
                const wxString& aCacheNickname, const std::vector<wxString>& aSourceLibNicknames );
 
 private:
-    /// Write the residual definitions into an atomically-published .kicad_sym and register its row.
+    /// Write the residual definitions into an atomically-published .kemi_sym and register its row.
     /// @p aCacheDefs is keyed by the item name each definition takes in the cache.
     void writeAndRegisterCache( const wxString&                        aCacheNickname,
                                 const std::map<wxString, LIB_SYMBOL*>& aCacheDefs,
@@ -114,10 +119,12 @@ private:
  *                        a standalone import passes nullptr and the nickname is derived from
  *                        @p aSchematicPath.
  * @param[in] aReporter is the #REPORTER object to write status information to.
+ * @param[in] aOutputPolicy selects the final output directory; nullptr uses the project directory.
  */
 SYMBOL_IMPORT_RECONCILE_RESULT
 ReconcileImportedSymbols( SCH_IO& aPlugin, SCHEMATIC& aSchematic, PROJECT& aProject,
                           const wxString& aSchematicPath,
-                          const std::map<std::string, UTF8>* aProperties, REPORTER& aReporter );
+                          const std::map<std::string, UTF8>* aProperties, REPORTER& aReporter,
+                          const KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY* aOutputPolicy = nullptr );
 
 #endif // SYMBOL_IMPORT_RECONCILER_H

@@ -29,6 +29,7 @@
 #include <kiway.h>
 #include <local_history.h>
 #include <paths.h>
+#include <project/project_file.h>
 #include <policy_keys.h>
 #include <tool/action_manager.h>
 #include <tool/action_toolbar.h>
@@ -112,7 +113,6 @@ void KICAD_MANAGER_FRAME::doReCreateMenuBar()
 
     fileMenu->AppendSeparator();
     fileMenu->Add( ACTIONS::saveAs );
-    fileMenu->Add( KICAD_MANAGER_ACTIONS::exportForOlderVersion );
 
     fileMenu->AppendSeparator();
 

@@ -44,6 +44,7 @@
 #include <schematic.h>
 #include <stroke_params.h>
 #include <title_block.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 
 #include <wx/filename.h>
@@ -1338,7 +1339,7 @@ SCH_SHEET* SCH_IO_PCAD::LoadSchematicFile( const wxString& aFileName, ::SCHEMATI
     SCH_SHEET* rootSheet = nullptr;
 
     wxFileName newFilename( aFileName );
-    newFilename.SetExt( FILEEXT::KiCadSchematicFileExtension );
+    newFilename.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
     if( aAppendToMe )
     {

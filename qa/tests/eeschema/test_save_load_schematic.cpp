@@ -48,7 +48,7 @@ struct SAVE_LOAD_FIXTURE
     {
         // Create a temporary project file so we have a valid project name
         wxString tempDir = wxStandardPaths::Get().GetTempDir();
-        wxString projectPath = tempDir + wxFileName::GetPathSeparator() + wxT("test_project.kicad_pro");
+        wxString projectPath = tempDir + wxFileName::GetPathSeparator() + wxS("test_project.kemi_pro");
         m_tempFiles.push_back( projectPath );
 
         m_settingsManager.LoadProject( projectPath.ToStdString() );
@@ -104,7 +104,7 @@ BOOST_AUTO_TEST_CASE( TestSaveLoadSimpleSchematic )
     BOOST_REQUIRE( screen != nullptr );
 
     // Set some basic properties
-    screen->SetFileName( "test.kicad_sch" );
+    screen->SetFileName( wxS( "test.kemi_sch" ) );
     topSheets[0]->SetName( "Main Sheet" );
 
     // Verify that currentSheet is set to a top-level sheet, not virtual root
@@ -118,7 +118,7 @@ BOOST_AUTO_TEST_CASE( TestSaveLoadSimpleSchematic )
 
     // Save the schematic
     wxString fileName = GetTempFileName( "test_schematic" );
-    fileName += ".kicad_sch";
+    fileName += wxS( ".kemi_sch" );
     m_tempFiles.push_back( fileName );
 
     SCH_IO_KICAD_SEXPR io;
@@ -155,7 +155,7 @@ BOOST_AUTO_TEST_CASE( TestSaveLoadSimpleSchematic )
 
         // Try to save again (this is where the bug occurs)
         wxString fileName2 = GetTempFileName( "test_schematic_resave" );
-        fileName2 += ".kicad_sch";
+        fileName2 += wxS( ".kemi_sch" );
         m_tempFiles.push_back( fileName2 );
 
         std::vector<SCH_SHEET*> topSheets2 = m_schematic->GetTopLevelSheets();
@@ -190,18 +190,18 @@ BOOST_AUTO_TEST_CASE( TestSaveLoadHierarchicalSchematic )
     subSheet->SetName( "SubSheet" );
     SCH_SCREEN* subScreen = new SCH_SCREEN( m_schematic.get() );
     subSheet->SetScreen( subScreen );
-    subSheet->SetFileName( "subsheet.kicad_sch" );
-    subScreen->SetFileName( "subsheet.kicad_sch" );
+    subSheet->SetFileName( wxS( "subsheet.kemi_sch" ) );
+    subScreen->SetFileName( wxS( "subsheet.kemi_sch" ) );
     screen->Append( subSheet );
 
     // Save the main sheet
     wxString mainFileName = GetTempFileName( "test_main" );
-    mainFileName += ".kicad_sch";
+    mainFileName += wxS( ".kemi_sch" );
     m_tempFiles.push_back( mainFileName );
 
     // Save the sub-sheet
     wxString subFileName = GetTempFileName( "test_sub" );
-    subFileName += ".kicad_sch";
+    subFileName += wxS( ".kemi_sch" );
     m_tempFiles.push_back( subFileName );
 
     SCH_IO_KICAD_SEXPR io;
@@ -230,7 +230,7 @@ BOOST_AUTO_TEST_CASE( TestSaveLoadHierarchicalSchematic )
 
         // Try to save again
         wxString mainFileName2 = GetTempFileName( "test_main_resave" );
-        mainFileName2 += ".kicad_sch";
+        mainFileName2 += wxS( ".kemi_sch" );
         m_tempFiles.push_back( mainFileName2 );
 
         std::vector<SCH_SHEET*> topSheets2 = m_schematic->GetTopLevelSheets();
@@ -255,7 +255,7 @@ BOOST_AUTO_TEST_CASE( TestSaveLoadHatchedPolygonPreservesClosingEdge )
     SCH_SCREEN* screen = topSheets[0]->GetScreen();
     BOOST_REQUIRE( screen != nullptr );
 
-    screen->SetFileName( "polygon_test.kicad_sch" );
+    screen->SetFileName( wxS( "polygon_test.kemi_sch" ) );
 
     std::unique_ptr<SCH_SHAPE> polygon = std::make_unique<SCH_SHAPE>( SHAPE_T::POLY );
     polygon->SetStroke( STROKE_PARAMS( schIUScale.MilsToIU( 10 ), LINE_STYLE::SOLID ) );
@@ -273,7 +273,7 @@ BOOST_AUTO_TEST_CASE( TestSaveLoadHatchedPolygonPreservesClosingEdge )
     screen->Append( polygon.release() );
 
     wxString fileName = GetTempFileName( "test_polygon_reload" );
-    fileName += ".kicad_sch";
+    fileName += wxS( ".kemi_sch" );
     m_tempFiles.push_back( fileName );
 
     SCH_IO_KICAD_SEXPR io;
@@ -466,7 +466,7 @@ BOOST_AUTO_TEST_CASE( TestLoadLegacyHierarchicalSchematic )
     // Try to save the schematic - this should NOT crash or assert
     BOOST_TEST_MESSAGE( "\nAttempting to save schematic..." );
     wxString saveFile = GetTempFileName( "legacy_hierarchy_resave" );
-    saveFile += "." + FILEEXT::KiCadSchematicFileExtension;
+    saveFile += wxS( ".kemi_sch" );
     m_tempFiles.push_back( saveFile );
 
     std::vector<SCH_SHEET*> topSheets = m_schematic->GetTopLevelSheets();
@@ -501,8 +501,8 @@ BOOST_AUTO_TEST_CASE( TestEmbeddedFilesPersistedInHierarchy )
     SCH_SCREEN* subScreen = new SCH_SCREEN( m_schematic.get() );
     subSheet->SetName( "SubSheet" );
     subSheet->SetScreen( subScreen );
-    subSheet->SetFileName( "subsheet.kicad_sch" );
-    subScreen->SetFileName( "subsheet.kicad_sch" );
+    subSheet->SetFileName( wxS( "subsheet.kemi_sch" ) );
+    subScreen->SetFileName( wxS( "subsheet.kemi_sch" ) );
     topScreen->Append( subSheet );
 
     m_schematic->RefreshHierarchy();
@@ -525,7 +525,7 @@ BOOST_AUTO_TEST_CASE( TestEmbeddedFilesPersistedInHierarchy )
     BOOST_REQUIRE( !m_schematic->GetEmbeddedFiles()->IsEmpty() );
 
     wxString topFileName = GetTempFileName( "embed_main" );
-    topFileName += ".kicad_sch";
+    topFileName += wxS( ".kemi_sch" );
     m_tempFiles.push_back( topFileName );
 
     SCH_IO_KICAD_SEXPR io;
@@ -567,16 +567,16 @@ BOOST_AUTO_TEST_CASE( TestLoadSheetFileWithTextVariable )
     SCH_SCREEN* subScreen = new SCH_SCREEN( m_schematic.get() );
     subSheet->SetName( "SubSheet" );
     subSheet->SetScreen( subScreen );
-    subSheet->SetFileName( "${SUBSHEET_FILE}.kicad_sch" );
+    subSheet->SetFileName( wxS( "${SUBSHEET_FILE}.kemi_sch" ) );
     screen->Append( subSheet );
 
     // Save the sub-sheet at the resolved path next to the main file, where the loader looks.
     wxString mainFileName = GetTempFileName( "tv_main" );
-    mainFileName += ".kicad_sch";
+    mainFileName += wxS( ".kemi_sch" );
     m_tempFiles.push_back( mainFileName );
 
     wxFileName subOnDisk( mainFileName );
-    subOnDisk.SetFullName( "resolved_subsheet.kicad_sch" );
+    subOnDisk.SetFullName( wxS( "resolved_subsheet.kemi_sch" ) );
     wxString subFileName = subOnDisk.GetFullPath();
     m_tempFiles.push_back( subFileName );
     subScreen->SetFileName( subFileName );
@@ -604,7 +604,7 @@ BOOST_AUTO_TEST_CASE( TestLoadSheetFileWithTextVariable )
     BOOST_REQUIRE( loadedSub != nullptr );
 
     // Stored field keeps the raw variable for portability.
-    BOOST_CHECK_EQUAL( loadedSub->GetFileName(), wxString( "${SUBSHEET_FILE}.kicad_sch" ) );
+    BOOST_CHECK_EQUAL( loadedSub->GetFileName(), wxString( "${SUBSHEET_FILE}.kemi_sch" ) );
 
     // Screen must load from the resolved file, not the literal ${...} path.
     BOOST_REQUIRE( loadedSub->GetScreen() != nullptr );
@@ -613,7 +613,7 @@ BOOST_AUTO_TEST_CASE( TestLoadSheetFileWithTextVariable )
                                  + loadedSub->GetScreen()->GetFileName() );
 
     wxFileName loadedScreenFn( loadedSub->GetScreen()->GetFileName() );
-    BOOST_CHECK_EQUAL( loadedScreenFn.GetFullName(), wxString( "resolved_subsheet.kicad_sch" ) );
+    BOOST_CHECK_EQUAL( loadedScreenFn.GetFullName(), wxString( "resolved_subsheet.kemi_sch" ) );
 }
 
 

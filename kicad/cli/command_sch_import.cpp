@@ -37,7 +37,7 @@ CLI::SCH_IMPORT_COMMAND::SCH_IMPORT_COMMAND() : COMMAND( "import" )
     addCommonArgs( true, true, IO_TYPE::FILE, IO_TYPE::FILE );
 
     m_argParser.add_description(
-            UTF8STDSTR( _( "Import a non-KiCad schematic file to KiCad format" ) ) );
+            UTF8STDSTR( _( "Import a schematic file from another EDA tool and save it in KemiCAD format (.kemi_sch)" ) ) );
 
     m_argParser.add_argument( ARG_FORMAT )
             .default_value( std::string( "auto" ) )

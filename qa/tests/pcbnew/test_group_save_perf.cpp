@@ -113,7 +113,7 @@ double saveBoardSeconds( const std::filesystem::path& aDir, std::size_t aGroupCo
     auto board = buildBoardWithGroups( aGroupCount, aTotalShapes );
 
     const std::filesystem::path savePath =
-            aDir / ( "groups" + std::to_string( aGroupCount ) + ".kicad_pcb" );
+            aDir / ( "groups" + std::to_string( aGroupCount ) + ".kemi_pcb" );
 
     PROF_TIMER timer;
     KI_TEST::DumpBoardToFile( *board, savePath.string() );

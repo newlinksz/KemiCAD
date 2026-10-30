@@ -45,6 +45,7 @@
 #include <font/fontconfig.h>
 #include <pgm_base.h>
 #include <string_utils.h>
+#include <kemi_format_profile.h>
 #include <sch_bitmap.h>
 #include <sch_bus_entry.h>
 #include <sch_symbol.h>
@@ -205,6 +206,7 @@ void SCH_IO_KICAD_SEXPR_PARSER::ParseLib( LIB_SYMBOL_MAP& aSymbolLibMap )
 
     NeedLEFT();
     NextTok();
+    m_kemiOnly = CurTok() == T_kemi_symbol_lib;
     parseHeader( T_kicad_symbol_lib, SEXPR_SYMBOL_LIB_FILE_VERSION );
 
     // Prior to this, bar was a valid string char for unquoted strings.
@@ -218,7 +220,7 @@ void SCH_IO_KICAD_SEXPR_PARSER::ParseLib( LIB_SYMBOL_MAP& aSymbolLibMap )
                 if( !versionChecked && m_requiredVersion > SEXPR_SYMBOL_LIB_FILE_VERSION )
                 {
                     throw FUTURE_FORMAT_ERROR( fmt::format( "{}", m_requiredVersion ),
-                                               m_generatorVersion );
+                                               m_generatorVersion, m_kemiOnly );
                 }
 
                 versionChecked = true;
@@ -275,6 +277,8 @@ void SCH_IO_KICAD_SEXPR_PARSER::ParseLib( LIB_SYMBOL_MAP& aSymbolLibMap )
             try
             {
                 LIB_SYMBOL* symbol = parseLibSymbol( aSymbolLibMap );
+                if( m_kemiOnly )
+                    symbol->SetKemiOnly();
                 aSymbolLibMap[symbol->GetName()] = symbol;
             }
             catch( const IO_ERROR& e )
@@ -349,6 +353,8 @@ LIB_SYMBOL* SCH_IO_KICAD_SEXPR_PARSER::parseLibSymbol( LIB_SYMBOL_MAP& aSymbolLi
     wxString error;
     SCH_ITEM* item;
     std::unique_ptr<LIB_SYMBOL> symbol = std::make_unique<LIB_SYMBOL>( wxEmptyString );
+    if( m_kemiOnly )
+        symbol->SetKemiOnly();
 
     symbol->SetUnitCount( 1, true );
 
@@ -1015,15 +1021,52 @@ void SCH_IO_KICAD_SEXPR_PARSER::parseEDA_TEXT( EDA_TEXT* aText, bool aConvertOve
 
 void SCH_IO_KICAD_SEXPR_PARSER::parseHeader( TSCHEMATIC_T::T aHeaderType, int aFileVersion )
 {
-    if( CurTok() != aHeaderType )
+    // The KemiCAD root of each header type is defined by KEMI_FORMAT; the lexer token is
+    // the matching keyword.
+    const bool      isSymLib = ( aHeaderType == T_kicad_symbol_lib );
+    const T         kemiHeaderType = isSymLib ? T_kemi_symbol_lib : T_kemi_sch;
+    KEMI_FORMAT::DOC doc = isSymLib ? KEMI_FORMAT::DOC::SYMBOL_LIB : KEMI_FORMAT::DOC::SCHEMATIC;
+    const bool      isKemi = ( CurTok() == kemiHeaderType );
+
+    if( CurTok() != aHeaderType && !isKemi )
     {
         THROW_PARSE_ERROR( wxString::Format( _( "Cannot parse '%s' as a header." ), GetTokenString( CurTok() ) ),
                            CurSource(), CurLine(), CurLineNumber(), CurOffset() );
     }
 
+    wxString kemiError = KEMI_FORMAT::CheckRootForSource( doc, CurSource(), isKemi );
+
+    if( !kemiError.IsEmpty() )
+        THROW_IO_ERROR( kemiError );
+
     NeedLEFT();
 
     T tok = NextTok();
+
+    if( isKemi )
+    {
+        if( tok != T_format_version )
+            Expecting( "format_version" );
+
+        NeedNUMBER( "integer format_version" );
+        int formatVersion = 0;
+        const std::string& versionText = CurStr();
+        auto [end, error] = std::from_chars( versionText.data(),
+                                            versionText.data() + versionText.size(), formatVersion );
+
+        if( error != std::errc() || end != versionText.data() + versionText.size() )
+            Expecting( "integer format_version" );
+
+        NeedRIGHT();
+
+        kemiError = KEMI_FORMAT::CheckFormatVersion( doc, formatVersion );
+
+        if( !kemiError.IsEmpty() )
+            THROW_IO_ERROR( kemiError );
+
+        NeedLEFT();
+        tok = NextTok();
+    }
 
     if( tok == T_version )
     {
@@ -3163,7 +3206,10 @@ void SCH_IO_KICAD_SEXPR_PARSER::ParseSchematic( SCH_SHEET* aSheet, bool aIsCopya
     wxCHECK( screen != nullptr, /* void */ );
 
     if( SCHEMATIC* schematic = dynamic_cast<SCHEMATIC*>( screen->GetParent() ) )
+    {
         m_maxError = schematic->Settings().m_MaxError;
+        m_kemiOnly = schematic->IsKemiOnly();
+    }
 
     if( aIsCopyableOnly )
         m_requiredVersion = aFileVersion;
@@ -3175,7 +3221,7 @@ void SCH_IO_KICAD_SEXPR_PARSER::ParseSchematic( SCH_SHEET* aSheet, bool aIsCopya
             {
                 if( m_requiredVersion > SEXPR_SCHEMATIC_FILE_VERSION )
                 {
-                    throw FUTURE_FORMAT_ERROR( fmt::format( "{}", m_requiredVersion ), m_generatorVersion );
+                    throw FUTURE_FORMAT_ERROR( fmt::format( "{}", m_requiredVersion ), m_generatorVersion, m_kemiOnly );
                 }
             };
 
@@ -3186,8 +3232,16 @@ void SCH_IO_KICAD_SEXPR_PARSER::ParseSchematic( SCH_SHEET* aSheet, bool aIsCopya
         NeedLEFT();
         NextTok();
 
-        if( CurTok() != T_kicad_sch )
-            Expecting( "kicad_sch" );
+        if( CurTok() != T_kicad_sch && CurTok() != T_kemi_sch )
+            Expecting( "kemi_sch|kicad_sch" );
+
+        if( CurTok() == T_kemi_sch )
+        {
+            m_kemiOnly = true;
+            screen->SetKemiOnly();
+            if( SCHEMATIC* schematic = dynamic_cast<SCHEMATIC*>( screen->GetParent() ) )
+                schematic->SetKemiOnlyEmbeddedFiles();
+        }
 
         parseHeader( T_kicad_sch, SEXPR_SCHEMATIC_FILE_VERSION );
 

@@ -28,6 +28,7 @@
 #include <base_units.h>
 #include <bitmap_base.h>
 #include <build_version.h>
+#include <kemi_format_profile.h>
 #include <schematic_lexer.h>
 
 using namespace TSCHEMATIC_T;
@@ -747,6 +748,10 @@ static void libSaveTextBox( SCH_TEXTBOX* aTextBox, OUTPUTFORMATTER& aFormatter )
 
 void SCH_WRITER_V10::SaveSchematicFile( const wxString& aFileName, SCH_SHEET* aSheet, SCHEMATIC* aSchematic )
 {
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SCHEMATIC, aFileName,
+            KEMI_FORMAT::FLAVOR::LEGACY, aSchematic->IsKemiOnly()
+                    || ( aSheet->GetScreen() && aSheet->GetScreen()->IsKemiOnly() )
+                    || KEMI_FORMAT::HasKemiExt( aFileName ) );
     LOCALE_IO toggle;
 
     m_schematic = aSchematic;
@@ -762,6 +767,10 @@ void SCH_WRITER_V10::SaveSchematicFile( const wxString& aFileName, SCH_SHEET* aS
 
 void SCH_WRITER_V10::SaveSymbolLibrary( const wxString& aFileName, const std::vector<LIB_SYMBOL*>& aSymbols )
 {
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SYMBOL_LIB, aFileName,
+            KEMI_FORMAT::FLAVOR::LEGACY, KEMI_FORMAT::HasKemiExt( aFileName )
+                    || std::any_of( aSymbols.begin(), aSymbols.end(),
+                            []( const LIB_SYMBOL* aSymbol ) { return aSymbol && aSymbol->IsKemiOnly(); } ) );
     LOCALE_IO toggle;
 
     PRETTIFIED_FILE_OUTPUTFORMATTER formatter( aFileName );

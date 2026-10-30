@@ -36,6 +36,7 @@
 #include <sch_screen.h>
 #include <sch_sheet.h>
 #include <string_utils.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 
 #include <core/map_helpers.h>
@@ -316,7 +317,8 @@ SCH_SHEET* SCH_IO_EASYEDAPRO_V3::LoadSchematicFile( const wxString& aFileName, S
     wxString rootBaseName = EscapeString( prjSchIt->second.name, CTX_FILENAME );
 
     wxFileName rootFname( aFileName );
-    rootFname.SetFullName( rootBaseName + wxS( "." ) + wxString::FromUTF8( FILEEXT::KiCadSchematicFileExtension ) );
+    rootFname.SetFullName( rootBaseName + wxS( "." )
+                         + wxString::FromUTF8( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt ) );
 
     rootSheet->SetName( prjSchIt->second.name );
     rootSheet->SetFileName( rootFname.GetFullPath() );
@@ -440,7 +442,7 @@ SCH_SHEET* SCH_IO_EASYEDAPRO_V3::LoadSchematicFile( const wxString& aFileName, S
 
         wxFileName sheetFname( aFileName );
         sheetFname.SetFullName( sheetBaseName + wxS( "." )
-                                + wxString::FromUTF8( FILEEXT::KiCadSchematicFileExtension ) );
+                                + wxString::FromUTF8( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt ) );
 
         wxFileName relSheetPath( sheetFname );
         relSheetPath.MakeRelativeTo( rootFname.GetPath() );

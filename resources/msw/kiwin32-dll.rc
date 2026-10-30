@@ -29,11 +29,12 @@ BEGIN
         BLOCK "040904E4"
         BEGIN
             // this gets displayed in the windows 10 task manager
+            VALUE "CompanyName", L"\x6DF1\x5733\x65B0\x667A\x8054\x8F6F\x4EF6\x6709\x9650\x516C\x53F8"
             VALUE "FileDescription", RC_VER_FILE_DESCRIPTION
             VALUE "FileVersion", RC_VER_FILEVER_STR
             //original filename without extension
             VALUE "InternalName", RC_VER_INTERNALNAME
-            VALUE "LegalCopyright", "Copyright The KiCad Developers"
+            VALUE "LegalCopyright", L"Copyright (C) \x6DF1\x5733\x65B0\x667A\x8054\x8F6F\x4EF6\x6709\x9650\x516C\x53F8; based on KiCad, Copyright The KiCad Developers"
             // the exe name
             VALUE "OriginalFilename", RC_VER_ORIGINALFILENAME
             // name of distributed package

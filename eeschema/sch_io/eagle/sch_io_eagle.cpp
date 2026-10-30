@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <fmt/format.h>
 #include <wx/filename.h>
 #include <wx/string.h>
@@ -36,8 +37,10 @@
 #include <wx/xml/xml.h>
 
 #include <advanced_config.h>
+#include <downgrade_scan.h>
 #include <font/fontconfig.h>
 #include <reporter.h>
+#include <richio.h>
 #include <io/eagle/eagle_parser.h>
 #include <io/eagle/eagle_bin_parser.h>
 #include <lib_id.h>
@@ -60,6 +63,7 @@
 #include <sch_symbol.h>
 #include <schematic.h>
 #include <string_utils.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 #include <libraries/symbol_library_adapter.h>
 
@@ -148,10 +152,20 @@ wxFileName SCH_IO_EAGLE::getLibFileName()
 
     wxCHECK( m_schematic, fn );
 
-    fn.Assign( m_schematic->Project().GetProjectPath(), getLibName(),
-               FILEEXT::KiCadSymbolLibFileExtension );
+    fn.Assign( m_libStoragePath.IsEmpty() ? getLibOutputTarget().FinalPath() : m_libStoragePath );
 
     return fn;
+}
+
+
+KEMI_FORMAT::OUTPUT_TARGET SCH_IO_EAGLE::getLibOutputTarget()
+{
+    const wxString directory = m_importOutputPolicy ? m_importOutputPolicy->FinalDirectory()
+                                                    : m_schematic->Project().GetProjectPath();
+    const KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( directory );
+    const wxFileName filename( directory, getLibName(),
+                               KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SYMBOL_LIB ).kemiExt );
+    return policy.Target( KEMI_FORMAT::DOC::SYMBOL_LIB, filename.GetFullPath() );
 }
 
 
@@ -378,7 +392,7 @@ SCH_SHEET* SCH_IO_EAGLE::LoadSchematicFile( const wxString& aFileName, SCHEMATIC
         m_progressReporter->SetNumPhases( static_cast<int>( GetNodeCount( currentNode ) ) );
 
     wxFileName newFilename( m_filename );
-    newFilename.SetExt( FILEEXT::KiCadSchematicFileExtension );
+    newFilename.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
     // Owns the temporary VR for the non-append path so it is freed when this scope exits.
     // The actual schematic VR will be created by SetTopLevelSheets() inside loadSchematic().
@@ -432,25 +446,60 @@ SCH_SHEET* SCH_IO_EAGLE::LoadSchematicFile( const wxString& aFileName, SCHEMATIC
     LIBRARY_TABLE* table = adapter->ProjectTable().value_or( nullptr );
     wxCHECK_MSG( table, nullptr, "Could not load symbol lib table." );
 
-    m_pi.reset( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+    m_pi.reset( static_cast<SCH_IO_KICAD_SEXPR*>( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) ) );
 
-    /// @note No check is being done here to see if the existing symbol library exists so this
-    ///       will overwrite the existing one.
-    if( !table->HasRow( getLibName() ) )
+    const KEMI_FORMAT::OUTPUT_TARGET libraryTarget = getLibOutputTarget();
+    const wxString finalLibrary = libraryTarget.FinalPath();
+    wxFileName relativeLibrary( finalLibrary );
+    wxString libTableUri = relativeLibrary.GetFullPath();
+
+    if( relativeLibrary.MakeRelativeTo( m_schematic->Project().GetProjectPath() ) )
+        libTableUri = wxS( "${KIPRJMOD}/" ) + relativeLibrary.GetFullPath( wxPATH_UNIX );
+
+    LIBRARY_TABLE_ROW* existingRow = table->Row( getLibName() ).value_or( nullptr );
+    wxString sourceLibrary;
+
+    if( existingRow )
     {
-        // Create a new empty symbol library.
-        m_pi->CreateLibrary( getLibFileName().GetFullPath() );
-        wxString libTableUri = wxT( "${KIPRJMOD}/" ) + getLibFileName().GetFullName();
+        if( existingRow->Type() != wxS( "KiCad" ) )
+            THROW_IO_ERROR( _( "The Eagle import library name is already used by another library type." ) );
 
-        // Add the new library to the project symbol library table.
-        LIBRARY_TABLE_ROW& row = table->InsertRow();
-        row.SetNickname( getLibName() );
-        row.SetURI( libTableUri );
-        row.SetType( "KiCad" );
+        sourceLibrary = LIBRARY_MANAGER::ExpandURI( existingRow->URI(), aSchematic->Project() );
+    }
 
-        table->Save();
+    if( wxFileName::Exists( finalLibrary )
+        && ( sourceLibrary.IsEmpty() || !wxFileName( sourceLibrary ).SameAs( wxFileName( finalLibrary ) ) ) )
+    {
+        THROW_IO_ERROR( _( "The Eagle import library destination already exists." ) );
+    }
 
-        adapter->LoadOne( getLibName() );
+    DOWNGRADE_FILE_TRANSACTION output;
+    m_libStoragePath = output.Stage( finalLibrary );
+
+    if( m_libStoragePath.IsEmpty() )
+        THROW_IO_ERROR( _( "Could not stage the Eagle import library." ) );
+
+    struct STORAGE_PATH_GUARD
+    {
+        wxString& path;
+        ~STORAGE_PATH_GUARD() { path.clear(); }
+    } storageGuard{ m_libStoragePath };
+
+    if( !wxRemoveFile( m_libStoragePath ) )
+        THROW_IO_ERROR( _( "Could not prepare the Eagle import library." ) );
+
+    if( sourceLibrary.IsEmpty() )
+    {
+        m_pi->CreateLibrary( m_libStoragePath, libraryTarget );
+    }
+    else
+    {
+        // Carry every existing symbol into the native library before merging the import.
+        // In particular, symbols used only by older sheets must survive URI migration.
+        wxArrayString names;
+        m_pi->EnumerateSymbolLib( names, sourceLibrary );
+        m_pi->SaveLibrary( m_libStoragePath, libraryTarget );
+        m_pi.reset( new SCH_IO_KICAD_SEXPR );
     }
 
     try
@@ -472,13 +521,61 @@ SCH_SHEET* SCH_IO_EAGLE::LoadSchematicFile( const wxString& aFileName, SCHEMATIC
     if( !aAppendToMe )
         m_rootSheet = &aSchematic->Root();
 
-    m_pi->SaveLibrary( getLibFileName().GetFullPath() );
+    m_pi->SaveLibrary( getLibFileName().GetFullPath(), getLibOutputTarget() );
 
-    // The project library was created empty and then cached by the adapter (LoadOne above)
-    // before any symbols were written to it. Reload it from disk now that SaveLibrary has
-    // populated the file, otherwise UpdateSymbolLinks resolves against the stale empty cache
-    // and every imported symbol is reported as missing.
+    if( table->IsReadOnly() )
+        THROW_IO_ERROR( _( "The project symbol library table is read-only." ) );
+
+    const wxString stagedTable = output.Stage( table->Path() );
+
+    if( stagedTable.IsEmpty() )
+        THROW_IO_ERROR( _( "Could not stage the project symbol library table." ) );
+
+    // Restore the row in place: loaded adapters may retain pointers to existing rows.
+    LIBRARY_TABLE_ROW& row = existingRow ? *existingRow : table->InsertRow();
+    struct TABLE_ROW_GUARD
+    {
+        LIBRARY_TABLE& table;
+        LIBRARY_TABLE_ROW& row;
+        std::optional<LIBRARY_TABLE_ROW> original;
+        bool committed = false;
+        ~TABLE_ROW_GUARD()
+        {
+            if( !committed )
+            {
+                if( original )
+                    row = *original;
+                else
+                    table.Rows().pop_back();
+            }
+        }
+    } rowGuard{ *table, row, existingRow ? std::make_optional( *existingRow ) : std::nullopt };
+
+    row.SetNickname( getLibName() );
+    row.SetURI( libTableUri );
+    row.SetType( wxS( "KiCad" ) );
+    row.SetScope( LIBRARY_TABLE_SCOPE::PROJECT );
+
+    {
+        PRETTIFIED_FILE_OUTPUTFORMATTER formatter( stagedTable, KICAD_FORMAT::FORMAT_MODE::LIBRARY_TABLE );
+        table->Format( &formatter );
+        formatter.Finish();
+    }
+
+    const wxString failedOutput = output.Commit();
+
+    if( !failedOutput.IsEmpty() )
+    {
+        THROW_IO_ERROR( wxString::Format( _( "Could not publish Eagle import output '%s'. %s" ),
+                                          failedOutput, output.GetRecoveryError() ) );
+    }
+
+    rowGuard.committed = true;
+
+    // Publish before refreshing the adapter, so it never observes the staged library or
+    // an empty cache while updating links for imported and previously placed symbols.
     adapter->ReloadLibraryEntry( getLibName(), LIBRARY_TABLE_SCOPE::PROJECT );
+    adapter->LoadOne( getLibName() );
 
     SCH_SCREENS allSheets( m_rootSheet );
     allSheets.UpdateSymbolLinks( &LOAD_INFO_REPORTER::GetInstance() ); // Update all symbol library links for all sheets.
@@ -784,7 +881,7 @@ void SCH_IO_EAGLE::loadSchematic( const ESCHEMATIC& aSchematic )
             loadLibrary( elibrary.get(), &m_eagleLibs[elibrary->GetName()] );
         }
 
-        m_pi->SaveLibrary( getLibFileName().GetFullPath() );
+        m_pi->SaveLibrary( getLibFileName().GetFullPath(), getLibOutputTarget() );
     }
 
     // Count how many sheets each named net appears on.  Used by the fallback-label path
@@ -958,7 +1055,7 @@ void SCH_IO_EAGLE::loadSheet( const std::unique_ptr<ESHEET>& aSheet )
         wxFileName fn;
         fn.SetPath( m_schematic->Project().GetProjectPath() );
         fn.SetName( filename );
-        fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+        fn.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
         sheet->SetFileName( fn.GetFullName() );
         screen->SetFileName( fn.GetFullPath() );
@@ -1116,7 +1213,7 @@ void SCH_IO_EAGLE::loadModuleInstance( const std::unique_ptr<EMODULEINST>& aModu
 
     wxFileName fn = m_filename;
     fn.SetName( aModuleInstance->moduleinst );
-    fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+    fn.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
     VECTOR2I portExtWireEndpoint;
     VECTOR2I size( it->second->dx.ToSchUnits(), it->second->dy.ToSchUnits() );
@@ -2146,7 +2243,7 @@ void SCH_IO_EAGLE::loadInstance( const std::unique_ptr<EINSTANCE>& aInstance,
 
     // Cache the lib symbol so pin positions are available for connection-point tracking.
     // Use the already-loaded `part` directly rather than re-fetching through the adapter,
-    // because the .kicad_sym library is still buffered in m_pi and has not yet been saved to
+    // because the .kemi_sym library is still buffered in m_pi and has not yet been saved to
     // disk at the time loadInstance runs.
     symbol->SetLibSymbol( part->Flatten().release() );
 
@@ -2432,7 +2529,7 @@ EAGLE_LIBRARY* SCH_IO_EAGLE::loadLibrary( const ELIBRARY* aLibrary, EAGLE_LIBRAR
                     std::unique_ptr<LIB_SYMBOL> parentSymbol = std::make_unique<LIB_SYMBOL>( *libSymbol );
 
                     m_pi->SaveSymbol( getLibFileName().GetFullPath(), std::move( parentSymbol ),
-                                      &properties );
+                                      getLibOutputTarget(), &properties );
 
                     // The plugin cache owns the parent symbol after the save, we cannot use it
                     // safely after handing it to the plugin.
@@ -2459,7 +2556,8 @@ EAGLE_LIBRARY* SCH_IO_EAGLE::loadLibrary( const ELIBRARY* aLibrary, EAGLE_LIBRAR
                             std::unique_ptr<LIB_SYMBOL> derivedSymbol = std::make_unique<LIB_SYMBOL>( *symbol );
 
                             derivedSymbol->SetParent( parent );
-                            m_pi->SaveSymbol( getLibFileName().GetFullPath(), std::move( derivedSymbol ), &properties );
+                            m_pi->SaveSymbol( getLibFileName().GetFullPath(), std::move( derivedSymbol ),
+                                              getLibOutputTarget(), &properties );
                         }
                     }
                 }

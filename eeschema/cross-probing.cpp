@@ -27,10 +27,12 @@
 #include <kiface_base.h>
 #include <kiway.h>
 #include <kiway_mail.h>
+#include <kemi_project_paths.h>
 #include <import_net_map.h>
 #include <import_local_symbol_libs.h>
 #include <import_proj_properties.h>
 #include <link_imported_footprints.h>
+#include <dialog_HTML_reporter_base.h>
 #include <reporter.h>
 #include <connectivity/conn_navigation.h>
 #include <connectivity/conn_netchain_manager.h>
@@ -55,7 +57,10 @@
 #include <libraries/symbol_library_adapter.h>
 #include <widgets/sch_design_block_pane.h>
 #include <widgets/kistatusbar.h>
+#include <widgets/wx_html_report_box.h>
+#include <widgets/wx_html_report_panel.h>
 #include <wx/filefn.h>
+#include <wx/filename.h>
 #include <wx/log.h>
 #include <wx/msgdlg.h>
 #include <trace_helpers.h>
@@ -512,8 +517,25 @@ void SCH_EDIT_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
 
         NETLIST_EXPORTER_KICAD exporter( &Schematic(), &Kiway() );
         STRING_FORMATTER formatter;
+        WX_STRING_REPORTER reporter;
 
-        exporter.Format( &formatter, GNL_ALL | GNL_OPT_KICAD );
+        if( !exporter.Format( &formatter, GNL_ALL | GNL_OPT_KICAD, &reporter ) )
+        {
+            payload = std::string( MAIL_SCH_GET_NETLIST_FAILED ) + TO_UTF8( reporter.GetMessages() );
+            break;
+        }
+
+        if( KISTATUSBAR* statusBar = dynamic_cast<KISTATUSBAR*>( GetStatusBar() ) )
+        {
+            statusBar->ClearWarningMessages( "netlist-physical-pads" );
+
+            if( !reporter.GetMessages().IsEmpty() )
+                statusBar->AddWarningMessages( "netlist-physical-pads", reporter.GetMessages() );
+        }
+        else if( !reporter.GetMessages().IsEmpty() )
+        {
+            WXLOG_REPORTER::GetInstance().Report( reporter.GetMessages(), RPT_SEVERITY_WARNING );
+        }
 
         RefreshConnectivity( true );
         payload = formatter.GetString();
@@ -560,6 +582,73 @@ void SCH_EDIT_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
 
     case MAIL_SCH_LINK_FOOTPRINTS:
     {
+        if( const auto links = IMPORT_PROJ_PROPS::SplitFootprintLinkData( wxString::FromUTF8( payload ) ) )
+        {
+            payload.clear();
+
+            if( !wxFileName( links->projectFile ).SameAs( wxFileName( Prj().GetProjectFullName() ) ) )
+                break;
+
+            KISTATUSBAR* statusBar = dynamic_cast<KISTATUSBAR*>( GetStatusBar() );
+
+            if( statusBar )
+                statusBar->ClearWarningMessages( "import-footprint-links" );
+
+            STATUSBAR_WARNING_REPORTER statusReporter( statusBar, "import-footprint-links" );
+            DIALOG_HTML_REPORTER reportDialog( this, wxID_ANY, _( "Imported Footprint Links" ) );
+            WX_HTML_REPORT_PANEL* reportPanel = new WX_HTML_REPORT_PANEL( &reportDialog );
+            reportPanel->SetMinSize( FromDIP( wxSize( 640, 360 ) ) );
+            reportPanel->SetFileName( wxS( "import-footprint-links.txt" ) );
+            reportPanel->SetLazyUpdate( true );
+
+            // Reuse the existing report panel's Save/Copy controls without modifying the
+            // generated dialog. Keep its slim box alive for the generated destructor.
+            reportDialog.m_Reporter->Hide();
+            reportDialog.GetSizer()->Replace( reportDialog.m_Reporter, reportPanel );
+
+            struct LINK_REPORTER : REPORTER
+            {
+                REPORTER& details;
+                REPORTER& status;
+
+                LINK_REPORTER( REPORTER& aDetails, REPORTER& aStatus ) : details( aDetails ), status( aStatus ) {}
+
+                REPORTER& Report( const wxString& aText, SEVERITY aSeverity ) override
+                {
+                    REPORTER::Report( aText, aSeverity );
+                    details.Report( aText, aSeverity );
+                    status.Report( aText, aSeverity );
+                    return *this;
+                }
+            } reporter( reportPanel->Reporter(), statusReporter );
+
+            try
+            {
+                if( LinkImportedFootprints( Schematic(), links->ids, reporter,
+                                            IMPORTED_FOOTPRINT_LINK_POLICY::FILL_EMPTY_ONLY,
+                                            &links->pads ) > 0 )
+                {
+                    OnModify();
+                }
+
+                payload = "success";
+            }
+            catch( const IO_ERROR& error )
+            {
+                reporter.Report( error.What(), RPT_SEVERITY_ERROR );
+                payload = std::string( "error:" ) + TO_UTF8( error.What() );
+            }
+
+            if( reporter.HasMessageOfSeverity( RPT_SEVERITY_WARNING | RPT_SEVERITY_ERROR ) )
+            {
+                reportPanel->Flush();
+                reportDialog.GetSizer()->Fit( &reportDialog );
+                reportDialog.ShowModal();
+            }
+
+            break;
+        }
+
         std::optional<std::map<wxString, wxString>> footprints =
                 IMPORT_PROJ_PROPS::SplitTaggedMap( IMPORT_PROJ_PROPS::FOOTPRINT_ID_MAP_TAG,
                                                    wxString::FromUTF8( payload ) );
@@ -726,13 +815,13 @@ void SCH_EDIT_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
 
     case MAIL_SCH_NAVIGATE_TO_SHEET:
     {
-        wxString targetFile( payload );
+        wxString targetFile = KEMI_FORMAT::NavigationPathFromUtf8( payload );
 
         for( SCH_SHEET_PATH& sheetPath : m_schematic->Hierarchy() )
         {
             SCH_SCREEN* screen = sheetPath.LastScreen();
 
-            if( screen && screen->GetFileName() == targetFile )
+            if( screen && wxFileName( screen->GetFileName() ).SameAs( wxFileName( targetFile ) ) )
             {
                 m_toolManager->RunAction<SCH_SHEET_PATH*>( SCH_ACTIONS::changeSheet, &sheetPath );
                 payload = "success";

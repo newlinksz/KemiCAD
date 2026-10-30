@@ -21,6 +21,7 @@
  */
 
 #include <memory>
+#include <optional>
 
 #include <wx/filename.h>
 #include <wx/uri.h>
@@ -47,6 +48,7 @@
 #include <sch_io/target3001/sch_io_target3001.h>
 #include <common.h>     // for ExpandEnvVarSubstitutions
 #include <ki_exception.h>
+#include <kemi_format_profile.h>
 
 #include <wildcards_and_files_ext.h>
 #include <kiway_player.h>
@@ -251,7 +253,8 @@ SCH_IO_MGR::SCH_FILE_T SCH_IO_MGR::GuessPluginTypeFromSchPath( const wxString& a
 
 
 bool SCH_IO_MGR::ConvertLibrary( std::map<std::string, UTF8>* aOldFileProps, const wxString& aOldFilePath,
-                                 const wxString& aNewFilepath, REPORTER* aReporter )
+                                 const wxString& aNewFilepath, REPORTER* aReporter,
+                                 const KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY* aOutputPolicy )
 {
     auto report = [&]( const wxString& aMessage, SEVERITY aSeverity )
     {
@@ -259,6 +262,20 @@ bool SCH_IO_MGR::ConvertLibrary( std::map<std::string, UTF8>* aOldFileProps, con
             aReporter->Report( aMessage, aSeverity );
     };
 
+    std::optional<KEMI_FORMAT::OUTPUT_TARGET> outputTarget;
+
+    try
+    {
+        if( aOutputPolicy )
+            outputTarget = aOutputPolicy->Target( KEMI_FORMAT::DOC::SYMBOL_LIB, aNewFilepath );
+    }
+    catch( const IO_ERROR& error )
+    {
+        report( error.What(), RPT_SEVERITY_ERROR );
+        return false;
+    }
+
+    const wxString outputPath = outputTarget ? outputTarget->FinalPath() : aNewFilepath;
     SCH_IO_MGR::SCH_FILE_T oldFileType = SCH_IO_MGR::GuessPluginTypeFromLibPath( aOldFilePath );
 
     if( oldFileType == SCH_IO_MGR::SCH_FILE_UNKNOWN )
@@ -279,13 +296,15 @@ bool SCH_IO_MGR::ConvertLibrary( std::map<std::string, UTF8>* aOldFileProps, con
         return false;
 
     IO_RELEASER<SCH_IO> oldFilePI( SCH_IO_MGR::FindPlugin( oldFileType ) );
-    IO_RELEASER<SCH_IO> kicadPI( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+    IO_RELEASER<SCH_IO_KICAD_SEXPR> kicadPI( new SCH_IO_KICAD_SEXPR );
 
     if( !oldFilePI || !kicadPI )
         return false;
 
     if( aReporter )
         oldFilePI->SetReporter( aReporter );
+
+    oldFilePI->SetImportOutputPolicy( aOutputPolicy );
 
     std::vector<LIB_SYMBOL*>                 symbols;
     std::vector<std::unique_ptr<LIB_SYMBOL>> newSymbols;
@@ -322,7 +341,10 @@ bool SCH_IO_MGR::ConvertLibrary( std::map<std::string, UTF8>* aOldFileProps, con
         }
 
         // Create a blank library
-        kicadPI->SaveLibrary( aNewFilepath );
+        if( outputTarget )
+            kicadPI->SaveLibrary( outputPath, *outputTarget );
+        else
+            kicadPI->SaveLibrary( outputPath );
     }
     catch( const IO_ERROR& io_err )
     {
@@ -343,6 +365,9 @@ bool SCH_IO_MGR::ConvertLibrary( std::map<std::string, UTF8>* aOldFileProps, con
     }
 
     bool ok = true;
+    const std::map<std::string, UTF8> properties = {
+        { SCH_IO_KICAD_SEXPR::PropBuffering, wxEmptyString }
+    };
 
     for( std::unique_ptr<LIB_SYMBOL>& symbol : newSymbols )
     {
@@ -350,7 +375,10 @@ bool SCH_IO_MGR::ConvertLibrary( std::map<std::string, UTF8>* aOldFileProps, con
 
         try
         {
-            kicadPI->SaveSymbol( aNewFilepath, std::move( symbol ) );
+            if( outputTarget )
+                kicadPI->SaveSymbol( outputPath, std::move( symbol ), *outputTarget, &properties );
+            else
+                kicadPI->SaveSymbol( outputPath, std::move( symbol ), &properties );
         }
         catch( const IO_ERROR& io_err )
         {
@@ -370,6 +398,29 @@ bool SCH_IO_MGR::ConvertLibrary( std::map<std::string, UTF8>* aOldFileProps, con
                     RPT_SEVERITY_ERROR );
             ok = false;
         }
+    }
+
+    try
+    {
+        if( outputTarget )
+            kicadPI->SaveLibrary( outputPath, *outputTarget );
+        else
+            kicadPI->SaveLibrary( outputPath );
+    }
+    catch( const IO_ERROR& error )
+    {
+        report( error.What(), RPT_SEVERITY_ERROR );
+        return false;
+    }
+    catch( const std::exception& error )
+    {
+        report( wxString::FromUTF8( error.what() ), RPT_SEVERITY_ERROR );
+        return false;
+    }
+    catch( ... )
+    {
+        report( _( "Unknown error saving the converted symbol library." ), RPT_SEVERITY_ERROR );
+        return false;
     }
 
     return ok;

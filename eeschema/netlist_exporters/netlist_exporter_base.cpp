@@ -20,6 +20,8 @@
  */
 
 #include <netlist_exporter_base.h>
+#include <netlist_exporter_xml.h>
+#include <pin_pad_connection.h>
 
 #include <string_utils.h>
 
@@ -76,6 +78,8 @@ bool NETLIST_EXPORTER_BASE::WriteNetlist( const wxString& aOutFileName, unsigned
 
 void NETLIST_EXPORTER_BASE::rebuildConnectivity()
 {
+    m_footprintPadCache.clear();
+    m_padValidation.reset();
     m_exportNets.clear();
     m_exportItemNets.clear();
     m_schematic->RebuildConnectivity();
@@ -342,12 +346,15 @@ std::vector<wxString> NETLIST_EXPORTER_BASE::resolvePadNumbers( const SCH_PIN*  
 
             if( !fpText.IsEmpty() && fpId.Parse( fpText, true ) < 0 )
             {
-                const std::set<wxString>& pads = footprintPads( fpId.GetUniStringLibId() );
+                const FOOTPRINT_PAD_QUERY& query = footprintPads( fpId.GetUniStringLibId() );
 
-                if( !pads.empty() )
+                // A physical export validates empty pad sets before using them.  Other users
+                // (such as simulation or BOM) retain their existing unresolved-pin behavior.
+                if( query.loaded && ( !query.numbers.empty() || m_padValidation.has_value() ) )
                 {
                     SCH_PIN::PAD_RESOLUTION state = SCH_PIN::PAD_RESOLUTION::MAPPED;
-                    wxString pad = aPin->GetEffectivePadNumber( aSheetPath, m_exportVariant, fpId, &pads, &state );
+                    wxString pad = aPin->GetEffectivePadNumber( aSheetPath, m_exportVariant,
+                                                               fpId, &query.numbers, &state );
 
                     if( state == SCH_PIN::PAD_RESOLUTION::UNMAPPED )
                         return {};
@@ -362,27 +369,119 @@ std::vector<wxString> NETLIST_EXPORTER_BASE::resolvePadNumbers( const SCH_PIN*  
 }
 
 
-const std::set<wxString>& NETLIST_EXPORTER_BASE::footprintPads( const wxString& aFootprintId ) const
+const FOOTPRINT_PAD_QUERY& NETLIST_EXPORTER_BASE::footprintPads( const wxString& aFootprintId ) const
 {
     auto it = m_footprintPadCache.find( aFootprintId );
 
     if( it != m_footprintPadCache.end() )
         return it->second;
 
-    std::set<wxString>& pads = m_footprintPadCache[aFootprintId];
+    KIFACE* face = m_kiway ? m_kiway->KiFACE( KIWAY::FACE_CVPCB ) : nullptr;
+    return m_footprintPadCache.emplace(
+            aFootprintId, QueryFootprintPadNumbers( face, aFootprintId, &m_schematic->Project() ) ).first->second;
+}
 
-    if( m_kiway && !aFootprintId.IsEmpty() )
+
+bool NETLIST_EXPORTER_BASE::ValidateFootprintPadMappings( unsigned aCtl, REPORTER& aReporter )
+{
+    if( !( aCtl & GNL_NETS ) || ( aCtl & ( GNL_OPT_BOM | GNL_OPT_FOOTPRINT_ASSIGNMENT ) )
+        || !m_kiway )
+        return true;
+
+    if( m_padValidation.has_value() )
+        return *m_padValidation;
+
+    bool valid = true;
+    const PIN_PAD_CONNECTIONS connections = CollectPinPadConnections( *m_schematic );
+    std::set<std::pair<KIID, KIID_PATH>> seen;
+    std::set<std::pair<KIID, KIID_PATH>> unavailable;
+
+    for( const EXPORT_NET& net : m_exportNets )
     {
-        if( KIFACE* cvpcb = m_kiway->KiFACE( KIWAY::FACE_CVPCB ) )
+        for( const auto& [pin, sheet] : net.pins )
         {
-            typedef void ( *PAD_NUMBERS_FN_PTR )( const wxString&, PROJECT*, std::set<wxString>& );
+            const auto key = std::make_pair( pin->m_Uuid, sheet.Path() );
 
-            if( auto fetch = (PAD_NUMBERS_FN_PTR) cvpcb->IfaceOrAddress( KIFACE_FOOTPRINT_PAD_NUMBERS ) )
-                fetch( aFootprintId, &m_schematic->Project(), pads );
+            if( !seen.insert( key ).second )
+                continue;
+
+            const SCH_SYMBOL* symbol = dynamic_cast<const SCH_SYMBOL*>( pin->GetParentSymbol() );
+
+            if( !symbol || symbol->GetRef( &sheet ).StartsWith( wxS( "#" ) ) )
+                continue;
+
+            if( ( aCtl & GNL_OPT_KICAD )
+                && ( sheet.GetExcludedFromBoard( m_exportVariant )
+                     || symbol->ResolveExcludedFromBoard( &sheet, m_exportVariant ) ) )
+            {
+                continue;
+            }
+
+            const wxString footprint = symbol->GetFootprintFieldText( &sheet, RESOLVED, m_exportVariant );
+
+            if( footprint.IsEmpty() )
+                continue;
+
+            LIB_ID fpId;
+            const bool parsed = fpId.Parse( footprint, true ) < 0;
+            const FOOTPRINT_PAD_QUERY& query = footprintPads( footprint );
+            const wxString ref = symbol->GetRef( &sheet );
+
+            if( !parsed || !query.loaded )
+            {
+                if( unavailable.emplace( symbol->m_Uuid, sheet.Path() ).second )
+                {
+                    aReporter.Report( wxString::Format(
+                            _( "Symbol '%s': footprint '%s' pad information is unavailable (%s); "
+                               "retaining unresolved pin numbers." ), ref, footprint, query.error ),
+                            RPT_SEVERITY_WARNING );
+                }
+
+                continue;
+            }
+
+            SCH_PIN::PAD_RESOLUTION state = SCH_PIN::PAD_RESOLUTION::MAPPED;
+            const wxString resolved = pin->GetEffectivePadNumber(
+                    sheet, m_exportVariant, fpId, &query.numbers, &state );
+            bool mappingValid = false;
+            const std::vector<wxString> numbers = ExpandStackedPinNotation( resolved, &mappingValid );
+            const bool covered = mappingValid && state != SCH_PIN::PAD_RESOLUTION::UNMAPPED && !numbers.empty()
+                                 && std::all_of( numbers.begin(), numbers.end(),
+                                         [&]( const wxString& number )
+                                         {
+                                             return query.numbers.count( number ) != 0;
+                                         } );
+
+            if( covered )
+                continue;
+
+            const auto connection = connections.find( key );
+            const PIN_PAD_CONNECTION_KIND kind = connection == connections.end()
+                    ? PIN_PAD_CONNECTION_KIND::CONNECTED : connection->second;
+
+            if( kind == PIN_PAD_CONNECTION_KIND::CONNECTED )
+            {
+                aReporter.Report( wxString::Format(
+                        _( "Symbol '%s' connected pin '%s' on net '%s' has no valid pad mapping on "
+                           "footprint '%s'; netlist export was cancelled." ),
+                        ref, pin->GetNumber(), net.name, footprint ), RPT_SEVERITY_ERROR );
+                valid = false;
+            }
+            else
+            {
+                const wxString message = kind == PIN_PAD_CONNECTION_KIND::EXPLICIT_NO_CONNECT
+                        ? _( "Symbol '%s' no-connect pin '%s' has no matching pad on footprint '%s'; "
+                             "the source no-connect designation is unchanged." )
+                        : _( "Symbol '%s' unconnected pin '%s' has no matching pad on footprint '%s'; "
+                             "the source pin is unchanged and has not been marked no-connect." );
+                aReporter.Report( wxString::Format( message, ref, pin->GetNumber(), footprint ),
+                                  RPT_SEVERITY_WARNING );
+            }
         }
     }
 
-    return pads;
+    m_padValidation = valid;
+    return valid;
 }
 
 

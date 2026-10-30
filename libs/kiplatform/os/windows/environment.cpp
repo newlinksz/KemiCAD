@@ -500,6 +500,23 @@ void KIPLATFORM::ENV::SetAppDetailsForWindow( wxWindow* aWindow, const wxString&
             PropVariantClear( &pv );
         }
 
+        std::wstring exePath( 32768, L'\0' );
+        DWORD        exePathLength = ::GetModuleFileNameW(
+                nullptr, exePath.data(), static_cast<DWORD>( exePath.size() ) );
+
+        if( exePathLength > 0 && exePathLength < exePath.size() )
+        {
+            exePath.resize( exePathLength );
+            exePath += L",0";
+            hr = ::InitPropVariantFromString( exePath.c_str(), &pv );
+
+            if( SUCCEEDED( hr ) )
+            {
+                hr = pps->SetValue( PKEY_AppUserModel_RelaunchIconResource, pv );
+                PropVariantClear( &pv );
+            }
+        }
+
         pps->Release();
     }
 }

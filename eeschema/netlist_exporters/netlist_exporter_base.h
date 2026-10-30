@@ -23,6 +23,7 @@
 #define NETLIST_EXPORTER_H
 
 #include <schematic.h>
+#include <footprint_pad_query.h>
 
 #include <map>
 #include <set>
@@ -215,7 +216,10 @@ protected:
     /// Resolve @a aPin to its effective pad number(s) for every netlist path (issue #2282).
     std::vector<wxString> resolvePadNumbers( const SCH_PIN* aPin, const SCH_SHEET_PATH& aSheetPath ) const;
 
-    const std::set<wxString>& footprintPads( const wxString& aFootprintId ) const;
+    const FOOTPRINT_PAD_QUERY& footprintPads( const wxString& aFootprintId ) const;
+
+    /// Reject loss of connected pins before opening an output file or sending an update.
+    bool ValidateFootprintPadMappings( unsigned aCtl, REPORTER& aReporter );
 
     /**
      * Find all units for symbols with multiple symbols per package.
@@ -239,7 +243,8 @@ protected:
 
     KIWAY*          m_kiway = nullptr;
 
-    mutable std::map<wxString, std::set<wxString>> m_footprintPadCache;
+    mutable std::map<wxString, FOOTPRINT_PAD_QUERY> m_footprintPadCache;
+    std::optional<bool> m_padValidation;
 };
 
 #endif

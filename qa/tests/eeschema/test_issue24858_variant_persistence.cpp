@@ -54,7 +54,7 @@ struct ISSUE24858_FIXTURE
     ISSUE24858_FIXTURE()
     {
         wxString tempDir = wxStandardPaths::Get().GetTempDir();
-        wxString projectPath = tempDir + wxFileName::GetPathSeparator() + wxT( "test_issue24858.kicad_pro" );
+        wxString projectPath = tempDir + wxFileName::GetPathSeparator() + wxS( "test_issue24858.kemi_pro" );
         m_tempFiles.push_back( projectPath );
 
         m_settingsManager.LoadProject( projectPath.ToStdString() );
@@ -77,7 +77,7 @@ struct ISSUE24858_FIXTURE
     {
         wxString dir = wxStandardPaths::Get().GetTempDir();
         wxString name = wxFileName::CreateTempFileName( dir + wxFileName::GetPathSeparator() + "issue24858" );
-        name += ".kicad_sch";
+        name += wxS( ".kemi_sch" );
         m_tempFiles.push_back( name );
         return name;
     }
@@ -89,7 +89,7 @@ struct ISSUE24858_FIXTURE
 
         m_sheet = m_schematic->GetTopLevelSheets()[0];
         SCH_SCREEN* screen = m_sheet->GetScreen();
-        screen->SetFileName( "issue24858.kicad_sch" );
+        screen->SetFileName( wxS( "issue24858.kemi_sch" ) );
 
         m_path.clear();
         m_path.push_back( m_sheet );

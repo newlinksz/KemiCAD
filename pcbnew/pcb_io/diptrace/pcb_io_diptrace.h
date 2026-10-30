@@ -47,6 +47,8 @@ public:
 
     bool CanReadBoard( const wxString& aFileName ) const override;
 
+    wxString GetImportedDesignRules() const override { return m_importedDesignRules; }
+
     long long GetLibraryTimestamp( const wxString& aLibraryPath ) const override
     {
         // No support for libraries
@@ -56,6 +58,9 @@ public:
 protected:
     void loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsNewLoad,
                     const std::map<std::string, UTF8>* aProperties = nullptr, PROJECT* aProject = nullptr ) override;
+
+private:
+    wxString m_importedDesignRules;
 };
 
 #endif // PCB_IO_DIPTRACE_H_

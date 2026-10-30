@@ -587,7 +587,7 @@ BOOST_FIXTURE_TEST_CASE( ScalePersistsAcrossSaveLoad, BOARD_FIXTURE )
     for( const PAD* pad : fp->Pads() )
         origPadPositions[pad->GetNumber()] = pad->GetPosition();
 
-    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "scale_roundtrip.kicad_pcb";
+    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "scale_roundtrip.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
 
@@ -1234,7 +1234,7 @@ BOOST_FIXTURE_TEST_CASE( PromotedArcSerializesAsLibArc, BOARD_FIXTURE )
     fp->SetTransformScale( 2.0, 1.0 );
     BOOST_REQUIRE_EQUAL( static_cast<int>( arc->GetShape() ), static_cast<int>( SHAPE_T::ELLIPSE_ARC ) );
 
-    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "promoted_arc_roundtrip.kicad_pcb";
+    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "promoted_arc_roundtrip.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
 
@@ -1283,7 +1283,7 @@ BOOST_FIXTURE_TEST_CASE( PromotedCircleSerializesAsLibCircle, BOARD_FIXTURE )
     BOOST_REQUIRE_EQUAL( static_cast<int>( circle->GetShape() ), static_cast<int>( SHAPE_T::ELLIPSE ) );
 
     const std::filesystem::path savePath =
-            std::filesystem::temp_directory_path() / "promoted_circle_roundtrip.kicad_pcb";
+            std::filesystem::temp_directory_path() / "promoted_circle_roundtrip.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
 
@@ -1351,7 +1351,7 @@ BOOST_FIXTURE_TEST_CASE( NativeEllipseRoundTripsThroughRotatedFootprint, BOARD_F
     BOOST_CHECK_CLOSE( ellipse->GetLibraryEllipseRotation().AsDegrees(), libRotation.AsDegrees(), 0.01 );
 
     const std::filesystem::path savePath =
-            std::filesystem::temp_directory_path() / "native_ellipse_rotated_roundtrip.kicad_pcb";
+            std::filesystem::temp_directory_path() / "native_ellipse_rotated_roundtrip.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
 
@@ -1430,7 +1430,7 @@ BOOST_FIXTURE_TEST_CASE( SizesAreStableAcrossSaveLoad, BOARD_FIXTURE )
     BOOST_CHECK_EQUAL( scaledSize.x, baselineSize.x * 2 );
     BOOST_CHECK_EQUAL( scaledSize.y, baselineSize.y );
 
-    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "scale_size_roundtrip_a.kicad_pcb";
+    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "scale_size_roundtrip_a.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
     std::unique_ptr<BOARD> reloaded = KI_TEST::ReadBoardFromFileOrStream( savePath.string() );
@@ -1442,7 +1442,7 @@ BOOST_FIXTURE_TEST_CASE( SizesAreStableAcrossSaveLoad, BOARD_FIXTURE )
     BOOST_CHECK_EQUAL( pad2->GetSize( PADSTACK::ALL_LAYERS ).x, scaledSize.x );
     BOOST_CHECK_EQUAL( pad2->GetSize( PADSTACK::ALL_LAYERS ).y, scaledSize.y );
 
-    const std::filesystem::path savePath2 = std::filesystem::temp_directory_path() / "scale_size_roundtrip_b.kicad_pcb";
+    const std::filesystem::path savePath2 = std::filesystem::temp_directory_path() / "scale_size_roundtrip_b.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *reloaded, savePath2.string() );
     std::unique_ptr<BOARD> reloaded2 = KI_TEST::ReadBoardFromFileOrStream( savePath2.string() );
@@ -1666,7 +1666,7 @@ BOOST_AUTO_TEST_CASE( RectangleFoldedBackFromPolySavesAtItsBoardPosition )
     const BOX2I onBoard = rect->GetBoundingBox();
 
     const std::filesystem::path savePath =
-            std::filesystem::temp_directory_path() / "normalized_rect_roundtrip.kicad_pcb";
+            std::filesystem::temp_directory_path() / "normalized_rect_roundtrip.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( board, savePath.string() );
 
@@ -2034,7 +2034,7 @@ BOOST_FIXTURE_TEST_CASE( CirclePadRoundTripsAcrossSaveLoad, BOARD_FIXTURE )
 
     fp->SetTransformScale( 2.0, 1.0 );
 
-    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "circle_pad_roundtrip.kicad_pcb";
+    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "circle_pad_roundtrip.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
 
@@ -2103,7 +2103,7 @@ BOOST_FIXTURE_TEST_CASE( PadPrimitiveRoundTripsAcrossSaveLoad, BOARD_FIXTURE )
     BOOST_REQUIRE_EQUAL( static_cast<int>( prim->GetShape() ), static_cast<int>( SHAPE_T::ELLIPSE ) );
     BOOST_REQUIRE_EQUAL( static_cast<int>( prim->GetLibraryShape() ), static_cast<int>( SHAPE_T::CIRCLE ) );
 
-    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "pad_prim_roundtrip.kicad_pcb";
+    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "pad_prim_roundtrip.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
 
@@ -2207,7 +2207,7 @@ BOOST_FIXTURE_TEST_CASE( PadPolyPrimitiveRoundTripsAcrossSaveLoad, BOARD_FIXTURE
 
     const BOX2I before = pad->GetBoundingBox();
 
-    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "pad_poly_prim_roundtrip.kicad_pcb";
+    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "pad_poly_prim_roundtrip.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
 
@@ -2822,7 +2822,7 @@ BOOST_FIXTURE_TEST_CASE( TableInRotatedFootprintSurvivesSaveLoad, BOARD_FIXTURE 
             }
 
             const std::filesystem::path savePath =
-                    std::filesystem::temp_directory_path() / "table_in_rotated_fp.kicad_pcb";
+                    std::filesystem::temp_directory_path() / "table_in_rotated_fp.kemi_pcb";
 
             KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
             std::unique_ptr<BOARD> reloaded = KI_TEST::ReadBoardFromFileOrStream( savePath.string() );
@@ -2928,7 +2928,7 @@ BOOST_FIXTURE_TEST_CASE( TableRotatedInFootprintThenFootprintRotatedRoundTrips, 
             }
 
             const std::filesystem::path savePath =
-                    std::filesystem::temp_directory_path() / "table_rotated_in_fp_then_fp_rotated.kicad_pcb";
+                    std::filesystem::temp_directory_path() / "table_rotated_in_fp_then_fp_rotated.kemi_pcb";
 
             KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
             std::unique_ptr<BOARD> reloaded = KI_TEST::ReadBoardFromFileOrStream( savePath.string() );
@@ -3365,9 +3365,9 @@ BOOST_FIXTURE_TEST_CASE( PCBTextInRotatedFootprintSurvivesSaveLoad, BOARD_FIXTUR
     BOARD*                      currentBoard = m_board.get();
     std::unique_ptr<BOARD>      reloadedHolder;
     const std::filesystem::path savePathA =
-            std::filesystem::temp_directory_path() / "pcb_text_in_rotated_fp_a.kicad_pcb";
+            std::filesystem::temp_directory_path() / "pcb_text_in_rotated_fp_a.kemi_pcb";
     const std::filesystem::path savePathB =
-            std::filesystem::temp_directory_path() / "pcb_text_in_rotated_fp_b.kicad_pcb";
+            std::filesystem::temp_directory_path() / "pcb_text_in_rotated_fp_b.kemi_pcb";
 
     for( int cycle = 0; cycle < 3; ++cycle )
     {
@@ -3408,7 +3408,7 @@ BOOST_FIXTURE_TEST_CASE( PCBFieldInRotatedFootprintSurvivesSaveLoad, BOARD_FIXTU
     VECTOR2I  refPosBefore = ref.GetTextPos();
     EDA_ANGLE refAngleBefore = ref.GetTextAngle();
 
-    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "pcb_field_in_rotated_fp.kicad_pcb";
+    const std::filesystem::path savePath = std::filesystem::temp_directory_path() / "pcb_field_in_rotated_fp.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
     std::unique_ptr<BOARD> reloaded = KI_TEST::ReadBoardFromFileOrStream( savePath.string() );
@@ -3470,7 +3470,7 @@ BOOST_FIXTURE_TEST_CASE( DimensionAndBarcodeInScaledFootprintSurviveSaveLoad, BO
     VECTOR2I tbEndBefore = tb->GetEnd();
 
     const std::filesystem::path savePath =
-            std::filesystem::temp_directory_path() / "dim_barcode_in_scaled_fp.kicad_pcb";
+            std::filesystem::temp_directory_path() / "dim_barcode_in_scaled_fp.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
     std::unique_ptr<BOARD> reloaded = KI_TEST::ReadBoardFromFileOrStream( savePath.string() );
@@ -4443,7 +4443,7 @@ BOOST_FIXTURE_TEST_CASE( StandaloneRectangleNonCardinalRotationSurvivesSaveLoad,
         savedCorners.emplace_back( p );
 
     const std::filesystem::path savePath =
-            std::filesystem::temp_directory_path() / "rect_noncardinal_roundtrip.kicad_pcb";
+            std::filesystem::temp_directory_path() / "rect_noncardinal_roundtrip.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
     std::unique_ptr<BOARD> reloaded = KI_TEST::ReadBoardFromFileOrStream( savePath.string() );
@@ -4662,7 +4662,7 @@ BOOST_AUTO_TEST_CASE( RoundTripPreservesChildGeometryScaledRotated )
     const VECTOR2I txtPos = txt->GetTextPos();
     const VECTOR2I ptPos = pt->GetPosition();
 
-    std::filesystem::path tmp = std::filesystem::temp_directory_path() / "kicad_qa_xform_roundtrip.kicad_pcb";
+    std::filesystem::path tmp = std::filesystem::temp_directory_path() / "kicad_qa_xform_roundtrip.kemi_pcb";
     KI_TEST::DumpBoardToFile( *board, tmp.string() );
     std::unique_ptr<BOARD> reloaded = KI_TEST::ReadBoardFromFileOrStream( tmp.string() );
     std::error_code        ec;
@@ -4810,7 +4810,7 @@ BOOST_AUTO_TEST_CASE( ScalarAttributesStableAcrossSaveLoadUnderScale )
     const int      segWidth = seg->GetStroke().GetWidth();
     const VECTOR2I txtSize = txt->GetTextSize();
 
-    std::filesystem::path tmp = std::filesystem::temp_directory_path() / "kicad_qa_scalar_roundtrip.kicad_pcb";
+    std::filesystem::path tmp = std::filesystem::temp_directory_path() / "kicad_qa_scalar_roundtrip.kemi_pcb";
     KI_TEST::DumpBoardToFile( *board, tmp.string() );
     std::unique_ptr<BOARD> reloaded = KI_TEST::ReadBoardFromFileOrStream( tmp.string() );
     std::error_code        ec;
@@ -4928,7 +4928,7 @@ BOOST_AUTO_TEST_CASE( TextBoxScalarAttributesStableAcrossSaveLoadUnderScale )
     const int      txtThickness = tb->GetTextThickness();
     const int      borderWidth = tb->GetStroke().GetWidth();
 
-    std::filesystem::path tmp = std::filesystem::temp_directory_path() / "kicad_qa_textbox_roundtrip.kicad_pcb";
+    std::filesystem::path tmp = std::filesystem::temp_directory_path() / "kicad_qa_textbox_roundtrip.kemi_pcb";
     KI_TEST::DumpBoardToFile( *board, tmp.string() );
     std::unique_ptr<BOARD> reloaded = KI_TEST::ReadBoardFromFileOrStream( tmp.string() );
     std::error_code        ec;
@@ -5102,7 +5102,7 @@ BOOST_FIXTURE_TEST_CASE( TableInNonCardinalRotatedFootprintSurvivesSaveLoad, BOA
     BOX2I bboxBefore = table->GetBoundingBox();
 
     const std::filesystem::path savePath =
-            std::filesystem::temp_directory_path() / "table_in_rotated_scaled_fp.kicad_pcb";
+            std::filesystem::temp_directory_path() / "table_in_rotated_scaled_fp.kemi_pcb";
 
     KI_TEST::DumpBoardToFile( *m_board, savePath.string() );
     std::unique_ptr<BOARD> reloaded = KI_TEST::ReadBoardFromFileOrStream( savePath.string() );

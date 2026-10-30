@@ -720,7 +720,9 @@ void PCB_EDIT_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
         try
         {
             NETLIST netlist;
-            FetchNetlistFromSchematic( netlist, wxEmptyString );
+
+            if( !FetchNetlistFromSchematic( netlist, wxEmptyString ) )
+                return;
 
             BOARD_NETLIST_UPDATER updater( this, GetBoard() );
             updater.SetWillDrag( false );
@@ -785,6 +787,14 @@ void PCB_EDIT_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
 
         Kiway().ExpressMail( FRAME_SCH, MAIL_SCH_GET_NETLIST, netlistText, this );
 
+        if( netlistText.rfind( MAIL_SCH_GET_NETLIST_FAILED, 0 ) == 0 )
+        {
+            WXLOG_REPORTER::GetInstance().Report(
+                    wxString::FromUTF8( netlistText.substr( sizeof( MAIL_SCH_GET_NETLIST_FAILED ) - 1 ) ),
+                    RPT_SEVERITY_ERROR );
+            break;
+        }
+
         if( netlistText.empty() )
         {
             WXLOG_REPORTER::GetInstance().Report( _( "The schematic gave no netlist, so the board nets keep their "
@@ -832,9 +842,33 @@ void PCB_EDIT_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
     }
 
     case MAIL_PCB_GET_FOOTPRINT_IDS:
+    {
+        if( !payload.empty() )
+        {
+            const wxFileName requested( wxString::FromUTF8( payload ) );
+            payload.clear();
+
+            if( !requested.SameAs( wxFileName( Prj().GetProjectFullName() ) ) )
+                break;
+
+            try
+            {
+                payload = TO_UTF8( IMPORT_PROJ_PROPS::JoinFootprintLinkData(
+                        CollectImportedFootprintLinks( *GetBoard(), Prj(), WXLOG_REPORTER::GetInstance() ) ) );
+            }
+            catch( const IO_ERROR& error )
+            {
+                WXLOG_REPORTER::GetInstance().Report( error.What(), RPT_SEVERITY_ERROR );
+                payload = std::string( "error:" ) + TO_UTF8( error.What() );
+            }
+
+            break;
+        }
+
         payload = TO_UTF8( IMPORT_PROJ_PROPS::JoinTaggedMap( IMPORT_PROJ_PROPS::FOOTPRINT_ID_MAP_TAG,
                                                              ImportedFootprintIds( *GetBoard() ) ) );
         break;
+    }
 
     case MAIL_IMPORT_FILE:
     {

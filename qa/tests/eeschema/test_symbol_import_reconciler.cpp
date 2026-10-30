@@ -28,6 +28,7 @@
 #include <wx/filefn.h>
 #include <wx/filename.h>
 
+#include <kemi_format_profile.h>
 #include <lib_id.h>
 #include <lib_symbol.h>
 #include <pgm_base.h>
@@ -37,6 +38,7 @@
 #include <schematic.h>
 #include <sch_io/sch_io.h>
 #include <sch_io/sch_io_mgr.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
 #include <sch_screen.h>
 #include <sch_sheet.h>
 #include <sch_sheet_path.h>
@@ -72,7 +74,7 @@ wxString easyEdaProV3Archive()
 }
 
 
-/// Any .kicad_sym in @p aPath, so the check does not depend on the importer's nickname derivation.
+/// Any native symbol library, so the check does not depend on the importer's nickname derivation.
 bool hasSymbolLib( const wxString& aPath )
 {
     wxDir    dir( aPath );
@@ -81,9 +83,41 @@ bool hasSymbolLib( const wxString& aPath )
     if( !dir.IsOpened() )
         return false;
 
-    wxString spec = wxS( "*." ) + wxString( FILEEXT::KiCadSymbolLibFileExtension );
+    for( const std::string& ext : KEMI_FORMAT::ReadableExts( KEMI_FORMAT::DOC::SYMBOL_LIB ) )
+    {
+        if( dir.GetFirst( &name, wxS( "*." ) + wxString::FromUTF8( ext ), wxDIR_FILES ) )
+            return true;
+    }
 
-    return dir.GetFirst( &name, spec, wxDIR_FILES );
+    return false;
+}
+
+
+wxString readFile( const wxString& aPath )
+{
+    wxFile file( aPath, wxFile::read );
+    wxString contents;
+    BOOST_REQUIRE( file.IsOpened() );
+    BOOST_REQUIRE( file.ReadAll( &contents ) );
+    return contents;
+}
+
+
+wxString kemiLibraryExtension()
+{
+    return KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB, KEMI_FORMAT::FLAVOR::KEMI );
+}
+
+
+void checkKemiLibrary( const wxString& aPath )
+{
+    const wxString contents = readFile( aPath );
+    BOOST_CHECK( contents.StartsWith( wxS( "(" ) + wxString::FromUTF8(
+            KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                    KEMI_FORMAT::FLAVOR::KEMI ) ) ) );
+    BOOST_CHECK( contents.Contains( wxString::Format( wxS( "(format_version %d)" ),
+                                                     KEMI_FORMAT::FORMAT_VERSION ) ) );
+    BOOST_CHECK( !contents.Contains( wxS( "(kicad_symbol_lib" ) ) );
 }
 
 
@@ -151,7 +185,7 @@ std::vector<SCH_SYMBOL*> placedSymbols( SCHEMATIC& aSchematic )
 void publishLibrary( PROJECT& aProject, SYMBOL_LIBRARY_ADAPTER& aAdapter, const wxString& aNickname,
                      const wxString& aFileStem, const LIB_SYMBOL& aSymbol )
 {
-    wxFileName libFn( aProject.GetProjectPath(), aFileStem, FILEEXT::KiCadSymbolLibFileExtension );
+    wxFileName libFn( aProject.GetProjectPath(), aFileStem, kemiLibraryExtension() );
 
     IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
     BOOST_REQUIRE( pi );
@@ -223,6 +257,35 @@ COLLISION_CANDIDATE findCandidate( IMPORTED_SAMPLE& aSample )
 BOOST_FIXTURE_TEST_SUITE( SymbolImportReconciler, STAGED_PROJECT_FIXTURE )
 
 
+BOOST_AUTO_TEST_CASE( ExplicitKemiTargetControlsStagingFromCreation )
+{
+    KI_TEST::SCOPED_TEMP_DIR tempDir( wxS( "kemi-symbol-cache" ) );
+    KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( tempDir.PathStr() );
+    const KEMI_FORMAT::OUTPUT_TARGET target =
+            policy.Target( KEMI_FORMAT::DOC::SYMBOL_LIB, wxS( "cache" ) );
+    const wxString staging = target.FinalPath() + wxS( ".tmp" );
+    SCH_IO_KICAD_SEXPR writer;
+
+    // Inspect the first created file before adding symbols or promoting it to the final name.
+    writer.CreateLibrary( staging, target );
+    checkKemiLibrary( staging );
+
+    writer.SaveSymbol( staging, std::make_unique<LIB_SYMBOL>( wxS( "ImportedPart" ) ), target );
+    checkKemiLibrary( staging );
+    writer.SaveLibrary( staging, target );
+    checkKemiLibrary( staging );
+    BOOST_CHECK( writer.LoadSymbol( staging, wxS( "ImportedPart" ) ) != nullptr );
+
+    const wxString forbidden = tempDir.ChildPathStr( wxS( "cache.kicad_sym.tmp" ) );
+    BOOST_CHECK_THROW( writer.CreateLibrary( forbidden, target ), IO_ERROR );
+    BOOST_CHECK_THROW( writer.SaveSymbol( forbidden,
+            std::make_unique<LIB_SYMBOL>( wxS( "RejectedPart" ) ), target ), IO_ERROR );
+    BOOST_CHECK_THROW( writer.SaveLibrary( forbidden, target ), IO_ERROR );
+    BOOST_CHECK( !wxFileExists( forbidden ) );
+    BOOST_CHECK( !wxFileExists( target.FinalPath() ) );
+}
+
+
 // EasyEDA Pro v3 hands definitions over the standard hook, leaving the source directory untouched
 // fails on revert, since LoadSchematicFile then publishes its own .kicad_sym beside the archive
 BOOST_AUTO_TEST_CASE( EasyEdaProV3SchematicResolvesToGeneratedCache )
@@ -249,14 +312,23 @@ BOOST_AUTO_TEST_CASE( EasyEdaProV3SchematicResolvesToGeneratedCache )
     BOOST_CHECK_EQUAL( result.m_cacheNickname, cacheNick );
     BOOST_CHECK_GT( result.m_savedToCache, 0 );
 
-    wxFileName cacheFile( project.GetProjectPath(), cacheNick,
-                          wxString( FILEEXT::KiCadSymbolLibFileExtension ) );
+    wxFileName cacheFile( project.GetProjectPath(), cacheNick, kemiLibraryExtension() );
     BOOST_CHECK_MESSAGE( wxFileExists( cacheFile.GetFullPath() ),
-                         "Generated .kicad_sym was not published into the project" );
+                         "Generated .kemi_sym was not published into the project" );
+    BOOST_CHECK( !wxFileExists( cacheFile.GetFullPath() + wxS( ".tmp" ) ) );
+    checkKemiLibrary( cacheFile.GetFullPath() );
+    cacheFile.SetExt( FILEEXT::KiCadSymbolLibFileExtension );
+    BOOST_CHECK( !wxFileExists( cacheFile.GetFullPath() ) );
+    BOOST_CHECK( !wxFileExists( cacheFile.GetFullPath() + wxS( ".tmp" ) ) );
+    cacheFile.SetExt( kemiLibraryExtension() );
 
     LIBRARY_TABLE* projectTable = adapter->ProjectTable().value_or( nullptr );
     BOOST_REQUIRE( projectTable );
     BOOST_CHECK( projectTable->HasRow( cacheNick ) );
+    LIBRARY_TABLE_ROW* cacheRow = projectTable->Row( cacheNick ).value_or( nullptr );
+    BOOST_REQUIRE( cacheRow );
+    BOOST_CHECK_EQUAL( cacheRow->Type(), wxS( "KiCad" ) );
+    BOOST_CHECK_EQUAL( cacheRow->URI(), wxS( "${KIPRJMOD}/" ) + cacheFile.GetFullName() );
 
     // every placed symbol resolves through the adapter after reconciliation
     int resolved = 0;
@@ -531,7 +603,7 @@ BOOST_AUTO_TEST_CASE( ExistingUserRowIsNotRepurposed )
     BOOST_CHECK( result.m_cacheNickname.IsEmpty() );
     BOOST_CHECK_EQUAL( row->URI(), uriBefore );
 
-    wxFileName cacheFile( project.GetProjectPath(), cacheNick, wxString( FILEEXT::KiCadSymbolLibFileExtension ) );
+    wxFileName cacheFile( project.GetProjectPath(), cacheNick, kemiLibraryExtension() );
     BOOST_CHECK_MESSAGE( !wxFileExists( cacheFile.GetFullPath() ),
                          "Published a cache over a nickname the user already owns" );
 }
@@ -589,10 +661,10 @@ BOOST_AUTO_TEST_CASE( ExistingUserLibraryIsNotClobbered )
 
     const wxString cacheNick = wxS( "victim-import-syms" );
 
-    wxFileName victim( project.GetProjectPath(), cacheNick,
-                       wxString( FILEEXT::KiCadSymbolLibFileExtension ) );
+    wxFileName victim( project.GetProjectPath(), cacheNick, kemiLibraryExtension() );
 
-    const wxString sentinel = wxS( "(kicad_symbol_lib (version 20231120) (generator \"qa\"))" );
+    const wxString sentinel = wxS( "(kemi_symbol_lib (format_version 1) (version 20231120) "
+                                   "(generator \"qa\"))" );
     BOOST_REQUIRE( wxFile( victim.GetFullPath(), wxFile::write ).Write( sentinel ) );
 
     SYMBOL_IMPORT_RECONCILER reconciler( *adapter, project.GetProjectPath() );

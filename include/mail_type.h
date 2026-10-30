@@ -75,4 +75,7 @@ enum MAIL_T
  */
 #define MAIL_SCH_GET_NETLIST_CANCELLED "\x01__netlist_cancelled__"
 
+// A rejected physical netlist carries its UTF-8 diagnostic after this prefix.
+#define MAIL_SCH_GET_NETLIST_FAILED "\x01__netlist_failed__"
+
 #endif  // MAIL_TYPE_H_

@@ -3299,6 +3299,46 @@ BOOST_AUTO_TEST_CASE( DimensionLeaderWidthIsUnitModeIndependent )
 
 
 /**
+ * Dimension leader vertices are relative to their DIM* owner origin, like every other DRW owner.
+ * Dropping the owner origin parks dimensions far off the board, so
+ * every imported dimension's measured endpoints must sit on (or right next to) the board outline.
+ */
+BOOST_AUTO_TEST_CASE( DimensionEndpointsSitOnBoardOutline )
+{
+    const PADS_BINARY_BOARD_INFO boards[] = {
+        { "MC2_PLUS_REV1", "MC2_PLUS_REV1.pcb", "MC2_PLUS_REV1.asc", true },
+        { "Dexter_MotorCtrl", "Dexter_MotorCtrl.pcb", "Dexter_MotorCtrl.asc", true },
+        { "MAIS_FC", "MAIS_FC.pcb", "MAIS_FC.asc", true },
+    };
+
+    for( const PADS_BINARY_BOARD_INFO& info : boards )
+    {
+        BOOST_TEST_CONTEXT( info.dir )
+        {
+            std::shared_ptr<BOARD> brd = LoadBinary( info );
+            BOOST_REQUIRE( brd != nullptr );
+
+            BOX2I outline = brd->GetBoardEdgesBoundingBox();
+            BOOST_REQUIRE( outline.GetWidth() > 0 && outline.GetHeight() > 0 );
+            outline.Inflate( pcbIUScale.mmToIU( 5.0 ) );
+
+            for( BOARD_ITEM* item : brd->Drawings() )
+            {
+                auto* dim = dynamic_cast<PCB_DIMENSION_BASE*>( item );
+
+                if( !dim )
+                    continue;
+
+                BOOST_CHECK_MESSAGE( outline.Contains( dim->GetStart() ) && outline.Contains( dim->GetEnd() ),
+                                     "dimension endpoints " << dim->GetStart() << " / " << dim->GetEnd()
+                                                            << " are away from the board outline" );
+            }
+        }
+    }
+}
+
+
+/**
  * PADS ASCII is an 8-bit codepage file. wxString::FromUTF8 returns an empty string on the first
  * high byte, so a net class named in CP1252 imports under a blank key and swallows its nets.
  */

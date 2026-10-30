@@ -171,7 +171,7 @@ public:
      * @param aProjectFileName is the absolute path of the project file name.
      * @param aCreateStubFiles specifies if an empty PCB and schematic should be created
      */
-    void CreateNewProject( const wxFileName& aProjectFileName, bool aCreateStubFiles = true );
+    bool CreateNewProject( const wxFileName& aProjectFileName, bool aCreateStubFiles = true );
 
     /**
      * Closes the project, and saves it if aSave is true;

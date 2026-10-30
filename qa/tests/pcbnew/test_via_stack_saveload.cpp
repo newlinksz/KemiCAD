@@ -112,7 +112,7 @@ BOOST_AUTO_TEST_CASE( PropertiesAndMembersRoundTrip )
     stack->AddItem( seg1 );
     board->Add( stack );
 
-    auto path = std::filesystem::temp_directory_path() / "via_stack_saveload_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "via_stack_saveload_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *board, path.string() );
 
     std::unique_ptr<BOARD> reloaded = ::KI_TEST::ReadBoardFromFileOrStream( path.string() );
@@ -1564,7 +1564,7 @@ BOOST_AUTO_TEST_CASE( MemberlessStackIsNotSaved )
     BOOST_REQUIRE_MESSAGE( stack->GetItems().empty(), "Precondition failed: the stack has members, so this test is "
                                                       "not exercising a ghost" );
 
-    auto path = std::filesystem::temp_directory_path() / "via_stack_ghost_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "via_stack_ghost_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *board, path.string() );
 
     std::unique_ptr<BOARD> reloaded = ::KI_TEST::ReadBoardFromFileOrStream( path.string() );
@@ -1600,7 +1600,7 @@ BOOST_AUTO_TEST_CASE( PopulatedStackKeepsItsNetAcrossReload )
 
     BOOST_REQUIRE_EQUAL( stack->GetItems().size(), 2u );
 
-    auto path = std::filesystem::temp_directory_path() / "via_stack_netkeep_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "via_stack_netkeep_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *board, path.string() );
 
     std::unique_ptr<BOARD> reloaded = ::KI_TEST::ReadBoardFromFileOrStream( path.string() );

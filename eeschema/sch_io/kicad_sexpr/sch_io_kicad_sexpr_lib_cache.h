@@ -23,6 +23,7 @@
 #define SCH_IO_KICAD_SEXPR_LIB_CACHE_H_
 
 #include "sch_io/sch_io_lib_cache.h"
+#include <kemi_format_profile.h>
 #include <set>
 
 class FILE_LINE_READER;
@@ -48,7 +49,12 @@ public:
     /// Save the entire library to file m_libFileName;
     void Save( const std::optional<bool>& aOpt = std::nullopt ) override;
 
+    /// Save with a destination-selected flavor, independent of the physical storage path.
+    void Save( KEMI_FORMAT::FLAVOR aFlavor );
+
     void Load() override;
+
+    bool IsKemiOnly() const;
 
     void DeleteSymbol( const wxString& aName ) override;
 
@@ -71,11 +77,16 @@ private:
      */
     void updateParentSymbolLinks();
 
-    void formatLibraryHeader( OUTPUTFORMATTER& aFormatter );
+    void save( const std::optional<KEMI_FORMAT::FLAVOR>& aFlavor );
+    void formatLibraryHeader( OUTPUTFORMATTER& aFormatter, const wxString& aPath,
+                              const std::optional<KEMI_FORMAT::FLAVOR>& aFlavor );
 
     bool isLibraryPathValid() const;
 
     int m_fileFormatVersionAtLoad;
+
+    wxString m_loadedFileName; ///< Source whose modification stamp belongs to this cache.
+    bool m_kemiOnly = false;
 
     std::set<wxString> m_pendingFileDeletes;
 

@@ -309,6 +309,9 @@ public:
     /// Helper to retrieve the filename from the root sheet screen
     wxString GetFileName() const;
 
+    /** True for a Kemi project or any loaded Kemi sheet, including renamed sheets. */
+    bool IsKemiOnly() const;
+
     SCH_SHEET_PATH& CurrentSheet() const
     {
         return *m_currentSheet;

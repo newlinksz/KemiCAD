@@ -27,6 +27,8 @@
 #include <wx/filename.h>
 
 #include <import_proj_properties.h>
+#include <kemi_format_profile.h>
+#include <kiplatform/io.h>
 #include <lib_id.h>
 #include <lib_symbol.h>
 #include <project.h>
@@ -36,7 +38,6 @@
 #include <sch_pin.h>
 #include <sch_screen.h>
 #include <sch_symbol.h>
-#include <wildcards_and_files_ext.h>
 #include <io/io_mgr.h>
 #include <sch_io/sch_io.h>
 #include <sch_io/sch_io_mgr.h>
@@ -422,9 +423,13 @@ void SYMBOL_IMPORT_RECONCILER::writeAndRegisterCache(
         const wxString& aCacheNickname, const std::map<wxString, LIB_SYMBOL*>& aCacheDefs,
         SYMBOL_IMPORT_RECONCILE_RESULT& aResult )
 {
-    wxFileName finalFn( m_projectPath, aCacheNickname, FILEEXT::KiCadSymbolLibFileExtension );
-    wxString   finalPath = finalFn.GetFullPath();
-    wxString   tempPath = finalPath + wxS( ".tmp" );
+    KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( m_projectPath );
+    wxFileName finalFn( m_projectPath, aCacheNickname,
+                        KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                          KEMI_FORMAT::FLAVOR::KEMI ) );
+    const KEMI_FORMAT::OUTPUT_TARGET target =
+            policy.Target( KEMI_FORMAT::DOC::SYMBOL_LIB, finalFn.GetFullPath() );
+    const wxString finalPath = target.FinalPath();
 
     // a nickname the user already owns is never repurposed, whatever its row points at
     LIBRARY_TABLE_ROW* existingRow = m_adapter.GetRow( aCacheNickname ).value_or( nullptr );
@@ -439,23 +444,30 @@ void SYMBOL_IMPORT_RECONCILER::writeAndRegisterCache(
     }
 
     IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+    SCH_IO_KICAD_SEXPR* writer = dynamic_cast<SCH_IO_KICAD_SEXPR*>( pi.get() );
 
-    if( !pi )
+    if( !writer )
     {
         m_reporter.Report( _( "Cannot reconcile imported symbols: no KiCad symbol writer." ),
                            RPT_SEVERITY_ERROR );
         return;
     }
 
-    // best-effort cleanup, must not throw
-    auto safeDelete = [&pi]( const wxString& aPath )
+    const wxString tempPath = wxFileName::CreateTempFileName( finalPath + wxS( ".import-" ) );
+
+    if( tempPath.IsEmpty() )
     {
-        try
+        m_reporter.Report( _( "Could not stage the imported symbol cache." ), RPT_SEVERITY_ERROR );
+        return;
+    }
+
+    // best-effort cleanup, must not throw
+    auto safeDelete = [this]( const wxString& aPath )
+    {
+        if( !wxRemoveFile( aPath ) )
         {
-            pi->DeleteLibrary( aPath );
-        }
-        catch( const IO_ERROR& )
-        {
+            m_reporter.Report( wxString::Format( _( "Could not remove temporary symbol cache '%s'." ), aPath ),
+                               RPT_SEVERITY_WARNING );
         }
     };
 
@@ -463,30 +475,52 @@ void SYMBOL_IMPORT_RECONCILER::writeAndRegisterCache(
 
     try
     {
-        if( wxFileExists( tempPath ) )
-            pi->DeleteLibrary( tempPath );
+        policy.Write( KEMI_FORMAT::DOC::SYMBOL_LIB, finalPath,
+                [&]( const wxString& aStoragePath, const KEMI_FORMAT::OUTPUT_TARGET& aTarget )
+                {
+                    // CreateLibrary requires a missing path; this placeholder belongs to us.
+                    if( !wxRemoveFile( aStoragePath ) )
+                        return false;
 
-        pi->CreateLibrary( tempPath );
+                    writer->CreateLibrary( aStoragePath, aTarget );
 
-        // buffer the writes, the library is flushed once by SaveLibrary
-        std::map<std::string, UTF8> properties;
-        properties.emplace( SCH_IO_KICAD_SEXPR::PropBuffering, wxEmptyString );
+                    // Buffer the writes, then flush with the validated final target's flavor.
+                    std::map<std::string, UTF8> properties;
+                    properties.emplace( SCH_IO_KICAD_SEXPR::PropBuffering, wxEmptyString );
 
-        for( const auto& [name, def] : aCacheDefs )
-        {
-            std::unique_ptr<LIB_SYMBOL> copy = std::make_unique<LIB_SYMBOL>( *def );
+                    for( const auto& [name, def] : aCacheDefs )
+                    {
+                        std::unique_ptr<LIB_SYMBOL> copy = std::make_unique<LIB_SYMBOL>( *def );
 
-            // the library is keyed by the symbol name, which SetLibId leaves alone
-            copy->SetName( name );
+                        // The library is keyed by the symbol name, which SetLibId leaves alone.
+                        copy->SetName( name );
 
-            LIB_ID id = copy->GetLibId();
+                        LIB_ID id = copy->GetLibId();
 
-            id.SetLibNickname( aCacheNickname );
-            copy->SetLibId( id );
-            pi->SaveSymbol( tempPath, std::move( copy ), &properties );
-        }
+                        id.SetLibNickname( aCacheNickname );
+                        copy->SetLibId( id );
+                        writer->SaveSymbol( aStoragePath, std::move( copy ), aTarget, &properties );
+                    }
 
-        pi->SaveLibrary( tempPath );
+                    writer->SaveLibrary( aStoragePath, aTarget );
+
+                    // Replace only a managed cache, never an unregistered user library.
+                    if( wxFileExists( finalPath ) && !isManagedCache( existingRow ) )
+                    {
+                        m_reporter.Report( wxString::Format( _( "A library already exists at '%s'; "
+                                    "leaving imported symbols unresolved." ), finalPath ),
+                                    RPT_SEVERITY_ERROR );
+                        return false;
+                    }
+
+                    wxString error;
+
+                    if( !KIPLATFORM::IO::AtomicRename( aStoragePath, aTarget.FinalPath(), &error ) )
+                        THROW_IO_ERROR( error );
+
+                    return true;
+                }, tempPath );
+
         wrote = true;
     }
     catch( const IO_ERROR& ioe )
@@ -501,32 +535,6 @@ void SYMBOL_IMPORT_RECONCILER::writeAndRegisterCache(
         if( wxFileExists( tempPath ) )
             safeDelete( tempPath );
 
-        return;
-    }
-
-    // publish temp->final, replace only a managed cache, never a user lib
-    if( wxFileExists( finalPath ) )
-    {
-        if( isManagedCache( existingRow ) )
-        {
-            safeDelete( finalPath );
-        }
-        else
-        {
-            m_reporter.Report( wxString::Format( _( "A library already exists at '%s'; leaving "
-                                                    "imported symbols unresolved." ), finalPath ),
-                               RPT_SEVERITY_ERROR );
-            safeDelete( tempPath );
-            return;
-        }
-    }
-
-    if( !wxRenameFile( tempPath, finalPath, false ) )
-    {
-        m_reporter.Report( wxString::Format( _( "Could not publish imported symbol cache to "
-                                                "'%s'." ), finalPath ),
-                           RPT_SEVERITY_ERROR );
-        safeDelete( tempPath );
         return;
     }
 
@@ -552,8 +560,14 @@ bool SYMBOL_IMPORT_RECONCILER::registerCacheRow( const wxString& aCacheNickname 
 
     LIBRARY_TABLE*     table = *tableOpt;
     wxString           cacheFile = aCacheNickname + wxS( "." )
-                                   + wxString( FILEEXT::KiCadSymbolLibFileExtension );
-    wxString           uri = wxS( "${KIPRJMOD}/" ) + cacheFile;
+                                   + KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                                       KEMI_FORMAT::FLAVOR::KEMI );
+    wxFileName         cachePath( m_projectPath, cacheFile );
+    wxString           uri = cachePath.GetFullPath();
+
+    if( cachePath.MakeRelativeTo( wxFileName( table->Path() ).GetPath() ) )
+        uri = wxS( "${KIPRJMOD}/" ) + cachePath.GetFullPath( wxPATH_UNIX );
+
     LIBRARY_TABLE_ROW* row = table->HasRow( aCacheNickname )
                                      ? table->Row( aCacheNickname ).value_or( nullptr )
                                      : &table->InsertRow();
@@ -584,7 +598,8 @@ bool SYMBOL_IMPORT_RECONCILER::registerCacheRow( const wxString& aCacheNickname 
 SYMBOL_IMPORT_RECONCILE_RESULT
 ReconcileImportedSymbols( SCH_IO& aPlugin, SCHEMATIC& aSchematic, PROJECT& aProject,
                           const wxString& aSchematicPath,
-                          const std::map<std::string, UTF8>* aProperties, REPORTER& aReporter )
+                          const std::map<std::string, UTF8>* aProperties, REPORTER& aReporter,
+                          const KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY* aOutputPolicy )
 {
     SYMBOL_IMPORT_RECONCILE_RESULT           result;
     std::vector<std::unique_ptr<LIB_SYMBOL>> definitions;
@@ -615,7 +630,8 @@ ReconcileImportedSymbols( SCH_IO& aPlugin, SCHEMATIC& aSchematic, PROJECT& aProj
                 wxFileName( aSchematicPath ).GetName() );
     }
 
-    SYMBOL_IMPORT_RECONCILER reconciler( *adapter, aProject.GetProjectPath(), aReporter );
+    SYMBOL_IMPORT_RECONCILER reconciler( *adapter,
+            aOutputPolicy ? aOutputPolicy->FinalDirectory() : aProject.GetProjectPath(), aReporter );
 
     // reconciliation failure must not abort the import
     try

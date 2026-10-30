@@ -26,7 +26,20 @@
 class REPORTER;
 
 /**
- * Save the custom rules an importer derived beside the board it produced.
+ * Save a template's official or native rules as a native document, preserving its text.
+ *
+ * Both the source and the written document are loaded by the DRC parser; a changed rule
+ * count is an error. The caller owns the staging destination and publishes it afterwards.
+ * Validation uses the source's same-stem board and project (native preferred) to resolve text
+ * variables and cross-references as normal DRC does. Without a source board it uses an empty
+ * board attached to the project. Source and destination text retain variables and comments.
+ *
+ * @throw IO_ERROR if reading, validation or writing fails, or the destination exists.
+ */
+void SaveNativeDesignRules( const wxString& aSource, const wxString& aTarget );
+
+/**
+ * Save the custom rules an importer derived beside the board it produced, as .kemi_dru.
  *
  * An existing rules file is the user's and is never replaced.
  *

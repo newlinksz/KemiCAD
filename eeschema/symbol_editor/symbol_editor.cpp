@@ -20,6 +20,7 @@
  */
 
 #include <brand.h>
+#include <kemi_format_profile.h>
 #include <pgm_base.h>
 #include <clipboard.h>
 #include <confirm.h>
@@ -41,6 +42,7 @@
 #include <widgets/lib_tree.h>
 #include <sch_io/kicad_legacy/sch_io_kicad_legacy.h>
 #include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
+#include <sch_io/sch_io_lib_cache.h>
 #include <dialogs/dialog_lib_new_symbol.h>
 #include <eda_list_dialog.h>
 #include <set>
@@ -49,9 +51,9 @@
 #include <wx/filedlg.h>
 #include <wx/log.h>
 #include <project_sch.h>
-#include <kiplatform/io.h>
 #include <kiplatform/ui.h>
 #include <string_utils.h>
+#include <trace_helpers.h>
 #include "symbol_saveas_type.h"
 #include <widgets/symbol_library_save_as_filedlg_hook.h>
 #include <io/kicad/kicad_io_utils.h>
@@ -1095,10 +1097,13 @@ void SYMBOL_EDIT_FRAME::ExportSymbol()
     wxFileName fn;
 
     fn.SetName( symbol->GetName().Lower() );
-    fn.SetExt( FILEEXT::KiCadSymbolLibFileExtension );
+    const bool restricted = true;
+    fn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB,
+            restricted ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY ) );
 
     wxFileDialog dlg( this, _( "Export Symbol" ), m_mruPath, fn.GetFullName(),
-                      FILEEXT::KiCadSymbolLibFileWildcard(), wxFD_SAVE );
+                      restricted ? wxString( wxS( "KemiCAD symbol library (*.kemi_sym)|*.kemi_sym" ) )
+                                 : FILEEXT::KiCadSymbolLibFileWildcard(), wxFD_SAVE );
 
     KIPLATFORM::UI::AllowNetworkFileSystems( &dlg );
 
@@ -1107,13 +1112,23 @@ void SYMBOL_EDIT_FRAME::ExportSymbol()
 
     auto strategy = SYMBOL_SAVE_AS_HANDLER::CONFLICT_STRATEGY::OVERWRITE;
 
-    fn = dlg.GetPath();
-    fn.MakeAbsolute();
+    try
+    {
+        fn = KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::SYMBOL_LIB, dlg.GetPath(), restricted );
+        fn.MakeAbsolute();
+    }
+    catch( const IO_ERROR& error )
+    {
+        ShowInfoBarError( error.What() );
+        return;
+    }
 
     LIBRARY_MANAGER& manager = Pgm().GetLibraryManager();
 
     wxString                    libraryName;
     std::unique_ptr<LIB_SYMBOL> flattenedSymbol = symbol->Flatten();
+    if( restricted )
+        flattenedSymbol->SetKemiOnly();
 
     for( const wxString& candidate : m_libMgr->GetLibraryNames() )
     {
@@ -1558,6 +1573,31 @@ bool SYMBOL_EDIT_FRAME::saveLibrary( const wxString& aLibrary, SAVE_LIBRARY_AS a
 
     wxCHECK( adapter, false );
 
+    const auto sourceUri = Pgm().GetLibraryManager().GetFullURI( LIBRARY_TABLE_TYPE::SYMBOL, aLibrary, true );
+    const bool restricted = true;
+
+    const bool officialSource = sourceUri && KEMI_FORMAT::IsLegacyExt(
+            KEMI_FORMAT::DOC::SYMBOL_LIB, wxFileName( *sourceUri ).GetExt() );
+    bool implicitNativeTarget = false;
+
+    if( aSaveType == SAVE_LIBRARY_AS::ORIGINAL && officialSource )
+    {
+        aSaveType = SAVE_LIBRARY_AS::PACKED;
+        type = SYMBOL_SAVEAS_TYPE::REPLACE_TABLE_ENTRY;
+
+        try
+        {
+            fn = KEMI_FORMAT::ResolveNativeSaveTarget( KEMI_FORMAT::DOC::SYMBOL_LIB, *sourceUri );
+            implicitNativeTarget = true;
+        }
+        catch( const IO_ERROR& error )
+        {
+            ShowInfoBarError( error.What() );
+        }
+    }
+    const wxString extension = KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB,
+            restricted ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY );
+
     if( ( aSaveType == SAVE_LIBRARY_AS::ORIGINAL ) && ( aLibrary.empty() || !adapter->HasLibrary( aLibrary ) ) )
     {
         ShowInfoBarError( _( "No library specified." ) );
@@ -1570,7 +1610,7 @@ bool SYMBOL_EDIT_FRAME::saveLibrary( const wxString& aLibrary, SAVE_LIBRARY_AS a
     bool newUnpackedLibrary = ( ( aSaveType == SAVE_LIBRARY_AS::ORIGINAL ) && wxFileName::DirExists( aLibrary ) ) ||
                               ( aSaveType == SAVE_LIBRARY_AS::UNPACKED );
 
-    if( newPackedLibrary )
+    if( newPackedLibrary && !implicitNativeTarget )
     {
         SEARCH_STACK* search = PROJECT_SCH::SchSearchS( &prj );
 
@@ -1581,9 +1621,10 @@ bool SYMBOL_EDIT_FRAME::saveLibrary( const wxString& aLibrary, SAVE_LIBRARY_AS a
             default_path = search->LastVisitedPath();
 
         fn.SetName( aLibrary );
-        fn.SetExt( FILEEXT::KiCadSymbolLibFileExtension );
+        fn.SetExt( extension );
 
-        wxString wildcards = FILEEXT::KiCadSymbolLibFileWildcard();
+        wxString wildcards = restricted ? wxString( wxS( "KemiCAD symbol library (*.kemi_sym)|*.kemi_sym" ) )
+                                       : FILEEXT::KiCadSymbolLibFileWildcard();
         wxString dlgPrompt;
 
         if( aSaveType == SAVE_LIBRARY_AS::ORIGINAL )
@@ -1602,12 +1643,24 @@ bool SYMBOL_EDIT_FRAME::saveLibrary( const wxString& aLibrary, SAVE_LIBRARY_AS a
         if( dlg.ShowModal() == wxID_CANCEL )
             return false;
 
-        fn = dlg.GetPath();
+        try
+        {
+            fn = officialSource
+                    ? KEMI_FORMAT::ResolveNativeSaveTarget( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                                          *sourceUri, dlg.GetPath() )
+                    : KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                                        dlg.GetPath(), restricted );
+        }
+        catch( const IO_ERROR& error )
+        {
+            ShowInfoBarError( error.What() );
+            return false;
+        }
 
         prj.SetRString( PROJECT::SCH_LIB_PATH, fn.GetPath() );
 
         if( fn.GetExt().IsEmpty() )
-            fn.SetExt( FILEEXT::KiCadSymbolLibFileExtension );
+            fn.SetExt( extension );
 
         type = saveAsHook.GetOption();
     }
@@ -1637,7 +1690,7 @@ bool SYMBOL_EDIT_FRAME::saveLibrary( const wxString& aLibrary, SAVE_LIBRARY_AS a
 
         fn.SetPath( dlg.GetPath() );
     }
-    else
+    else if( !implicitNativeTarget )
     {
         std::optional<LIBRARY_TABLE_ROW*> optRow = adapter->GetRow( aLibrary );
         wxCHECK( optRow, false );
@@ -1694,23 +1747,21 @@ bool SYMBOL_EDIT_FRAME::saveLibrary( const wxString& aLibrary, SAVE_LIBRARY_AS a
         // Update the library modification time so that we don't reload based on the watcher
         if( aLibrary == getTargetLib() )
         {
-            if( fn.DirExists() )
-            {
-                SetSymModificationTime( KIPLATFORM::IO::TimestampDir(
-                        fn.GetFullPath(),
-                        wxS( "*." ) + wxString( FILEEXT::KiCadSymbolLibFileExtension ) ) );
-            }
-            else if( fn.FileExists() )
+            try
             {
                 wxLogNull silence;
-                SetSymModificationTime( fn.GetModificationTime().GetValue().GetValue() );
+                SetSymModificationTime( SCH_IO_LIB_CACHE::GetSymbolLibraryTimestamp( fn.GetFullPath() ) );
+            }
+            catch( const IO_ERROR& error )
+            {
+                wxLogTrace( traceLibWatch, "Cannot read saved library timestamp: %s", error.What() );
             }
         }
     }
     else
     {
         bool resyncLibTree = false;
-        wxString originalLibNickname = getTargetLib();
+        wxString originalLibNickname = aLibrary;
         wxString forceRefresh;
 
         switch( type )

@@ -74,6 +74,21 @@ public:
      */
     static bool Unarchive( const wxString& aSrcFile, const wxString& aDestDir,
                            REPORTER& aReporter, const wxString& aStripTopFolder = wxEmptyString );
+
+    /**
+     * KEMI: return the single top-level folder shared by every entry of a zip archive, or an
+     * empty string when entries are not all inside one folder or the archive is unreadable.
+     */
+    static wxString FindSingleTopFolder( const wxString& aZipFile );
+
+    /**
+     * KEMI: locate the project file to auto-open in a freshly extracted folder (top level only).
+     * A .kemi_pro is preferred; a .kicad_pro is used only when no .kemi_pro exists.
+     *
+     * @return the full path of the project file, or an empty string unless exactly one project
+     *         of the chosen kind is present.
+     */
+    static wxString FindExtractedProjectFile( const wxString& aDir );
 };
 
 #endif // KICAD_PROJECT_ARCHIVER_H

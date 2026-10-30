@@ -416,8 +416,10 @@ BOOST_AUTO_TEST_CASE( PerformPull_RefusesACommitThatBringsGitLfs )
 
     BOOST_CHECK_MESSAGE( result != PullResult::Success && result != PullResult::FastForward,
                          "the pull should refuse a commit that brings Git LFS in" );
-    BOOST_CHECK_MESSAGE( handler.GetErrorString().Upper().Contains( wxS( "LFS" ) ),
-                         "the refusal should name Git LFS, got: " + handler.GetErrorString().ToStdString() );
+    // GetErrorString() pops the error, and MSVC evaluates the message argument first, so read it once.
+    const wxString lfsError = handler.GetErrorString();
+    BOOST_CHECK_MESSAGE( lfsError.Upper().Contains( wxS( "LFS" ) ),
+                         "the refusal should name Git LFS, got: " + lfsError.ToStdString() );
 
     // Above all, the pointer text must not have been written where the board belongs.
     BOOST_CHECK( !wxFileName::FileExists( repoPath() + wxFileName::GetPathSeparator() + wxT( "board.kicad_pcb" ) ) );
@@ -703,9 +705,11 @@ BOOST_AUTO_TEST_CASE( Push_RefusesOnADetachedHead )
     GIT_PUSH_HANDLER handler( &common );
 
     BOOST_CHECK_EQUAL( static_cast<int>( handler.PerformPush() ), static_cast<int>( PushResult::Error ) );
-    BOOST_CHECK_MESSAGE( handler.GetErrorString().Contains( wxS( "branch" ) ),
+    // GetErrorString() pops the error, and MSVC evaluates the message argument first, so read it once.
+    const wxString pushError = handler.GetErrorString();
+    BOOST_CHECK_MESSAGE( pushError.Contains( wxS( "branch" ) ),
                          "the refusal should say the project is not on a branch, got: "
-                                 + handler.GetErrorString().ToStdString() );
+                                 + pushError.ToStdString() );
 
     git_repository_free( repo );
 }
@@ -2012,7 +2016,14 @@ BOOST_AUTO_TEST_CASE( Clone_CancelFromProgressReporterStopsTheClone )
     KIGIT_COMMON      common( nullptr );
     GIT_CLONE_HANDLER handler( &common );
 
-    handler.SetRemote( wxS( "file://" ) + remotePath() );
+    // A file URL needs a third slash and forward slashes before a Windows drive letter;
+    // "file://D:\..." is not a URL, so the clone failed before any transfer progress.
+    wxString remoteUrl = remotePath();
+#ifdef __WINDOWS__
+    remoteUrl.Replace( wxS( "\\" ), wxS( "/" ) );
+    remoteUrl.Prepend( wxS( "/" ) );
+#endif
+    handler.SetRemote( wxS( "file://" ) + remoteUrl );
     handler.SetClonePath( dest );
 
     auto                   reporter = std::make_unique<CLONE_CANCEL_REPORTER>();
@@ -3204,9 +3215,11 @@ BOOST_AUTO_TEST_CASE( SwitchToBranch_RefusesARemoteBranch )
     GIT_BRANCH_HANDLER handler( &common );
 
     BOOST_CHECK( handler.SwitchToBranch( wxT( "origin/feature" ) ) == BranchResult::Error );
-    BOOST_CHECK_MESSAGE( handler.GetErrorString().Contains( wxS( "remote" ) ),
+    // GetErrorString() pops the error, and MSVC evaluates the message argument first, so read it once.
+    const wxString branchError = handler.GetErrorString();
+    BOOST_CHECK_MESSAGE( branchError.Contains( wxS( "remote" ) ),
                          "the refusal should say the branch is on the remote, got: "
-                                 + handler.GetErrorString().ToStdString() );
+                                 + branchError.ToStdString() );
 
     // Nothing moved and nothing was written.
     git_oid headNow;
@@ -3873,16 +3886,17 @@ BOOST_AUTO_TEST_CASE( RestoreVersionRoundTrip )
     KIGIT_ERROR_MESSAGE error;
 
     // Refuses over uncommitted changes.
+    // Binary, so Windows does not write CRLF and make the restored content differ from HEAD.
     wxString trackedFile = repoPath() + wxFileName::GetPathSeparator() + wxT( "file.txt" );
     {
-        std::ofstream f( trackedFile.ToStdString() );
+        std::ofstream f( trackedFile.ToStdString(), std::ios::binary );
         f << "uncommitted\n";
     }
 
     BOOST_CHECK( common.RestoreVersion( wxString::FromUTF8( firstHash ), error ) == RestoreResult::Dirty );
 
     {
-        std::ofstream f( trackedFile.ToStdString() );
+        std::ofstream f( trackedFile.ToStdString(), std::ios::binary );
         f << "second\n";
     }
 

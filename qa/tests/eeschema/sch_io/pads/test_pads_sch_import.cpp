@@ -18,6 +18,7 @@
  */
 
 #include <boost/test/unit_test.hpp>
+#include <qa_utils/file_utils.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 #include <json_common.h>
@@ -68,6 +69,7 @@
 #include <set>
 #include <sstream>
 #include <vector>
+#include <wx/ffile.h>
 #include <wx/filename.h>
 
 
@@ -441,7 +443,26 @@ static SCH_SHEET_PATH sourceSheetPath( SCHEMATIC& aSchematic, const PADS_SCH_BIN
                                                  && aPath.GetPageNumber() == expectedPage;
                                       } );
     BOOST_REQUIRE_MESSAGE( path != hierarchy.end(), "missing typed source sheet index " << sourceSheet->index );
-    BOOST_CHECK_EQUAL( path->Last()->GetField( FIELD_T::SHEET_NAME )->GetText(), sourceSheet->name.text );
+    // Imported sheet names follow the flattened "NN-<cleaned source name>" naming (4db1f1b4):
+    // dots and blanks dropped, illegal or control characters become _, leading/trailing _ and - trimmed
+    wxString cleaned;
+
+    for( wxUniChar c : sourceSheet->name.text )
+    {
+        if( c == '.' || c == ' ' || c == '\t' )
+            continue;
+
+        cleaned += ( c.GetValue() < 0x20 || wxString( wxS( "<>:\"/\\|?*" ) ).Find( c ) != wxNOT_FOUND ) ? wxUniChar( '_' ) : c;
+    }
+
+    while( !cleaned.IsEmpty() && ( cleaned.Last() == '_' || cleaned.Last() == '-' ) )
+        cleaned.RemoveLast();
+
+    while( !cleaned.IsEmpty() && ( cleaned.GetChar( 0 ) == '_' || cleaned.GetChar( 0 ) == '-' ) )
+        cleaned.Remove( 0, 1 );
+
+    BOOST_CHECK_EQUAL( path->Last()->GetField( FIELD_T::SHEET_NAME )->GetText(),
+                       wxString::Format( wxS( "%02zu-%s" ), sourceSheet->index + 1, cleaned ) );
     return *path;
 }
 
@@ -456,7 +477,7 @@ static void roundTripTopLevelSheets( SCHEMATIC& aSchematic, const wxString& aDir
         SCH_SHEET* sheet = aSchematic.GetTopLevelSheet( index );
         BOOST_REQUIRE( sheet );
         wxString file =
-                aDirectory + wxFileName::GetPathSeparator() + wxString::Format( wxS( "top_%zu.kicad_sch" ), index + 1 );
+                aDirectory + wxFileName::GetPathSeparator() + wxString::Format( wxS( "top_%zu.kemi_sch" ), index + 1 );
         BOOST_REQUIRE_NO_THROW( io.SaveSchematicFile( file, sheet, &aSchematic ) );
         sheetInfos.emplace_back( sheet->m_Uuid, sheet->GetName(), file );
     }
@@ -476,6 +497,13 @@ static void roundTripTopLevelSheets( SCHEMATIC& aSchematic, const wxString& aDir
 
     aSchematic.SetTopLevelSheets( loadedSheets );
     aSchematic.RefreshHierarchy();
+
+    BOOST_REQUIRE( aSchematic.IsKemiOnly() );
+    wxFileName official( sheetInfos.front().filename );
+    official.SetExt( wxS( "kicad_sch" ) );
+    BOOST_CHECK_THROW( io.SaveSchematicFile( official.GetFullPath(), loadedSheets.front(), &aSchematic ),
+                       IO_ERROR );
+    BOOST_CHECK( !wxFileExists( official.GetFullPath() ) );
 }
 
 
@@ -1936,10 +1964,32 @@ BOOST_AUTO_TEST_CASE( BinarySymbolsAndSheets )
                        model.sheets.front().pageSize.y / 2 );
     BOOST_CHECK_EQUAL( destination->GetScreen()->GetTitleBlock().GetTitle(), model.sheets.front().title.text );
     const EMBEDDED_FILES::EMBEDDED_FILE* embeddedWorksheet =
-            m_schematic.GetEmbeddedFiles()->GetEmbeddedFile( wxS( "pads_import.kicad_wks" ) );
+            m_schematic.GetEmbeddedFiles()->GetEmbeddedFile( wxS( "pads_import.kemi_wks" ) );
     BOOST_REQUIRE( embeddedWorksheet );
     const std::string  worksheetData( embeddedWorksheet->decompressedData.begin(),
                                       embeddedWorksheet->decompressedData.end() );
+    BOOST_CHECK( !m_schematic.GetEmbeddedFiles()->HasFile( wxS( "pads_import.kicad_wks" ) ) );
+    BOOST_CHECK_EQUAL( worksheetData.find( "(kemi_wks (format_version 1)" ), 0u );
+
+    KI_TEST::SCOPED_TEMP_DIR worksheetDir( wxS( "pads-kemi-worksheet" ) );
+    const wxString worksheetPath = worksheetDir.ChildPathStr( wxS( "pads_import.kemi_wks" ) );
+
+    {
+        wxFFile worksheetFile( worksheetPath, wxS( "wb" ) );
+        BOOST_REQUIRE( worksheetFile.IsOpened() );
+        BOOST_REQUIRE_EQUAL( worksheetFile.Write( worksheetData.data(), worksheetData.size() ), worksheetData.size() );
+    }
+
+    EMBEDDED_FILES reembeddedFiles;
+    const EMBEDDED_FILES::EMBEDDED_FILE* reembeddedWorksheet =
+            reembeddedFiles.AddFile( wxFileName( worksheetPath ), false );
+    BOOST_REQUIRE( reembeddedWorksheet );
+    BOOST_CHECK( reembeddedWorksheet->type == EMBEDDED_FILES::EMBEDDED_FILE::FILE_TYPE::WORKSHEET );
+
+    DS_DATA_MODEL worksheetModel;
+    wxString worksheetError;
+    BOOST_REQUIRE_MESSAGE( worksheetModel.LoadDrawingSheet( worksheetPath, &worksheetError ), worksheetError );
+    BOOST_CHECK_EQUAL( worksheetModel.GetCount(), worksheetMarkers.size() );
     const double       pageWidthMm = model.sheets.front().pageSize.x * 0.0127;
     const double       pageHeightMm = model.sheets.front().pageSize.y * 0.0127;
     std::ostringstream topRight;
@@ -2421,13 +2471,14 @@ BOOST_AUTO_TEST_CASE( BinaryMultiSheetHierarchy )
         BOOST_REQUIRE( sheet->GetScreen() );
         BOOST_CHECK( m_schematic.IsTopLevelSheet( sheet ) );
         BOOST_CHECK( sheet->GetScreen()->Items().OfType( SCH_SHEET_T ).empty() );
-        BOOST_CHECK_EQUAL( sheet->GetField( FIELD_T::SHEET_NAME )->GetText(), model.sheets[i].name.text );
+        BOOST_CHECK_EQUAL( sheet->GetField( FIELD_T::SHEET_NAME )->GetText(),
+                           i == 0 ? wxS( "01-[1]DUP_SAFE" ) : wxS( "02-[2]DUP_SAFE" ) );
         wxString filename = sheet->GetField( FIELD_T::SHEET_FILENAME )->GetText();
         BOOST_CHECK( !filename.Contains( wxS( "/" ) ) );
         BOOST_CHECK( !filename.Contains( wxS( ":" ) ) );
         BOOST_CHECK( !filename.Contains( wxS( "*" ) ) );
         BOOST_CHECK( filenames.insert( filename ).second );
-        const wxString expectedFilename = i == 0 ? wxS( "[1]DUP_SAFE__.kicad_sch" ) : wxS( "[2]DUP_SAFE__.kicad_sch" );
+        const wxString expectedFilename = i == 0 ? wxS( "01-[1]DUP_SAFE.kemi_sch" ) : wxS( "02-[2]DUP_SAFE.kemi_sch" );
         BOOST_CHECK_EQUAL( filename, expectedFilename );
         SCH_SHEET_PATH path;
         path.push_back( sheet );
@@ -2516,7 +2567,7 @@ BOOST_AUTO_TEST_CASE( BinaryMultiSheetHierarchy )
             BOOST_CHECK( aSchematic.IsTopLevelSheet( path.Last() ) );
             BOOST_CHECK_EQUAL( path.GetPageNumber(), wxString::Format( wxS( "%zu" ), sourceIndex + 1 ) );
             BOOST_CHECK_EQUAL( path.Last()->GetField( FIELD_T::SHEET_NAME )->GetText(),
-                               wxString::Format( wxS( "[%zu]SOURCE_ORDER" ), sourceIndex + 1 ) );
+                               wxString::Format( wxS( "%02zu-[%zu]SOURCE_ORDER" ), sourceIndex + 1, sourceIndex + 1 ) );
         }
     };
 
@@ -3487,8 +3538,9 @@ BOOST_AUTO_TEST_CASE( BinaryConnectivityRoundTrip )
     SCH_SHEET*           graphicsRoot = m_schematic.GetTopLevelSheet();
     PADS_SCH_BINARY_BUILDER().Build( graphics, &m_schematic, nullptr, binaryFixture( wxS( "page_graphics" ) ) );
     std::multiset<wxString> graphicsBefore = connectivitySnapshot( m_schematic );
-    wxString                graphicsFile = wxFileName::CreateTempFileName( wxS( "pads_binary_graphics_" ) );
-    SCH_IO_KICAD_SEXPR      graphicsIo;
+    KI_TEST::SCOPED_TEMP_DIR graphicsDirectory( wxS( "pads_binary_graphics" ) );
+    const wxString          graphicsFile = graphicsDirectory.ChildPathStr( wxS( "page_graphics.kemi_sch" ) );
+    SCH_IO_KICAD_SEXPR       graphicsIo;
     BOOST_REQUIRE_NO_THROW( graphicsIo.SaveSchematicFile( graphicsFile, graphicsRoot, &m_schematic ) );
     m_schematic.Reset();
     SCH_SHEET* defaultSheet = m_schematic.GetTopLevelSheet();
@@ -3499,6 +3551,7 @@ BOOST_AUTO_TEST_CASE( BinaryConnectivityRoundTrip )
     m_schematic.RemoveTopLevelSheet( defaultSheet );
     delete defaultSheet;
     m_schematic.RefreshHierarchy();
+    BOOST_CHECK( m_schematic.IsKemiOnly() );
     std::multiset<wxString> graphicsAfter = connectivitySnapshot( m_schematic );
 
     for( const wxString& value : graphicsBefore )

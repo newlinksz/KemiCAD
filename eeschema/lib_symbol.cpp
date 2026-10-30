@@ -315,6 +315,7 @@ LIB_SYMBOL::LIB_SYMBOL( const LIB_SYMBOL& aSymbol, LEGACY_SYMBOL_LIB* aLibrary, 
 {
     m_library = aLibrary;
     m_name = aSymbol.m_name;
+    m_kemiOnly = aSymbol.m_kemiOnly;
     m_fpFilters = wxArrayString( aSymbol.m_fpFilters );
     m_pinMaps = aSymbol.m_pinMaps;
     m_associatedFootprints = aSymbol.m_associatedFootprints;
@@ -648,6 +649,7 @@ const LIB_SYMBOL& LIB_SYMBOL::operator=( const LIB_SYMBOL& aSymbol )
 
     m_library = aSymbol.m_library;
     m_name = aSymbol.m_name;
+    m_kemiOnly = m_kemiOnly || aSymbol.m_kemiOnly;
     m_fpFilters = wxArrayString( aSymbol.m_fpFilters );
     m_pinMaps = aSymbol.m_pinMaps;
     m_associatedFootprints = aSymbol.m_associatedFootprints;
@@ -877,6 +879,8 @@ void LIB_SYMBOL::SetParent( LIB_SYMBOL* aParent )
         }
 
         m_parent = aParent->SharedPtr();
+        if( aParent->IsKemiOnly() )
+            SetKemiOnly();
 
         // Keep the recorded parent name in sync so serialization never has to dereference the live
         // parent pointer (which can dangle, see SCH_IO_KICAD_SEXPR_LIB_CACHE::SaveSymbol).
@@ -1077,6 +1081,8 @@ std::unique_ptr<LIB_SYMBOL> LIB_SYMBOL::Flatten() const
         retv->m_pinMaps = GetEffectivePinMaps();
         retv->m_associatedFootprints = GetEffectiveAssociatedFootprints();
 
+        if( IsKemiOnly() )
+            retv->SetKemiOnly();
         retv->m_cachesDirty = true;
         retv->m_parent.reset();
     }

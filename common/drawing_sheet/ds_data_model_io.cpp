@@ -32,6 +32,7 @@
 #include <drawing_sheet/drawing_sheet_lexer.h>
 #include <drawing_sheet/ds_file_versions.h>
 #include <font/font.h>
+#include <kemi_format_profile.h>
 #include <io/kicad/kicad_io_utils.h>
 #include <string_utils.h>
 
@@ -75,8 +76,11 @@ private:
     void formatRepeatParameters( DS_DATA_ITEM* aItem ) const;
     void formatOptions( DS_DATA_ITEM* aItem ) const;
 
+    void formatRoot( DS_DATA_MODEL* aModel ) const;
+
 protected:
-    OUTPUTFORMATTER* m_out;
+    OUTPUTFORMATTER*     m_out;
+    KEMI_FORMAT::FLAVOR  m_flavor = KEMI_FORMAT::FLAVOR::LEGACY;
 };
 
 
@@ -86,11 +90,12 @@ protected:
 class DS_DATA_MODEL_FILEIO : public DS_DATA_MODEL_IO
 {
 public:
-    DS_DATA_MODEL_FILEIO( const wxString& aFilename ) :
+    DS_DATA_MODEL_FILEIO( const wxString& aFilename, KEMI_FORMAT::FLAVOR aFlavor ) :
             DS_DATA_MODEL_IO(),
             m_fileout( std::make_unique<PRETTIFIED_FILE_OUTPUTFORMATTER>( aFilename ) )
     {
         m_out = m_fileout.get();
+        m_flavor = aFlavor;
     }
 
     ~DS_DATA_MODEL_FILEIO() = default;
@@ -108,10 +113,12 @@ private:
 class DS_DATA_MODEL_STRINGIO : public DS_DATA_MODEL_IO
 {
 public:
-    DS_DATA_MODEL_STRINGIO( wxString* aOutputString ) :
+    DS_DATA_MODEL_STRINGIO( wxString* aOutputString, KEMI_FORMAT::FLAVOR aFlavor ) :
             DS_DATA_MODEL_IO(),
             m_output( aOutputString )
     {
+        m_flavor = aFlavor;
+
         try
         {
             m_writer = new STRING_FORMATTER();
@@ -137,23 +144,54 @@ private:
 
 void DS_DATA_MODEL::Save( const wxString& aFullFileName )
 {
-    DS_DATA_MODEL_FILEIO writer( aFullFileName );
+    const wxString target = KEMI_FORMAT::PersistentOutputPath(
+            KEMI_FORMAT::DOC::DRAWING_SHEET, aFullFileName, m_kemiOnlyOutput );
+    Save( target, KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::DRAWING_SHEET, target ) );
+}
+
+
+void DS_DATA_MODEL::Save( const wxString& aFullFileName, KEMI_FORMAT::FLAVOR aFlavor )
+{
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::DRAWING_SHEET, aFullFileName, aFlavor,
+                                       m_kemiOnlyOutput || KEMI_FORMAT::HasKemiExt( aFullFileName ) );
+    DS_DATA_MODEL_FILEIO writer( aFullFileName, aFlavor );
     writer.Format( this );
     writer.Finish();
+
+    if( aFlavor == KEMI_FORMAT::FLAVOR::KEMI )
+        RequireKemiOutput();
 }
 
 
 void DS_DATA_MODEL::SaveInString( wxString* aOutputString )
 {
-    DS_DATA_MODEL_STRINGIO writer( aOutputString );
+    DS_DATA_MODEL_STRINGIO writer( aOutputString, m_kemiOnlyOutput ? KEMI_FORMAT::FLAVOR::KEMI
+                                                                 : KEMI_FORMAT::FLAVOR::LEGACY );
     writer.Format( this );
 }
 
 
 void DS_DATA_MODEL::SaveInString( std::vector<DS_DATA_ITEM*>& aItemsList, wxString* aOutputString )
 {
-    DS_DATA_MODEL_STRINGIO writer( aOutputString );
+    DS_DATA_MODEL_STRINGIO writer( aOutputString, m_kemiOnlyOutput ? KEMI_FORMAT::FLAVOR::KEMI
+                                                                 : KEMI_FORMAT::FLAVOR::LEGACY );
     writer.Format( this, aItemsList );
+}
+
+
+void DS_DATA_MODEL_IO::formatRoot( DS_DATA_MODEL* aModel ) const
+{
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::DRAWING_SHEET, wxEmptyString, m_flavor,
+                                       aModel->IsKemiOnlyOutput() );
+    m_out->Print( "(%s", KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::DRAWING_SHEET, m_flavor ).c_str() );
+
+    if( m_flavor == KEMI_FORMAT::FLAVOR::KEMI )
+        m_out->Print( " (format_version %d)", KEMI_FORMAT::FORMAT_VERSION );
+
+    m_out->Print( " (version %d) (generator %s) (generator_version %s)",
+                  SEXPR_WORKSHEET_FILE_VERSION,
+                  m_out->Quotew( aModel->GetGenerator() ).c_str(),
+                  m_out->Quotew( KEMI_FORMAT::GeneratorVersion() ).c_str() );
 }
 
 
@@ -161,10 +199,7 @@ void DS_DATA_MODEL_IO::Format( DS_DATA_MODEL* aModel, std::vector<DS_DATA_ITEM*>
 {
     LOCALE_IO   toggle;     // switch on/off the locale "C" notation
 
-    m_out->Print( "(kicad_wks (version %d) (generator %s) (generator_version %s)",
-                  SEXPR_WORKSHEET_FILE_VERSION,
-                  m_out->Quotew( aModel->GetGenerator() ).c_str(),
-                  m_out->Quotew( GetMajorMinorVersion() ).c_str() );
+    formatRoot( aModel );
 
     for( DS_DATA_ITEM* item : aItemsList )
         Format( aModel, item );
@@ -204,10 +239,7 @@ void DS_DATA_MODEL_IO::Format( DS_DATA_MODEL* aSheet ) const
 {
     LOCALE_IO   toggle;     // switch on/off the locale "C" notation
 
-    m_out->Print( "(kicad_wks (version %d) (generator %s) (generator_version %s)",
-                  SEXPR_WORKSHEET_FILE_VERSION,
-                  m_out->Quotew( aSheet->GetGenerator() ).c_str(),
-                  m_out->Quotew( GetMajorMinorVersion() ).c_str() );
+    formatRoot( aSheet );
 
     // Setup
 

@@ -23,6 +23,7 @@
 #include <kicommon.h>
 #include <core/utf8.h>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -89,6 +90,10 @@ public:
 
     /// Board reference to footprint LIB_ID, filled in by an import.
     std::map<wxString, wxString> m_footprintIds;
+
+    /// Paired project imports request validated link metadata only after both inputs are known.
+    bool m_collectFootprintLinks = false;
+    std::map<wxString, std::set<wxString>> m_footprintPadNumbers;
 
     /// Set by a probe of a project archive that holds no board.
     bool m_projectHasNoBoard = false;

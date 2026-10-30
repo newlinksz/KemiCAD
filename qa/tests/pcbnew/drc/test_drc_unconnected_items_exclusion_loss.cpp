@@ -44,6 +44,8 @@
 #include <project.h>
 #include <project/project_file.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
+#include <qa_utils/file_utils.h>
+#include <wx/ffile.h>
 #include <settings/settings_manager.h>
 #include <tool/tool_manager.h>
 #include <wx/string.h>
@@ -95,12 +97,14 @@ struct DRC_EXCLUSION_BASE_FIXTURE
     void        reloadBoardAndVerifyExclusions( const wxString& aTempBoardStemName, int aExpectedExclusions );
 
 
-    // declared first so the staged files go after the settings manager has released their project locks
+    KI_TEST::SCOPED_TEMP_DIR m_workDirectory{ wxS( "drc-exclusion-save" ) };
+
+    // Declared before the manager so project locks are released before cleanup.
     FileCleaner            m_tempFileCleaner;
     SETTINGS_MANAGER       m_settingsManager;
     std::unique_ptr<BOARD> m_board;
 
-    ///< Folder in the test data, relative to it, that holds this test's private copy of the board
+    ///< Absolute folder containing this test's private copies of the input files.
     wxString m_stagedDir;
 };
 
@@ -131,8 +135,7 @@ std::string DRC_EXCLUSION_BASE_FIXTURE::generate_uuid()
 wxString DRC_EXCLUSION_BASE_FIXTURE::stageBoard( const wxString& aBoardNameStem, FileCleaner& aCleaner )
 {
     // A project locks its file, so tests running at once must not share one
-    wxFileName dir( KI_TEST::GetPcbnewTestDataDir() + wxString::Format( "tmp_test_drc_%lu_", wxGetProcessId() )
-                            + aBoardNameStem,
+    wxFileName dir( m_workDirectory.PathStr() + wxFileName::GetPathSeparator() + aBoardNameStem,
                     wxEmptyString );
 
     BOOST_REQUIRE_MESSAGE( dir.Mkdir( wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ), "Create folder " << dir.GetPath() );
@@ -147,8 +150,8 @@ wxString DRC_EXCLUSION_BASE_FIXTURE::stageBoard( const wxString& aBoardNameStem,
                                                        + ext ) );
     }
 
-    m_stagedDir = dir.GetDirs().Last();
-    return m_stagedDir + "/" + aBoardNameStem;
+    m_stagedDir = dir.GetPath();
+    return m_stagedDir + wxS( "/" ) + aBoardNameStem + wxS( ".kicad_pcb" );
 }
 
 void DRC_EXCLUSION_BASE_FIXTURE::loadBoardAndVerifyInitialExclusions( const wxString& aBoardNameStem,
@@ -242,20 +245,25 @@ void DRC_EXCLUSION_BASE_FIXTURE::saveBoardAndProjectToTempFiles( const wxString&
                                                        wxString& aTempBoardStemName, bool aCopyBoardVerbatim )
 {
     wxString tempPrefix = m_stagedDir + "/tmp_test_drc_";
-    aTempBoardStemName = tempPrefix + aBoardNameStem.ToStdString();
-    aTempBoardFullPath = KI_TEST::GetPcbnewTestDataDir() + aTempBoardStemName + ".kicad_pcb";
+    aTempBoardStemName = tempPrefix + aBoardNameStem + wxS( ".kemi_pcb" );
+    aTempBoardFullPath = aTempBoardStemName;
     aCleaner.AddFile( aTempBoardFullPath );
-    wxString tempProjectStemName = tempPrefix + aBoardNameStem.ToStdString();
-    aTempProjectFullPath = KI_TEST::GetPcbnewTestDataDir() + aTempBoardStemName + ".kicad_pro";
+    aTempProjectFullPath = tempPrefix + aBoardNameStem + wxS( ".kemi_pro" );
     aCleaner.AddFile( aTempProjectFullPath );
 
     bool boardSaved;
 
     if( aCopyBoardVerbatim )
     {
-        // Re-saving perturbs geometry slightly, which moves violation positions
-        boardSaved = wxCopyFile( KI_TEST::GetPcbnewTestDataDir() + m_stagedDir + "/" + aBoardNameStem + ".kicad_pcb",
-                                 aTempBoardFullPath );
+        // Build a native test fixture without reformatting geometry coordinates.
+        std::string bytes = KI_TEST::LoadStringData( m_stagedDir + wxS( "/" )
+                                                    + aBoardNameStem + wxS( ".kicad_pcb" ) );
+        const size_t root = bytes.find( "(kicad_pcb" );
+        BOOST_REQUIRE( root != std::string::npos );
+        bytes.replace( root, std::string( "(kicad_pcb" ).size(), "(kemi_pcb (format_version 1)" );
+        wxFFile file( aTempBoardFullPath, wxS( "wb" ) );
+        boardSaved = file.IsOpened() && file.Write( bytes.data(), bytes.size() ) == bytes.size()
+                     && file.Close();
     }
     else
     {
@@ -264,7 +272,7 @@ void DRC_EXCLUSION_BASE_FIXTURE::saveBoardAndProjectToTempFiles( const wxString&
 
     BOOST_REQUIRE_MESSAGE( boardSaved, "Save board to temporary file: " << aTempBoardFullPath );
 
-    m_settingsManager.SaveProjectAs( aTempProjectFullPath, m_board->GetProject() );
+    BOOST_REQUIRE( m_board->GetProject()->GetProjectFile().SaveCopyToFile( aTempProjectFullPath ) );
     BOOST_REQUIRE_MESSAGE( wxFileName::Exists( aTempProjectFullPath ),
                            "Save project to temporary file: " << aTempProjectFullPath );
 }

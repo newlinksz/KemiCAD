@@ -19,6 +19,12 @@
 
 #include <boost/test/unit_test.hpp>
 #include <local_history.h>
+#include <kemi_format_profile.h>
+#include <qa_utils/file_utils.h>
+#include <qa_utils/wx_utils/unit_test_utils.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
+#include <sch_text.h>
+#include <wx/ffile.h>
 #include <pgm_base.h>
 #include <sch_screen.h>
 #include <sch_sheet.h>
@@ -77,6 +83,7 @@ BOOST_FIXTURE_TEST_CASE( SavesLegacySheetIntoHistoryPath, HISTORY_AUTOSAVE_FIXTU
     SCH_SHEET* sheet = sheets[0];
     BOOST_REQUIRE( sheet->GetScreen() != nullptr );
 
+    sheet->GetScreen()->SetContentModified();
     sheet->SetFileName( wxS( "legacy/legacy.sch" ) );
     sheet->GetScreen()->SetFileName( wxS( "legacy/legacy.sch" ) );
 
@@ -88,7 +95,7 @@ BOOST_FIXTURE_TEST_CASE( SavesLegacySheetIntoHistoryPath, HISTORY_AUTOSAVE_FIXTU
     // SaveToHistory now emits project-relative paths -- the dispatcher joins them with
     // the storage root (.history/ or the user data dir) at write time.
     wxFileName saved( fileData[0].relativePath );
-    BOOST_CHECK_EQUAL( saved.GetExt(), FILEEXT::LegacySchematicFileExtension );
+    BOOST_CHECK_EQUAL( saved.GetExt(), wxS( "kemi_sch" ) );
     BOOST_CHECK( saved.GetPath().Contains( wxS( "legacy" ) ) );
     BOOST_CHECK( !wxFileName( fileData[0].relativePath ).IsAbsolute() );
     BOOST_CHECK( !fileData[0].content.empty() );
@@ -123,5 +130,118 @@ BOOST_FIXTURE_TEST_CASE( CleanSheetStillSavedWhenLocalHistoryEnabled, HISTORY_AU
 
     BOOST_CHECK_EQUAL( fileData.size(), 1 );
 }
+
+BOOST_AUTO_TEST_CASE( HierarchyAutosaveReopensModifiedChildrenAfterTargetRemapping )
+{
+    COMMON_SETTINGS* settings = Pgm().GetCommonSettings();
+    BOOST_REQUIRE( settings );
+    SCOPED_SETTING_OVERRIDE<BACKUP_FORMAT> zip( settings->m_Backup.format, BACKUP_FORMAT::ZIP );
+
+    for( bool parentModified : { false, true } )
+    {
+        for( bool existingNative : { false, true } )
+        {
+            SETTINGS_MANAGER manager;
+            KI_TEST::SCOPED_TEMP_PROJECT project( manager, wxS( "hierarchy-recovery" ), wxS( "root" ) );
+            SCHEMATIC schematic( &project.Project() );
+            SCH_SHEET* root = schematic.GetTopLevelSheet();
+            const wxString rootSource = wxFileName( project.DirStr(), wxS( "root.kicad_sch" ) ).GetFullPath();
+            root->SetFileName( wxS( "root.kicad_sch" ) );
+            root->GetScreen()->SetFileName( rootSource );
+            root->GetScreen()->SetContentModified( parentModified );
+            SCH_SHEET* child = new SCH_SHEET( &schematic );
+            child->SetFileName( wxS( "child.kicad_sch" ) );
+            child->SetScreen( new SCH_SCREEN( &schematic ) );
+            const wxString childSource = wxFileName( project.DirStr(), wxS( "child.kicad_sch" ) ).GetFullPath();
+            child->GetScreen()->SetFileName( childSource );
+            child->GetScreen()->Append( new SCH_TEXT( VECTOR2I( 1000, 2000 ), wxS( "unsaved child" ) ) );
+            child->GetScreen()->SetContentModified();
+            root->GetScreen()->Append( child );
+            schematic.RefreshHierarchy();
+            for( const wxString& source : { rootSource, childSource } )
+            {
+                wxFFile file( source, wxS( "wb" ) );
+                BOOST_REQUIRE( file.Write( wxS( "official source sentinel" ) ) );
+            }
+
+            std::vector<HISTORY_FILE_DATA> snapshot;
+            schematic.SaveToHistory( project.Project().GetProjectPath(), snapshot );
+            BOOST_REQUIRE_EQUAL( snapshot.size(), 2U );
+            BOOST_CHECK_EQUAL( child->GetFileName(), wxS( "child.kicad_sch" ) );
+            BOOST_CHECK_EQUAL( root->GetScreen()->GetFileName(), rootSource );
+            BOOST_CHECK_EQUAL( root->GetScreen()->IsContentModified(), parentModified );
+            std::vector<std::pair<wxString, wxString>> files;
+            std::map<wxString, wxString> targets;
+            wxString recoveredRoot;
+
+            for( const HISTORY_FILE_DATA& entry : snapshot )
+            {
+                const wxString source = wxFileName( project.DirStr(), entry.relativePath ).GetFullPath();
+                const wxString autosave = source + wxS( ".snapshot" );
+                wxFFile output( autosave, wxS( "wb" ) );
+                BOOST_REQUIRE_EQUAL( output.Write( entry.content.data(), entry.content.size() ), entry.content.size() );
+                BOOST_REQUIRE( output.Close() );
+                wxFileName target( source );
+
+                if( existingNative )
+                {
+                    wxFFile sentinel( source, wxS( "wb" ) );
+                    BOOST_REQUIRE( sentinel.Write( wxS( "existing native sentinel" ) ) );
+                    target.SetName( target.GetName() + wxS( ".recovered" ) );
+                }
+
+                targets.emplace( source, target.GetFullPath() );
+                files.emplace_back( autosave, source );
+
+                if( wxFileName( source ).GetName() == wxS( "root" ) )
+                    recoveredRoot = target.GetFullPath();
+            }
+
+            BOOST_REQUIRE( LOCAL_HISTORY::RestoreAutosaveFiles( files, targets ) );
+            SCHEMATIC reopened( &project.Project() );
+            SCH_IO_KICAD_SEXPR io;
+            SCH_SHEET* loaded = io.LoadSchematicFile( recoveredRoot, &reopened );
+            BOOST_REQUIRE( loaded );
+            reopened.SetTopLevelSheets( { loaded } );
+            SCH_SCREENS screens( reopened.Root() );
+            BOOST_REQUIRE_EQUAL( screens.GetCount(), 2U );
+            bool found = false;
+
+            for( size_t i = 0; i < screens.GetCount(); ++i )
+            {
+                BOOST_CHECK( !screens.GetScreen( i )->HasLoadError() );
+                for( SCH_ITEM* item : screens.GetScreen( i )->Items().OfType( SCH_TEXT_T ) )
+                    found |= static_cast<SCH_TEXT*>( item )->GetText() == wxS( "unsaved child" );
+            }
+
+            BOOST_CHECK( found );
+            BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( rootSource ), "official source sentinel" );
+            BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( childSource ), "official source sentinel" );
+            if( existingNative )
+            {
+                for( const auto& [autosave, source] : files )
+                    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( source ), "existing native sentinel" );
+            }
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( RecoveryRemapsOnlySheetFilenameProperties )
+{
+    const wxString dir = wxFileName::GetTempDir();
+    const wxString source = wxFileName( dir, wxS( "root.kemi_sch" ) ).GetFullPath();
+    const wxString child = wxFileName( dir, wxS( "child.kemi_sch" ) ).GetFullPath();
+    const wxString recovered = wxFileName( dir, wxS( "child.recovered.kemi_sch" ) ).GetFullPath();
+    std::string content = "(kemi_sch (sheet (property \"Sheetfile\" \"child.kemi_sch\"))"
+                          " (text \"child.kemi_sch\") (property \"Sheetfile\" \"child.kemi_sch\")"
+                          " (at 1.000001 2.33333333))\r\n";
+    std::string expected = content;
+    expected.replace( expected.find( "child.kemi_sch" ), std::string( "child.kemi_sch" ).size(),
+                      "child.recovered.kemi_sch" );
+    KEMI_FORMAT::RemapSchematicSheetPaths( content, source, source, { { child, recovered } } );
+    BOOST_CHECK_EQUAL( content, expected );
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()

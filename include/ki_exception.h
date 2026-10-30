@@ -197,15 +197,20 @@ struct KICOMMON_API FUTURE_FORMAT_ERROR : public PARSE_ERROR
 {
     wxString requiredVersion;   ///< Date of KiCad file format required to open file
     wxString requiredGenerator; ///< Version of KiCad required to open file
+    bool     kemiOrigin = false; ///< File root / format marker is KemiCAD's (kemi_* root)
 
+    /// aKemiOrigin: the caller saw a KemiCAD root/marker in the file.  Without it the message
+    /// never names a generator version (it could be an upstream KiCad one).
     FUTURE_FORMAT_ERROR( const wxString& aRequiredVersion,
-                         const wxString& aRequiredGenerator = wxEmptyString );
+                         const wxString& aRequiredGenerator = wxEmptyString,
+                         bool aKemiOrigin = false );
     FUTURE_FORMAT_ERROR( const PARSE_ERROR& aParseError, const wxString& aRequiredVersion,
-                         const wxString& aRequiredGenerator = wxEmptyString );
+                         const wxString& aRequiredGenerator = wxEmptyString,
+                         bool aKemiOrigin = false );
     ~FUTURE_FORMAT_ERROR() throw () {}
 
     void init( const wxString& aRequiredVersion,
-               const wxString& aRequiredGenerator = wxEmptyString );
+               const wxString& aRequiredGenerator = wxEmptyString, bool aKemiOrigin = false );
 };
 
 /** @} */

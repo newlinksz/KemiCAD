@@ -71,7 +71,7 @@ public:
         wxRemoveFile( m_dir );
         wxFileName::Mkdir( m_dir );
 
-        m_path = wxFileName( m_dir, wxS( "test_lib.kicad_sym" ) ).GetFullPath();
+        m_path = wxFileName( m_dir, wxS( "test_lib.kemi_sym" ) ).GetFullPath();
     }
 
     ~SCOPED_TEMP_LIB()

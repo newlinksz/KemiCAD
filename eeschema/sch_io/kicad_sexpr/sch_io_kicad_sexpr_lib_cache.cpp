@@ -37,6 +37,7 @@
 #include "sch_io_kicad_sexpr_common.h"
 #include "sch_io_kicad_sexpr_parser.h"
 #include <string_utils.h>
+#include <kemi_format_profile.h>
 #include <trace_helpers.h>
 #include <io/kicad/kicad_io_utils.h>
 
@@ -55,6 +56,17 @@ SCH_IO_KICAD_SEXPR_LIB_CACHE::~SCH_IO_KICAD_SEXPR_LIB_CACHE()
 
 void SCH_IO_KICAD_SEXPR_LIB_CACHE::Load()
 {
+    // Remain blocked on every exceptional exit, including header/version rejection.
+    // Only a complete reload is allowed to clear this state.
+    SetParseError( true );
+
+    for( const auto& [name, symbol] : m_symbols )
+        delete symbol;
+
+    m_symbols.clear();
+    m_symbolSourceFiles.clear();
+    m_pendingFileDeletes.clear();
+
     // Normalize the path: if it's a directory on the filesystem, ensure m_libFileName
     // is marked as a directory so that IsDir() checks work correctly throughout the code.
     // wxFileName::IsDir() only checks if the path string ends with a separator, not if
@@ -69,6 +81,9 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Load()
                  wxString::Format( wxT( "Cannot use relative file paths in sexpr plugin to open library '%s'." ),
                                    m_libFileName.GetFullPath() ) );
 
+    m_loadedFileName = m_fileName;
+    m_fileModTime = GetLibModificationTime();
+
     if( !m_libFileName.IsDir() )
     {
         wxLogTrace( traceSchLegacyPlugin, "Loading sexpr symbol library file '%s'",
@@ -79,6 +94,7 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Load()
         SCH_IO_KICAD_SEXPR_PARSER parser( &reader );
 
         parser.ParseLib( m_symbols );
+        m_kemiOnly = m_kemiOnly || parser.IsKemiOnly();
 
         SetFileFormatVersionAtLoad( parser.GetParsedRequiredVersion() );
         updateParentSymbolLinks();
@@ -106,26 +122,32 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Load()
     }
     else
     {
-        wxString libFileName;
-
         wxLogTrace( traceSchLegacyPlugin, "Loading sexpr symbol library folder '%s'", m_libFileName.GetPath() );
 
-        // Clear source file tracking for fresh load
-        m_symbolSourceFiles.clear();
+        // A native member shadows the preserved official source with the same stem.
+        std::vector<wxString> libFiles = GetSymbolLibraryFiles( m_libFileName.GetPath() );
+        std::stable_sort( libFiles.begin(), libFiles.end(),
+                []( const wxString& aLeft, const wxString& aRight )
+                {
+                    return KEMI_FORMAT::HasKemiExt( aLeft ) && !KEMI_FORMAT::HasKemiExt( aRight );
+                } );
+        std::set<wxString> baseNames;
+        std::erase_if( libFiles,
+                [&]( const wxString& aFile )
+                {
+                    wxString name = wxFileName( aFile ).GetName();
 
-        wxFileName tmp( m_libFileName.GetPath(), wxS( "dummy" ), wxString( FILEEXT::KiCadSymbolLibFileExtension ) );
-        wxDir dir( m_libFileName.GetPath() );
-        wxString fileSpec = wxS( "*." ) + wxString( FILEEXT::KiCadSymbolLibFileExtension );
+                    if( !wxFileName::IsCaseSensitive() )
+                        name.MakeLower();
 
-        if( dir.GetFirst( &libFileName, fileSpec ) )
+                    return !baseNames.insert( name ).second;
+                } );
+        wxString errorCache;
+
+        if( !libFiles.empty() )
         {
-            wxString errorCache;
-
-            do
+            for( const wxString& sourceFilePath : libFiles )
             {
-                tmp.SetFullName( libFileName );
-                wxString sourceFilePath = tmp.GetFullPath();
-
                 // Track symbol pointers before parsing so we can detect which were replaced.
                 // When the parser encounters a duplicate name, it overwrites the existing
                 // symbol, so we need to update source tracking for those symbols too.
@@ -140,6 +162,7 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Load()
                     SCH_IO_KICAD_SEXPR_PARSER parser( &reader );
 
                     parser.ParseLib( m_symbols );
+                    m_kemiOnly = m_kemiOnly || parser.IsKemiOnly();
                     SetFileFormatVersionAtLoad( parser.GetParsedRequiredVersion() );
 
                     // Update source tracking for all symbols that came from this file.
@@ -185,7 +208,7 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Load()
                     errorCache += wxString::Format( _( "Unable to read file '%s'" ) + '\n', sourceFilePath );
                     errorCache += ioe.What();
                 }
-            } while( dir.GetNext( &libFileName ) );
+            }
 
             if( !errorCache.IsEmpty() )
             {
@@ -201,14 +224,34 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Load()
     // Remember the file modification time of library file when the cache snapshot was made,
     // so that in a networked environment we will reload the cache as needed.
     m_fileModTime = GetLibModificationTime();
+    SetParseError( false );
 }
 
 
 void SCH_IO_KICAD_SEXPR_LIB_CACHE::Save( const std::optional<bool>& aOpt )
 {
-    if( !m_isModified )
-        return;
+    save( std::nullopt );
+}
 
+
+void SCH_IO_KICAD_SEXPR_LIB_CACHE::Save( KEMI_FORMAT::FLAVOR aFlavor )
+{
+    save( aFlavor );
+}
+
+
+bool SCH_IO_KICAD_SEXPR_LIB_CACHE::IsKemiOnly() const
+{
+    if( m_kemiOnly || KEMI_FORMAT::HasKemiExt( m_loadedFileName ) )
+        return true;
+
+    return std::any_of( m_symbols.begin(), m_symbols.end(),
+            []( const auto& aEntry ) { return aEntry.second && aEntry.second->IsKemiOnly(); } );
+}
+
+
+void SCH_IO_KICAD_SEXPR_LIB_CACHE::save( const std::optional<KEMI_FORMAT::FLAVOR>& aFlavor )
+{
     // If the library had a parse error during loading, we cannot safely save it.
     // Only symbols before the parse error were loaded, so saving would permanently
     // lose all symbols after the error point. See issue #22241.
@@ -220,6 +263,16 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Save( const std::optional<bool>& aOpt )
                          m_libFileName.GetFullPath() );
     }
 
+    if( m_fileName == m_loadedFileName && IsFileChanged() )
+    {
+        SetParseError( true );
+        THROW_IO_ERRORF( _( "Library '%s' changed on disk. Reload it before saving." ),
+                         m_libFileName.GetFullPath() );
+    }
+
+    if( !m_isModified )
+        return;
+
     // Write through symlinks, don't replace them.
     wxFileName fn = GetRealFile();
 
@@ -230,9 +283,11 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Save( const std::optional<bool>& aOpt )
 
     if( !fn.IsDir() )
     {
+        KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SYMBOL_LIB, fn.GetFullPath(),
+                aFlavor.value_or( KEMI_FORMAT::FLAVOR::KEMI ), IsKemiOnly() );
         auto formatter = std::make_unique<PRETTIFIED_FILE_OUTPUTFORMATTER>( fn.GetFullPath() );
 
-        formatLibraryHeader( *formatter.get() );
+        formatLibraryHeader( *formatter.get(), m_libFileName.GetFullPath(), aFlavor );
 
         std::vector<LIB_SYMBOL*> orderedSymbols;
 
@@ -302,10 +357,49 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Save( const std::optional<bool>& aOpt )
                 // New symbol without source file - create individual file
                 wxFileName saveFn( fn );
                 saveFn.SetName( EscapeString( name, CTX_FILENAME ) );
-                saveFn.SetExt( FILEEXT::KiCadSymbolLibFileExtension );
+                saveFn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB, KEMI_FORMAT::FLAVOR::KEMI ) );
 
                 symbolsByFile[ saveFn.GetFullPath() ].push_back( symbol );
             }
+        }
+
+        // Resolve every member before writing. Known official groups are first saves,
+        // so an existing native target must never be overwritten by them.
+        std::map<wxString, std::vector<LIB_SYMBOL*>> nativeGroups;
+
+        for( const auto& [filePath, symbols] : symbolsByFile )
+        {
+            wxFileName target( filePath );
+            target.SetPath( fn.GetPath() );
+            const wxString nativePath = KEMI_FORMAT::ResolveNativeSaveTarget(
+                    KEMI_FORMAT::DOC::SYMBOL_LIB, target.GetFullPath() );
+            auto& group = nativeGroups[nativePath];
+            group.insert( group.end(), symbols.begin(), symbols.end() );
+        }
+
+        // Retired official members need an empty native shadow, otherwise their deleted
+        // symbols would reappear on reopen. Never delete or rewrite an official source.
+        for( const wxString& deadFile : m_pendingFileDeletes )
+        {
+            wxFileName source( deadFile );
+            wxFileName official( source );
+            official.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                              KEMI_FORMAT::FLAVOR::LEGACY ) );
+
+            if( KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::SYMBOL_LIB, source.GetExt() )
+                    || official.FileExists() )
+            {
+                nativeGroups.try_emplace( KEMI_FORMAT::ResolveNativeSaveTarget(
+                        KEMI_FORMAT::DOC::SYMBOL_LIB, deadFile ) );
+            }
+        }
+
+        symbolsByFile = std::move( nativeGroups );
+
+        for( const auto& [target, symbols] : symbolsByFile )
+        {
+            KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SYMBOL_LIB, target,
+                    aFlavor.value_or( KEMI_FORMAT::FLAVOR::KEMI ), IsKemiOnly() );
         }
 
         // Sort each file's symbols by inheritance depth
@@ -332,7 +426,7 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Save( const std::optional<bool>& aOpt )
 
             auto formatter = std::make_unique<PRETTIFIED_FILE_OUTPUTFORMATTER>( oldFn.GetFullPath() );
 
-            formatLibraryHeader( *formatter.get() );
+            formatLibraryHeader( *formatter.get(), oldFn.GetFullPath(), aFlavor );
 
             for( LIB_SYMBOL* symbol : symbols )
                 SaveSymbol( symbol, *formatter.get() );
@@ -343,13 +437,16 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::Save( const std::optional<bool>& aOpt )
 
             // Update source file tracking for new symbols
             for( LIB_SYMBOL* symbol : symbols )
-                m_symbolSourceFiles[ symbol->GetName() ] = filePath;
+                m_symbolSourceFiles[ symbol->GetName() ] = oldFn.GetFullPath();
         }
 
         // Remove files for deleted symbols that are no longer needed
         for( const wxString& deadFile : m_pendingFileDeletes )
         {
-            if( symbolsByFile.find( deadFile ) == symbolsByFile.end() && wxFileExists( deadFile ) )
+            if( !KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                           wxFileName( deadFile ).GetExt() )
+                    && symbolsByFile.find( deadFile ) == symbolsByFile.end()
+                    && wxFileExists( deadFile ) )
             {
                 wxRemoveFile( deadFile );
             }
@@ -940,12 +1037,20 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::updateParentSymbolLinks()
 }
 
 
-void SCH_IO_KICAD_SEXPR_LIB_CACHE::formatLibraryHeader( OUTPUTFORMATTER& aFormatter )
+void SCH_IO_KICAD_SEXPR_LIB_CACHE::formatLibraryHeader( OUTPUTFORMATTER& aFormatter,
+        const wxString&, const std::optional<KEMI_FORMAT::FLAVOR>& aFlavor )
 {
-    aFormatter.Print( "(kicad_symbol_lib (version %d) (generator \"kicad_symbol_editor\") "
+    KEMI_FORMAT::FLAVOR flavor = aFlavor.value_or( KEMI_FORMAT::FLAVOR::KEMI );
+
+    aFormatter.Print( "(%s", KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::SYMBOL_LIB, flavor ).c_str() );
+
+    if( flavor == KEMI_FORMAT::FLAVOR::KEMI )
+        aFormatter.Print( " (format_version %d)", KEMI_FORMAT::FORMAT_VERSION );
+
+    aFormatter.Print( " (version %d) (generator \"kicad_symbol_editor\") "
                       "(generator_version \"%s\")",
                       SEXPR_SYMBOL_LIB_FILE_VERSION,
-                      GetMajorMinorVersion().c_str().AsChar() );
+                      KEMI_FORMAT::GeneratorVersion().c_str().AsChar() );
 }
 
 

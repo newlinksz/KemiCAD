@@ -32,7 +32,7 @@
 #include <wx/string.h>
 
 /** The caller owns the buffer. Reads and cursor moves throw IO_ERROR on overrun.
- * Strings retain raw Windows-1252 bytes until conversion with FromOrcadString. */
+ * Strings keep raw 8-bit bytes until FromOrcadString (CP936/GBK first, else CP1252). */
 class ORCAD_STREAM
 {
 public:
@@ -151,10 +151,10 @@ private:
 };
 
 
-/** Use an 8-bit fallback if Windows-1252 decoding fails. */
+/** Decode OrCAD 8-bit text: prefer CP936/GBK when CJK results, else Windows-1252. */
 wxString FromOrcadString( const std::string& aText );
 
-/** Fold ASCII letters only. Names stay raw Windows-1252 bytes, and the locale must not change the result. */
+/** Fold ASCII letters only. Names stay raw 8-bit bytes, and the locale must not change the result. */
 std::string OrcadLower( std::string_view aText );
 
 /** Case-insensitive comparison with the folding of OrcadLower. */

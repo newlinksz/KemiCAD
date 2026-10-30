@@ -26,6 +26,7 @@
 #include <common.h>     // For ExpandEnvVarSubstitutions
 #include <dialogs/dialog_plugin_options.h>
 #include <project.h>
+#include <kemi_format_profile.h>
 #include <panel_sym_lib_table.h>
 #include <lib_id.h>
 #include <libraries/library_table.h>
@@ -883,12 +884,12 @@ void PANEL_SYM_LIB_TABLE::onConvertLegacyLibraries( wxCommandEvent& event )
     {
         if( legacyRows.size() == 1 )
         {
-            msg.Printf( _( "Save '%s' as current KemiCAD format (*.kicad_sym) and replace legacy entry in table?" ),
+            msg.Printf( _( "Save '%s' as current KemiCAD format (*.kemi_sym) and replace legacy entry in table?" ),
                         cur_grid()->GetCellValue( legacyRows[0], COL_NICKNAME ) );
         }
         else
         {
-            msg.Printf( _( "Save %d libraries as current KemiCAD format (*.kicad_sym) and replace legacy entries "
+            msg.Printf( _( "Save %d libraries as current KemiCAD format (*.kemi_sym) and replace legacy entries "
                            "in table?" ),
                         (int) legacyRows.size() );
         }
@@ -910,7 +911,8 @@ void PANEL_SYM_LIB_TABLE::onConvertLegacyLibraries( wxCommandEvent& event )
         }
 
         wxFileName newLib( resolvedPath );
-        newLib.SetExt( "kicad_sym" );
+        newLib.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SYMBOL_LIB, KEMI_FORMAT::FLAVOR::KEMI ) );
+        KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY outputPolicy( newLib.GetPath() );
 
         if( newLib.Exists() )
         {
@@ -927,7 +929,8 @@ void PANEL_SYM_LIB_TABLE::onConvertLegacyLibraries( wxCommandEvent& event )
         wxString                    options = cur_grid()->GetCellValue( row, COL_OPTIONS );
         std::map<std::string, UTF8> props( LIBRARY_TABLE::ParseOptions( options.ToStdString() ) );
 
-        if( SCH_IO_MGR::ConvertLibrary( &props, legacyLib.GetFullPath(), newLib.GetFullPath() ) )
+        if( SCH_IO_MGR::ConvertLibrary( &props, legacyLib.GetFullPath(), newLib.GetFullPath(),
+                                       nullptr, &outputPolicy ) )
         {
             relPath = NormalizePath( newLib.GetFullPath(), &Pgm().GetLocalEnvVariables(), m_project );
 

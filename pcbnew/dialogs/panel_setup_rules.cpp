@@ -19,7 +19,7 @@
 
 #include <bitmaps.h>
 #include <common.h>
-#include <kiplatform/io.h>
+#include <kemi_format_profile.h>
 #include <widgets/std_bitmap_button.h>
 #include <widgets/paged_dialog.h>
 #include <pcb_edit_frame.h>
@@ -39,6 +39,7 @@
 #include <drc/drc_rule.h>
 #include <drc/drc_rule_condition.h>
 #include <drc/drc_rule_parser.h>
+#include <drc/rule_editor/drc_re_rule_saver.h>
 #include <tools/drc_tool.h>
 #include <pgm_base.h>
 #include <wildcards_and_files_ext.h>
@@ -1105,6 +1106,8 @@ bool PANEL_SETUP_RULES::TransferDataToWindow()
     }
 
     m_originalText = m_textEditor->GetText();
+    m_kemiOnlyRules = KEMI_FORMAT::HasKemiExt( rulesFile.GetFullPath() )
+                      || DRC_RULE_SAVER::IsKemiText( m_originalText );
 
     if( m_frame->Prj().IsNullProject() )
     {
@@ -1122,17 +1125,21 @@ bool PANEL_SETUP_RULES::TransferDataFromWindow()
     if( !IsModified() )
         return true;
 
-    wxString rulesFilepath = m_frame->GetBoard()->GetDesignRulesPath();
+    const wxString content = m_textEditor->GetText();
+    m_kemiOnlyRules |= DRC_RULE_SAVER::IsKemiText( content );
+    const wxString rulesFilepath = m_frame->GetBoard()->GetDesignRulesWritePath( m_kemiOnlyRules );
+    DRC_RE_FILE_TRIVIA trivia;
+    trivia.kemiOnly = m_kemiOnlyRules;
+    DRC_RULE_SAVER saver;
+    wxString writeError;
 
-    wxString    content = m_textEditor->GetText();
-    std::string utf8 = std::string( content.mb_str( wxConvUTF8 ) );
-    wxString    writeError;
-
-    if( !KIPLATFORM::IO::AtomicWriteFile( rulesFilepath, utf8.data(), utf8.size(), &writeError ) )
+    if( !saver.SaveTextFile( rulesFilepath, content, m_frame->GetBoard(), trivia, &writeError ) )
     {
         wxLogError( _( "Cannot save design rules to '%s': %s" ), rulesFilepath, writeError );
         return false;
     }
+
+    m_kemiOnlyRules |= KEMI_FORMAT::HasKemiExt( rulesFilepath );
 
     try
     {
@@ -1226,10 +1233,7 @@ void PANEL_SETUP_RULES::ImportSettingsFrom( BOARD* aBoard )
 {
     if( !m_frame->Prj().IsNullProject() )
     {
-        wxFileName relFile = aBoard->GetFileName();
-        relFile.SetExt( FILEEXT::DesignRulesFileExtension );
-
-        wxFileName absFile( aBoard->GetProject()->AbsolutePath( relFile.GetFullName() ) );
+        wxFileName absFile( aBoard->GetDesignRulesPath() );
 
         if( absFile.FileExists() )
         {
@@ -1246,6 +1250,10 @@ void PANEL_SETUP_RULES::ImportSettingsFrom( BOARD* aBoard )
                 }
 
                 m_textEditor->EmptyUndoBuffer();
+
+                m_kemiOnlyRules |= aBoard->IsKemiOnly()
+                                  || KEMI_FORMAT::HasKemiExt( absFile.GetFullPath() )
+                                  || DRC_RULE_SAVER::IsKemiText( m_textEditor->GetText() );
 
                 wxCommandEvent dummy;
                 OnCompile( dummy );

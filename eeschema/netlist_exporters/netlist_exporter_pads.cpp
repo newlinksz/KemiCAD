@@ -28,10 +28,14 @@
 #include <map>
 
 #include "netlist_exporter_pads.h"
+#include "netlist_exporter_xml.h"
 
 bool NETLIST_EXPORTER_PADS::writeNetlist( const wxString& aOutFileName, unsigned /* aNetlistOptions */,
                                           REPORTER& aReporter )
 {
+    if( !ValidateFootprintPadMappings( GNL_NETS, aReporter ) )
+        return false;
+
     int ret = 0;
     FILE* f = nullptr;
 

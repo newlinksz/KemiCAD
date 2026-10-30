@@ -40,11 +40,15 @@ set( QA_PCBNEW_SRCS
     test_board_design_settings.cpp
     test_board_item_index.cpp
     test_board_loader.cpp
+    test_kemi_pcb.cpp
+    test_kemi_pcb_import.cpp
+    test_kemi_persistent_output.cpp
+    drc/test_kemi_rules.cpp
     test_board_item.cpp
     test_drill_chart.cpp
     test_board_commit.cpp
-    test_board_downgrade.cpp
-    test_downgrade_oracle.cpp
+    # Official-format export success suites are retired (sources and fixtures retained).
+    # Import-only save rejection is covered by test_kemi_persistent_output.cpp.
     test_text_var_reactive.cpp
     test_clipboard_group.cpp
     test_board_statistics.cpp
@@ -72,6 +76,8 @@ set( QA_PCBNEW_SRCS
     test_footprint_editor_tabs.cpp
     test_footprint_import_reconciler.cpp
     test_import_design_rules.cpp
+    test_project_template.cpp
+    ${CMAKE_SOURCE_DIR}/kicad/project_template.cpp
     test_footprint_library_adapter.cpp
     test_footprint_load_save.cpp
     test_footprint_pad_fixup.cpp
@@ -105,6 +111,7 @@ set( QA_PCBNEW_SRCS
     test_pad_check.cpp
     test_pad_flashing.cpp
     test_pad_numbering.cpp
+    test_kemi_npth_pad_number.cpp
     test_pcb_differ.cpp
     test_diff_canvas_context.cpp
     test_pcb_merge_applier.cpp
@@ -273,6 +280,7 @@ set( QA_PCBNEW_SRCS
     pcb_io/eagle/test_eagle_managed_lib_naming.cpp
     pcb_io/pads/test_pads_import.cpp
     pcb_io/pads/test_pads_binary_import.cpp
+    pcb_io/pads/test_kemi_pads_rules.cpp
     pcb_io/pads/test_pads_layer_mapper.cpp
     pcb_io/pads/test_pads_arc_structures.cpp
     pcb_io/pads/test_pads_part_structures.cpp
@@ -379,6 +387,7 @@ include_directories( BEFORE ${INC_BEFORE} )
 include_directories(
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/kicad
     ${CMAKE_SOURCE_DIR}/3d-viewer
     ${CMAKE_SOURCE_DIR}/common
     ${CMAKE_SOURCE_DIR}/pcbnew

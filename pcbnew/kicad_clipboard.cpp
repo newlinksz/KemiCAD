@@ -35,9 +35,11 @@
 #include <pcb_table.h>
 #include <zone.h>
 #include <locale_io.h>
+#include <scoped_set_reset.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr_parser.h>
 #include <kicad_clipboard.h>
+#include <kemi_format_profile.h>
 #include <kidialog.h>
 #include <io/kicad/kicad_io_utils.h>
 
@@ -202,6 +204,8 @@ void CLIPBOARD_IO::SaveSelection( const PCB_SELECTION& aSelected, bool isFootpri
         // locate the reference point at (0, 0) in the copied items
         newFootprint.Move( VECTOR2I( -refPoint.x, -refPoint.y ) );
 
+        SetFootprintWriteFlavor( newFootprint.IsKemiOnly() ? KEMI_FORMAT::FLAVOR::KEMI
+                                                           : KEMI_FORMAT::FLAVOR::LEGACY );
         Format( static_cast<BOARD_ITEM*>( &newFootprint ) );
 
         newFootprint.SetParent( nullptr );
@@ -324,6 +328,8 @@ void CLIPBOARD_IO::SaveSelection( const PCB_SELECTION& aSelected, bool isFootpri
         for( PCB_TABLE* table : promotedTables )
             deleteUnselectedCells( table );
 
+        SetFootprintWriteFlavor( partialFootprint.IsKemiOnly() ? KEMI_FORMAT::FLAVOR::KEMI
+                                                               : KEMI_FORMAT::FLAVOR::LEGACY );
         Format( &partialFootprint );
 
         partialFootprint.SetParent( nullptr );
@@ -333,10 +339,18 @@ void CLIPBOARD_IO::SaveSelection( const PCB_SELECTION& aSelected, bool isFootpri
         // we will fake being a .kicad_pcb to get the full parser kicking
         // This means we also need layers and nets
         LOCALE_IO io;
+        SCOPED_SET_RESET<int> embeddedFootprints( m_ctl, m_ctl | CTL_OMIT_FOOTPRINT_VERSION );
 
-        m_formatter.Print( "(kicad_pcb (version %d) (generator \"pcbnew\") (generator_version %s)",
+        m_formatter.Print( "(%s", KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::PCB,
+                m_board->IsKemiOnly() ? KEMI_FORMAT::FLAVOR::KEMI
+                                      : KEMI_FORMAT::FLAVOR::LEGACY ).c_str() );
+
+        if( m_board->IsKemiOnly() )
+            m_formatter.Print( " (format_version %d)", KEMI_FORMAT::FORMAT_VERSION );
+
+        m_formatter.Print( " (version %d) (generator \"pcbnew\") (generator_version %s)",
                            SEXPR_BOARD_FILE_VERSION,
-                           m_formatter.Quotew( GetMajorMinorVersion() ).c_str() );
+                           m_formatter.Quotew( KEMI_FORMAT::GeneratorVersion() ).c_str() );
 
         formatBoardLayers( m_board );
 
@@ -505,9 +519,17 @@ void CLIPBOARD_IO::SaveBoard( const wxString& aFileName, BOARD& aBoard,
 
     m_board = &aBoard; // after init()
 
-    m_formatter.Print( "(kicad_pcb (version %d) (generator \"pcbnew\") (generator_version %s)",
+    SCOPED_SET_RESET<int> embeddedFootprints( m_ctl, m_ctl | CTL_OMIT_FOOTPRINT_VERSION );
+    m_formatter.Print( "(%s", KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::PCB,
+            aBoard.IsKemiOnly() ? KEMI_FORMAT::FLAVOR::KEMI
+                                : KEMI_FORMAT::FLAVOR::LEGACY ).c_str() );
+
+    if( aBoard.IsKemiOnly() )
+        m_formatter.Print( " (format_version %d)", KEMI_FORMAT::FORMAT_VERSION );
+
+    m_formatter.Print( " (version %d) (generator \"pcbnew\") (generator_version %s)",
                   SEXPR_BOARD_FILE_VERSION,
-                  m_formatter.Quotew( GetMajorMinorVersion() ).c_str() );
+                  m_formatter.Quotew( KEMI_FORMAT::GeneratorVersion() ).c_str() );
 
     Format( &aBoard );
 

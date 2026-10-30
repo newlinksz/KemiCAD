@@ -52,7 +52,7 @@ struct NETCHAIN_HIER_ROUNDTRIP_FIXTURE
 
         wxFileName::Mkdir( m_workDir.GetFullPath(), 0755, wxPATH_MKDIR_FULL );
 
-        wxString projectPath = m_workDir.GetFullPath() + wxT( "hier_roundtrip.kicad_pro" );
+        wxString projectPath = m_workDir.GetFullPath() + wxS( "hier_roundtrip.kemi_pro" );
         m_tempFiles.push_back( projectPath );
 
         m_settingsManager.LoadProject( projectPath.ToStdString() );
@@ -125,16 +125,16 @@ BOOST_FIXTURE_TEST_CASE( NetChainHierarchicalRoundTripPreservesOverrides,
     SCH_SCREEN* topScreen = topSheet->GetScreen();
     BOOST_REQUIRE( topScreen );
 
-    wxString rootFileName = PathInWorkDir( wxT( "hier_roundtrip.kicad_sch" ) );
-    wxString subFileName  = PathInWorkDir( wxT( "hier_roundtrip_sub.kicad_sch" ) );
+    wxString rootFileName = PathInWorkDir( wxS( "hier_roundtrip.kemi_sch" ) );
+    wxString subFileName  = PathInWorkDir( wxS( "hier_roundtrip_sub.kemi_sch" ) );
 
-    topSheet->SetFileName( wxT( "hier_roundtrip.kicad_sch" ) );
+    topSheet->SetFileName( wxS( "hier_roundtrip.kemi_sch" ) );
     topScreen->SetFileName( rootFileName );
 
     SCH_SHEET*  subSheet  = new SCH_SHEET( m_schematic.get() );
     SCH_SCREEN* subScreen = new SCH_SCREEN( m_schematic.get() );
     subSheet->SetName( wxT( "SubSheet" ) );
-    subSheet->SetFileName( wxT( "hier_roundtrip_sub.kicad_sch" ) );
+    subSheet->SetFileName( wxS( "hier_roundtrip_sub.kemi_sch" ) );
     subSheet->SetScreen( subScreen );
     subScreen->SetFileName( subFileName );
     topScreen->Append( subSheet );

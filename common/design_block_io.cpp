@@ -19,6 +19,11 @@
  */
 
 #include <common.h>
+#include <ctl_flags.h>
+#include <kiway.h>
+#include <dsnlexer.h>
+#include <pgm_base.h>
+#include <richio.h>
 #include <gestfich.h>
 #include <json_common.h>
 #include <i18n_utility.h>
@@ -298,9 +303,24 @@ DESIGN_BLOCK* DESIGN_BLOCK_IO::DesignBlockLoad( const wxString& aLibraryPath,
 {
     wxString dbPath = aLibraryPath + wxFileName::GetPathSeparator() + aDesignBlockName + wxT( "." )
                       + FILEEXT::KiCadDesignBlockPathExtension + wxFileName::GetPathSeparator();
-    wxString dbSchPath = dbPath + aDesignBlockName + wxT( "." )
-                         + FILEEXT::KiCadSchematicFileExtension;
-    wxString dbPcbPath = dbPath + aDesignBlockName + wxT( "." ) + FILEEXT::KiCadPcbFileExtension;
+    auto documentPath = [&]( KEMI_FORMAT::DOC aDoc ) -> wxString
+    {
+        const std::vector<std::string> extensions = KEMI_FORMAT::ReadableExts( aDoc );
+
+        // Prefer a saved native member when an imported official member is still present.
+        for( auto it = extensions.rbegin(); it != extensions.rend(); ++it )
+        {
+            const wxString path = dbPath + aDesignBlockName + wxS( "." ) + wxString::FromUTF8( *it );
+
+            if( wxFileExists( path ) )
+                return path;
+        }
+
+        return wxEmptyString;
+    };
+
+    const wxString dbSchPath = documentPath( KEMI_FORMAT::DOC::SCHEMATIC );
+    const wxString dbPcbPath = documentPath( KEMI_FORMAT::DOC::PCB );
     wxString dbMetadataPath = dbPath + aDesignBlockName + wxT( "." ) + FILEEXT::JsonFileExtension;
 
     if( !wxDir::Exists( dbPath ) )
@@ -312,10 +332,10 @@ DESIGN_BLOCK* DESIGN_BLOCK_IO::DesignBlockLoad( const wxString& aLibraryPath,
     // one layer above
     newDB->SetLibId( LIB_ID( wxEmptyString, aDesignBlockName ) );
 
-    if( wxFileExists( dbSchPath ) )
+    if( !dbSchPath.IsEmpty() )
         newDB->SetSchematicFile( dbSchPath );
 
-    if( wxFileExists( dbPcbPath ) )
+    if( !dbPcbPath.IsEmpty() )
         newDB->SetBoardFile( dbPcbPath );
 
     // Parse the JSON file if it exists
@@ -368,6 +388,62 @@ bool DESIGN_BLOCK_IO::DesignBlockExists( const wxString&                    aLib
 }
 
 
+void DESIGN_BLOCK_IO::saveDocument( KEMI_FORMAT::DOC aDoc, const wxString& aSource,
+                                     const wxString& aTarget )
+{
+    using namespace KEMI_FORMAT;
+    CheckPersistentOutput( aDoc, aTarget, FLAVOR::KEMI, true );
+
+    if( wxFileName( aSource ).SameAs( wxFileName( aTarget ) ) )
+        return;
+
+    FILE_LINE_READER reader( aSource );
+    DSNLEXER lexer( nullptr, 0, nullptr, &reader );
+    const bool native = lexer.NextTok() == DSN_LEFT && lexer.NextTok() == DSN_SYMBOL
+                        && lexer.CurStr() == Profile( aDoc ).kemiRoot;
+
+    if( !native )
+    {
+        if( wxFileName( aTarget ).Exists() )
+            THROW_IO_ERROR( _( "The native design block member already exists. Choose another block name." ) );
+
+        bool saved = false;
+
+        if( m_converter )
+        {
+            saved = m_converter( aDoc, aSource, aTarget );
+        }
+        else
+        {
+            // Keep this bus alive: a lazily loaded kiface retains its startup KIWAY pointer.
+            static KIWAY converterKiway( KFCTL_CPP_PROJECT_SUITE | ( Pgm().IsGUI() ? 0 : KFCTL_CLI ) );
+            KIFACE* iface = converterKiway.KiFACE( aDoc == DOC::SCHEMATIC ? KIWAY::FACE_SCH : KIWAY::FACE_PCB );
+            saved = iface && iface->SaveNativeDocument( aSource, aTarget );
+        }
+
+        if( !saved )
+            THROW_IO_ERROR( _( "Could not convert the design block member to native KemiCAD format." ) );
+
+        return;
+    }
+
+    wxFFile input( aSource, wxS( "rb" ) );
+
+    if( !input.IsOpened() || input.Length() < 0 )
+        THROW_IO_ERRORF( _( "Could not read design block member '%s'." ), aSource );
+
+    std::string bytes( static_cast<size_t>( input.Length() ), '\0' );
+
+    if( input.Read( bytes.data(), bytes.size() ) != bytes.size() )
+        THROW_IO_ERRORF( _( "Could not read design block member '%s'." ), aSource );
+
+    wxString error;
+
+    if( !KIPLATFORM::IO::AtomicWriteFile( aTarget, bytes.data(), bytes.size(), &error ) )
+        THROW_IO_ERRORF( _( "Could not save design block member '%s': %s" ), aTarget, error );
+}
+
+
 void DESIGN_BLOCK_IO::DesignBlockSave( const wxString&                    aLibraryPath,
                                        const DESIGN_BLOCK*                aDesignBlock,
                                        const std::map<std::string, UTF8>* aProperties )
@@ -400,44 +476,16 @@ void DESIGN_BLOCK_IO::DesignBlockSave( const wxString&                    aLibra
             THROW_IO_ERRORF( _( "Design block folder '%s' could not be created." ), dbFolder.GetFullPath().GetData() );
     }
 
-    if( !aDesignBlock->GetSchematicFile().IsEmpty() )
+    for( const auto& [doc, source] : {
+                 std::make_pair( KEMI_FORMAT::DOC::SCHEMATIC, aDesignBlock->GetSchematicFile() ),
+                 std::make_pair( KEMI_FORMAT::DOC::PCB, aDesignBlock->GetBoardFile() ) } )
     {
-        // The new schematic file name is based on the design block name, not the source sheet name
-        wxString dbSchematicFile = dbFolder.GetFullPath() + aDesignBlock->GetLibId().GetLibItemName() + wxT( "." )
-                                   + FILEEXT::KiCadSchematicFileExtension;
+        if( source.IsEmpty() )
+            continue;
 
-        // If the source and destination files are the same, then we don't need to copy the file
-        // as we are just updating the metadata
-        if( schematicFile.GetFullPath() != dbSchematicFile )
-        {
-            // Copy the source sheet file to the design block folder, under the design block name
-            if( !wxCopyFile( schematicFile.GetFullPath(), dbSchematicFile ) )
-            {
-                THROW_IO_ERRORF( _( "Schematic file '%s' could not be saved as design block at '%s'." ),
-                                 schematicFile.GetFullPath(),
-                                 dbSchematicFile );
-            }
-        }
-    }
-
-    if( !aDesignBlock->GetBoardFile().IsEmpty() )
-    {
-        // The new Board file name is based on the design block name, not the source sheet name
-        wxString dbBoardFile = dbFolder.GetFullPath() + aDesignBlock->GetLibId().GetLibItemName() + wxT( "." )
-                               + FILEEXT::KiCadPcbFileExtension;
-
-        // If the source and destination files are the same, then we don't need to copy the file
-        // as we are just updating the metadata
-        if( boardFile.GetFullPath() != dbBoardFile )
-        {
-            // Copy the source sheet file to the design block folder, under the design block name
-            if( !wxCopyFile( boardFile.GetFullPath(), dbBoardFile ) )
-            {
-                THROW_IO_ERRORF( _( "Board file '%s' could not be saved as design block at '%s'." ),
-                                 boardFile.GetFullPath(),
-                                 dbBoardFile );
-            }
-        }
+        wxFileName target( dbFolder.GetFullPath(), aDesignBlock->GetLibId().GetLibItemName(),
+                           KEMI_FORMAT::Ext( doc, KEMI_FORMAT::FLAVOR::KEMI ) );
+        saveDocument( doc, source, target.GetFullPath() );
     }
 
     wxString dbMetadataFile = dbFolder.GetFullPath() + aDesignBlock->GetLibId().GetLibItemName()

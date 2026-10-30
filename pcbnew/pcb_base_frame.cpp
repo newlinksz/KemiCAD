@@ -29,6 +29,7 @@
 #include <advanced_config.h>
 #include <base_units.h>
 #include <board.h>
+#include <kemi_format_profile.h>
 #include <cleanup_item.h>
 #include <collectors.h>
 #include <confirm.h>
@@ -1129,7 +1130,11 @@ void PCB_BASE_FRAME::setFPWatcher( FOOTPRINT* aFootprint )
     }
 
     m_watcherFileName.Assign( libfullname, aFootprint->GetFPID().GetLibItemName(),
-                              FILEEXT::KiCadFootprintFileExtension );
+                              KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::FOOTPRINT,
+                                                 KEMI_FORMAT::FLAVOR::KEMI ) );
+
+    if( !m_watcherFileName.FileExists() )
+        m_watcherFileName.SetExt( FILEEXT::KiCadFootprintFileExtension );
 
     if( !m_watcherFileName.FileExists() )
         return;

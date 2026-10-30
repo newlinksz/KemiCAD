@@ -24,18 +24,18 @@
 // Identify the type of files handled by KiCad manager
 //
 // When changing this enum  please verify (and perhaps update)
-// PROJECT_TREE_PANE::GetFileExt(), s_AllowedExtensionsToList[]
+// PROJECT_TREE_PANE::GetFileExt(), s_allowedExtensionsToList[] (+ KEMI_FORMAT kemi_* filters)
 // and the list of images in PROJECT_TREE::LoadIcons(). This icons must me in the same
-// order as TREE_FILE_TYPE
+// order as TREE_FILE_TYPE. Dual-format types also accept .kemi_* via KEMI_FORMAT.
 enum class TREE_FILE_TYPE
 {
     ROOT = 0,
     LEGACY_PROJECT,         // Legacy project file (.pro)
-    JSON_PROJECT,           // JSON formatted project file (.kicad_pro)
+    JSON_PROJECT,           // JSON project file (.kicad_pro / .kemi_pro)
     LEGACY_SCHEMATIC,       // Schematic file (.sch)
-    SEXPR_SCHEMATIC,        // Schematic file (.kicad_sch)
+    SEXPR_SCHEMATIC,        // Schematic file (.kicad_sch / .kemi_sch)
     LEGACY_PCB,             // board file (.brd) legacy format
-    SEXPR_PCB,              // board file (.kicad_brd) new s expression format
+    SEXPR_PCB,              // board file (.kicad_pcb / .kemi_pcb)
     GERBER,                 // Gerber  file (.pho, .g*)
     GERBER_JOB_FILE,        // Gerber  file (.gbrjob)
     HTML,                   // HTML file (.htm, *.html)
@@ -54,13 +54,13 @@ enum class TREE_FILE_TYPE
     DRILL_XNC,             // Similar Excellon drill file (.xnc)
     SVG,                   // SVG file (.svg)
     CSV,                   // CSV file (.csv)
-    DRAWING_SHEET,         // Drawing sheet file (.kicad_wks)
-    FOOTPRINT_FILE,        // footprint file (.kicad_mod)
+    DRAWING_SHEET,         // Drawing sheet file (.kicad_wks / .kemi_wks)
+    FOOTPRINT_FILE,        // footprint file (.kicad_mod / .kemi_mod)
     SCHEMATIC_LIBFILE,     // schematic library file (.lib)
-    SEXPR_SYMBOL_LIB_FILE, // s-expression symbol library file (.kicad_sym)
-    DESIGN_RULES,          // design rules (.kicad_dru)
+    SEXPR_SYMBOL_LIB_FILE, // s-expression symbol library file (.kicad_sym / .kemi_sym)
+    DESIGN_RULES,          // design rules (.kicad_dru / .kemi_dru)
     ZIP_ARCHIVE,           // .zip file
-    JOBSET_FILE,             // jobs (.kicad_jobs)
+    JOBSET_FILE,             // jobs (.kicad_jobset / .kemi_jobset)
     MAX                    // Sentinel
 };
 

@@ -29,6 +29,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <board.h>
+#include <kemi_format_profile.h>
 #include <board_commit.h>
 #include <board_design_settings.h>
 #include <footprint.h>
@@ -80,7 +81,7 @@ void BOARD_DUMPER::DumpBoardToFile( BOARD& aBoard, const std::string& aName ) co
         return;
 
     auto path = std::filesystem::temp_directory_path() / aName;
-    path += ".kicad_pcb";
+    path += wxS( ".kemi_pcb" );
 
     BOOST_TEST_MESSAGE( "Dumping board file: " << path.string() );
     ::KI_TEST::DumpBoardToFile( aBoard, path.string() );
@@ -96,11 +97,23 @@ void LoadBoard( SETTINGS_MANAGER& aSettingsManager, const wxString& aRelPath,
         aBoard = nullptr;
     }
 
-    std::string absPath = GetPcbnewTestDataDir() + aRelPath.ToStdString();
-    wxFileName  projectFile( absPath + ".kicad_pro" );
-    wxFileName  legacyProject( absPath + ".pro" );
-    std::string boardPath = absPath + ".kicad_pcb";
-    wxFileName  rulesFile( absPath + ".kicad_dru" );
+    wxFileName boardFile( aRelPath );
+
+    if( !boardFile.IsAbsolute() )
+        boardFile.Assign( wxString::FromUTF8( GetPcbnewTestDataDir() ) + aRelPath );
+
+    if( !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PCB, boardFile.GetExt() ) )
+        boardFile.SetFullName( boardFile.GetFullName() + wxS( ".kicad_pcb" ) );
+
+    const KEMI_FORMAT::FLAVOR flavor = KEMI_FORMAT::FlavorForPath(
+            KEMI_FORMAT::DOC::PCB, boardFile.GetFullPath() );
+    wxFileName projectFile( boardFile );
+    projectFile.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, flavor ) );
+    wxFileName legacyProject( boardFile );
+    legacyProject.SetExt( wxS( "pro" ) );
+    const std::string boardPath = boardFile.GetFullPath().ToStdString();
+    wxFileName rulesFile( boardFile );
+    rulesFile.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::DESIGN_RULES, flavor ) );
 
     if( projectFile.Exists() )
     {
@@ -280,7 +293,7 @@ void LoadAndTestFootprintFile( const wxString& aLibRelativePath, const wxString&
          */
         SCOPED_TEMP_DIR             tempDir( "kicad_qa_fp_roundtrip" );
         const std::filesystem::path libPath = tempDir.CreateChildDir( "fp_roundtrip.pretty" );
-        const wxString              fpFilename = fp1->GetFPID().GetLibItemName() + wxString( ".kicad_mod" );
+        const wxString              fpFilename = fp1->GetFPID().GetLibItemName() + wxString( ".kemi_mod" );
 
         BOOST_TEST_MESSAGE( "Resaving footprint: " << fpFilename << " in " << libPath );
 

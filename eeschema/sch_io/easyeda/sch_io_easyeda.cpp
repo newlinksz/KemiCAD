@@ -29,6 +29,7 @@
 #include <schematic.h>
 #include <string_utils.h>
 #include <reporter.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 #include <wx/log.h>
 #include <wx/stdstream.h>
@@ -528,7 +529,7 @@ static void LoadSchematic( SCHEMATIC* aSchematic, SCH_SHEET* aRootSheet, const w
 
                     wxFileName sheetFname( aFileName );
                     sheetFname.SetFullName( sheetBaseName + wxS( "." )
-                                            + wxString::FromUTF8( FILEEXT::KiCadSchematicFileExtension ) );
+                                            + wxString::FromUTF8( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt ) );
 
                     wxFileName relSheetPath( sheetFname );
                     relSheetPath.MakeRelativeTo( wxFileName( aRootSheet->GetFileName() ).GetPath() );

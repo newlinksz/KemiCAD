@@ -225,7 +225,7 @@ void testGroupsEqual( const GROUPS& groups1, const GROUPS& groups2 )
 void testSaveLoad( const std::vector<std::vector<ItemType>>& spec )
 {
     std::unique_ptr<BOARD> board1 = createBoard( spec );
-    auto path = std::filesystem::temp_directory_path() / "group_saveload_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "group_saveload_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *board1, path.string() );
 
     std::unique_ptr<BOARD> board2 = ::KI_TEST::ReadBoardFromFileOrStream( path.string() );
@@ -258,7 +258,7 @@ BOOST_AUTO_TEST_CASE( HealthyGroups )
 BOOST_AUTO_TEST_CASE( SingleMemberGroupsSaved )
 {
     std::unique_ptr<BOARD> board1 = createBoard( { { TEXT0 } } );
-    auto path = std::filesystem::temp_directory_path() / "group_saveload_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "group_saveload_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *board1, path.string() );
 
     std::unique_ptr<BOARD> board2 = ::KI_TEST::ReadBoardFromFileOrStream( path.string() );
@@ -349,7 +349,7 @@ BOOST_AUTO_TEST_CASE( DeepCloneGroupMembership )
             },
             RECURSE_MODE::RECURSE );
 
-    auto path = std::filesystem::temp_directory_path() / "group_deepclone_tst.kicad_pcb";
+    auto path = std::filesystem::temp_directory_path() / "group_deepclone_tst.kemi_pcb";
     ::KI_TEST::DumpBoardToFile( *tempBoard, path.string() );
 
     std::unique_ptr<BOARD> reloaded = ::KI_TEST::ReadBoardFromFileOrStream( path.string() );

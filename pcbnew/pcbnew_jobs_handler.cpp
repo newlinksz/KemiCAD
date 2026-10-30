@@ -18,6 +18,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <kemi_format_profile.h>
+#include <kemi_project_paths.h>
 #include <import_net_names.h>
 #include <diff_merge/merge_dispatch.h>
 #include <richio.h>
@@ -38,6 +40,7 @@
 #include <board_design_settings.h>
 #include <project/net_settings.h>
 #include <project/project_file.h>
+#include <project/project_local_settings.h>
 #include <diff_merge/project_file_patch.h>
 #include <diff_merge/kicad_diff_types.h>
 #include <settings/json_settings_internals.h>
@@ -52,6 +55,7 @@
 #include <drawing_sheet/ds_proxy_view_item.h>
 #include <footprint.h>
 #include <footprint_import_reconciler.h>
+#include <import_proj_properties.h>
 #include <jobs/job_export_bom.h>
 #include <jobs/job_fp_export_svg.h>
 #include <jobs/job_fp_upgrade.h>
@@ -127,6 +131,7 @@
 #include <wildcards_and_files_ext.h>
 #include <export_vrml.h>
 #include <kiplatform/io.h>
+#include <drc/rule_editor/drc_re_rule_saver.h>
 #include <settings/settings_manager.h>
 #include <dialogs/dialog_gendrill.h>
 #include <dialogs/dialog_gen_footprint_position.h>
@@ -546,15 +551,50 @@ BOARD* PCBNEW_JOBS_HANDLER::getBoard( const wxString& aPath )
     auto getProjectForBoard = [&]( const wxString& aBoardPath ) -> PROJECT*
     {
         wxFileName pro = aBoardPath;
-        pro.SetExt( FILEEXT::ProjectFileExtension );
         pro.MakeAbsolute();
 
-        PROJECT* project = settingsManager.GetProject( pro.GetFullPath() );
+        const KEMI_FORMAT::FLAVOR boardFlavor =
+                KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PCB, pro.GetFullPath() );
+        pro.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, boardFlavor ) );
+        wxString projectPath = pro.GetFullPath();
+
+        if( !wxFileExists( projectPath ) )
+        {
+            const KEMI_FORMAT::FLAVOR other = ( boardFlavor == KEMI_FORMAT::FLAVOR::KEMI )
+                                                      ? KEMI_FORMAT::FLAVOR::LEGACY
+                                                      : KEMI_FORMAT::FLAVOR::KEMI;
+            wxFileName alt( pro );
+            alt.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, other ) );
+
+            if( wxFileExists( alt.GetFullPath() ) )
+                projectPath = alt.GetFullPath();
+        }
+
+        PROJECT* project = settingsManager.GetProject( projectPath );
 
         if( !project )
         {
-            settingsManager.LoadProject( pro.GetFullPath(), true );
-            project = settingsManager.GetProject( pro.GetFullPath() );
+            const bool loadedOk = settingsManager.LoadProject( projectPath, true );
+            project = settingsManager.GetProject( projectPath );
+
+            // Propagate Kemi version/marker rejection; keep empty-error paths
+            // (missing sidecar / legacy empty) so callers can use defaults.
+            if( project && !loadedOk )
+            {
+                const wxString& err = project->GetProjectFile().GetLoadError();
+
+                if( !err.IsEmpty() )
+                {
+                    loadError = err;
+                    settingsManager.UnloadProject( project, false );
+                    return nullptr;
+                }
+            }
+        }
+        else if( !project->GetProjectFile().GetLoadError().IsEmpty() )
+        {
+            loadError = project->GetProjectFile().GetLoadError();
+            return nullptr;
         }
 
         return project;
@@ -592,9 +632,23 @@ BOARD* PCBNEW_JOBS_HANDLER::getBoard( const wxString& aPath )
         if( pcbPath.IsEmpty() )
         {
             wxFileName path = Pgm().GetSettingsManager().Prj().GetProjectFullName();
-            path.SetExt( FILEEXT::KiCadPcbFileExtension );
+            const KEMI_FORMAT::FLAVOR flavor =
+                    KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PROJECT, path.GetFullPath() );
+            path.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, flavor ) );
             path.MakeAbsolute();
             pcbPath = path.GetFullPath();
+
+            if( !wxFileExists( pcbPath ) )
+            {
+                const KEMI_FORMAT::FLAVOR other = ( flavor == KEMI_FORMAT::FLAVOR::KEMI )
+                                                          ? KEMI_FORMAT::FLAVOR::LEGACY
+                                                          : KEMI_FORMAT::FLAVOR::KEMI;
+                wxFileName alt( path );
+                alt.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, other ) );
+
+                if( wxFileExists( alt.GetFullPath() ) )
+                    pcbPath = alt.GetFullPath();
+            }
         }
 
         if( !m_cliBoard )
@@ -2932,9 +2986,17 @@ int PCBNEW_JOBS_HANDLER::JobExportDrc( JOB* aJob )
         }
         else
         {
-            wxFileName schematicPath( drcJob->m_filename );
-            schematicPath.MakeAbsolute();
-            schematicPath.SetExt( FILEEXT::KiCadSchematicFileExtension );
+            wxFileName boardPath( drcJob->m_filename );
+            boardPath.MakeAbsolute();
+
+            // Look for the schematic in the board's own flavor first (.kemi_sch next to a
+            // .kemi_pcb), then the official and legacy schematic extensions.
+            wxFileName schematicPath( KEMI_FORMAT::RelatedDocumentPath( KEMI_FORMAT::DOC::PCB,
+                                                                         KEMI_FORMAT::DOC::SCHEMATIC,
+                                                                         boardPath.GetFullPath() ) );
+
+            if( !schematicPath.Exists() )
+                schematicPath.SetExt( FILEEXT::KiCadSchematicFileExtension );
 
             if( !schematicPath.Exists() )
                 schematicPath.SetExt( FILEEXT::LegacySchematicFileExtension );
@@ -2949,11 +3011,23 @@ int PCBNEW_JOBS_HANDLER::JobExportDrc( JOB* aJob )
                 typedef bool ( *NETLIST_FN_PTR )( const wxString&, std::string&, KIWAY* );
                 KIFACE*        eeschema = m_kiway->KiFACE( KIWAY::FACE_SCH );
                 NETLIST_FN_PTR netlister = (NETLIST_FN_PTR) eeschema->IfaceOrAddress( KIFACE_NETLIST_SCHEMATIC );
-                ( *netlister )( schematicPath.GetFullPath(), netlist_str, m_kiway );
+                if( !( *netlister )( schematicPath.GetFullPath(), netlist_str, m_kiway ) )
+                {
+                    m_reporter->Report( _( "Failed to prepare the schematic netlist for parity tests." ),
+                                        RPT_SEVERITY_ERROR );
+                    return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+                }
             }
         }
 
-        if( netlist_str == MAIL_SCH_GET_NETLIST_CANCELLED )
+        if( netlist_str.rfind( MAIL_SCH_GET_NETLIST_FAILED, 0 ) == 0 )
+        {
+            m_reporter->Report(
+                    wxString::FromUTF8( netlist_str.substr( sizeof( MAIL_SCH_GET_NETLIST_FAILED ) - 1 ) ),
+                    RPT_SEVERITY_ERROR );
+            return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+        }
+        else if( netlist_str == MAIL_SCH_GET_NETLIST_CANCELLED )
         {
             checkParity = false;
         }
@@ -3324,7 +3398,9 @@ int PCBNEW_JOBS_HANDLER::JobUpgrade( JOB* aJob )
 
         if( shouldSave )
         {
-            pi->SaveBoard( brd->GetFileName(), *brd );
+            const wxString target = KEMI_FORMAT::ResolveNativeSaveTarget(
+                    KEMI_FORMAT::DOC::PCB, brd->GetFileName() );
+            pi->SaveBoard( target, *brd );
             m_reporter->Report( _( "Successfully saved board file using the latest format\n" ), RPT_SEVERITY_INFO );
         }
         else
@@ -3414,6 +3490,65 @@ int PCBNEW_JOBS_HANDLER::JobDowngrade( JOB* aJob )
     if( job == nullptr )
         return CLI::EXIT_CODES::ERR_UNKNOWN;
 
+    // Check the complete input set before staging a board or copying a library tree.
+    try
+    {
+        bool restricted = KEMI_FORMAT::HasKemiExt( job->m_filename );
+
+        if( !job->m_filename.IsEmpty() )
+        {
+            KEMI_FORMAT::CheckLegacyExportSource( job->m_filename );
+
+            wxFileName projectFile( job->m_filename );
+            projectFile.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT,
+                                                 KEMI_FORMAT::FLAVOR::KEMI ) );
+            restricted = restricted || projectFile.FileExists();
+
+            projectFile.SetExt( FILEEXT::ProjectFileExtension );
+
+            if( projectFile.FileExists() )
+                KEMI_FORMAT::CheckLegacyExportSource( projectFile.GetFullPath() );
+        }
+
+        if( !job->m_libraryDir.IsEmpty() )
+        {
+            wxArrayString files;
+            wxDir::GetAllFiles( job->m_libraryDir, &files, wxS( "*.kemi_mod" ) );
+            restricted = restricted || !files.empty();
+
+            if( !restricted )
+            {
+                wxDir::GetAllFiles( job->m_libraryDir, &files, wxS( "*.kicad_mod" ) );
+                PCB_IO_KICAD_SEXPR loader;
+
+                for( const wxString& file : files )
+                {
+                    KEMI_FORMAT::CheckLegacyExportSource( file );
+                    wxString name;
+                    std::unique_ptr<FOOTPRINT> footprint = loader.ImportFootprint( file, name );
+
+                    if( footprint && footprint->IsKemiOnly() )
+                    {
+                        restricted = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if( restricted )
+        {
+            m_reporter->Report( _( "KemiCAD data cannot be exported to an official KiCad format.\n" ),
+                                RPT_SEVERITY_ERROR );
+            return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+        }
+    }
+    catch( const IO_ERROR& error )
+    {
+        m_reporter->Report( error.What(), RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+    }
+
     const DOWNGRADE_TARGET* target =
             job->m_target.IsEmpty() ? &GetDowngradeTargets().front() : FindDowngradeTarget( job->m_target );
 
@@ -3483,6 +3618,13 @@ int PCBNEW_JOBS_HANDLER::JobDowngrade( JOB* aJob )
 
             if( !brd )
                 return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+
+            if( brd->IsKemiOnly() )
+            {
+                m_reporter->Report( _( "KemiCAD data cannot be exported to an official KiCad format.\n" ),
+                                    RPT_SEVERITY_ERROR );
+                return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+            }
 
             if( !job->m_variant.IsEmpty() )
             {
@@ -3782,6 +3924,9 @@ int PCBNEW_JOBS_HANDLER::JobImport( JOB* aJob )
     if( !job )
         return CLI::EXIT_CODES::ERR_UNKNOWN;
 
+    job->m_footprintIds.clear();
+    job->m_footprintPadNumbers.clear();
+
     // Check that input file exists
     if( !wxFile::Exists( job->m_inputFile ) )
     {
@@ -3798,14 +3943,9 @@ int PCBNEW_JOBS_HANDLER::JobImport( JOB* aJob )
     {
     case JOB_PCB_IMPORT::FORMAT::AUTO: fileType = PCB_IO_MGR::FindPluginTypeFromBoardPath( job->m_inputFile ); break;
 
-    // "pads" names the vendor format, not the dialect: PADS writes both an ASCII export and a
-    // binary PowerPCB database, and both use the .pcb extension. Resolve the dialect by content
-    // so an explicit --format pads on a binary file imports it instead of handing it to the ASCII
-    // reader, which parses nothing and silently yields an empty board.
+    // "pads" names the vendor format; share the GUI's content-based dialect selection.
     case JOB_PCB_IMPORT::FORMAT::PADS_ASCII:
-        fileType = PCB_IO_MGR::FindPluginTypeFromBoardPath( job->m_inputFile ) == PCB_IO_MGR::PADS_BINARY
-                           ? PCB_IO_MGR::PADS_BINARY
-                           : PCB_IO_MGR::PADS;
+        fileType = PCB_IO_MGR::ResolveImportFileType( job->m_inputFile, PCB_IO_MGR::PADS );
         break;
 
     case JOB_PCB_IMPORT::FORMAT::ALTIUM: fileType = PCB_IO_MGR::ALTIUM_DESIGNER; break;
@@ -3867,31 +4007,58 @@ int PCBNEW_JOBS_HANDLER::JobImport( JOB* aJob )
     wxString outputPath = job->GetConfiguredOutputPath();
 
     if( outputPath.IsEmpty() )
-        outputPath = DefaultImportOutputPath( job->m_inputFile, FILEEXT::KiCadPcbFileExtension );
+        outputPath = DefaultImportOutputPath( job->m_inputFile,
+                KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, KEMI_FORMAT::FLAVOR::KEMI ) );
 
-    // The generated footprint library and its table row belong to the *active* project, so an
-    // import with no project loaded needs a transient active one at the output location (never
-    // written to disk; LoadProject returns false yet still registers it, hence the GetProject()
-    // check).
+    wxFileName outputFn( outputPath );
+    outputFn.MakeAbsolute();
+    KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY outputPolicy( outputFn.GetPath() );
+
+    try
+    {
+        outputFn.Assign( outputPolicy.Target( KEMI_FORMAT::DOC::PCB,
+                                               outputFn.GetFullPath() ).FinalPath() );
+    }
+    catch( const IO_ERROR& ioe )
+    {
+        m_reporter->Report( ioe.What() + wxS( "\n" ), RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_ARGS;
+    }
+
+    outputPath = outputFn.GetFullPath();
+
+    if( !outputFn.DirExists()
+        && !wxFileName::Mkdir( outputFn.GetPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) )
+    {
+        m_reporter->Report( wxString::Format( _( "Could not create output directory '%s'.\n" ),
+                                              outputFn.GetPath() ), RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+    }
+
+    // Bind settings, local state, locks and footprint tables to a Kemi project before loading.
+    // Never reuse a legacy project or a project in a different output directory.
     SETTINGS_MANAGER& mgr = Pgm().GetSettingsManager();
     PROJECT*          projectPtr = nullptr;
     bool              createdTransientProject = false;
+    wxFileName        projectFn( outputPath );
+    projectFn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) );
 
-    if( mgr.IsProjectOpenNotDummy() )
+    if( mgr.IsProjectOpenNotDummy()
+        && KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PROJECT,
+                                   wxFileName( mgr.Prj().GetProjectFullName() ).GetExt() )
+        && ( wxFileName( mgr.Prj().GetProjectFullName() ).SameAs( projectFn )
+             || ( job->m_isPartOfMultiBoardProject
+                  && wxFileName::DirName( mgr.Prj().GetProjectPath() ).SameAs(
+                          wxFileName::DirName( outputFn.GetPath() ) ) ) ) )
     {
         projectPtr = &mgr.Prj();
     }
     else
     {
-        wxFileName projectFn( outputPath );
-        projectFn.SetExt( FILEEXT::ProjectFileExtension );
-
-        // PROJECT requires an absolute path; -o may be relative to the working directory
-        projectFn.MakeAbsolute();
-
-        mgr.LoadProject( projectFn.GetFullPath(), true );
+        const bool alreadyLoaded = mgr.GetProject( projectFn.GetFullPath() ) != nullptr;
+        mgr.LoadProject( projectFn.GetFullPath(), !mgr.IsProjectOpenNotDummy() );
         projectPtr = mgr.GetProject( projectFn.GetFullPath() );
-        createdTransientProject = ( projectPtr != nullptr );
+        createdTransientProject = !alreadyLoaded && projectPtr != nullptr;
     }
 
     if( !projectPtr )
@@ -3987,7 +4154,7 @@ int PCBNEW_JOBS_HANDLER::JobImport( JOB* aJob )
                                     {
                                         warnings.push_back( wxString::Format(
                                                 _( "Layer map entry '%s' -> '%s' names an unknown "
-                                                   "KiCad layer; using automatic mapping instead" ),
+                                                   "KemiCAD layer; using automatic mapping instead" ),
                                                 desc.Name, it->second ) );
                                     }
                                     else if( !desc.PermittedLayers.Contains( resolved ) )
@@ -4072,14 +4239,21 @@ int PCBNEW_JOBS_HANDLER::JobImport( JOB* aJob )
         if( !ApplyImportedNetNameMap( *board, job->m_netNameMap, *m_reporter ) )
             return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
 
+        const bool hasRules = !pi->GetImportedDesignRules().IsEmpty();
+        const wxString rulesPath = outputPolicy.Target( KEMI_FORMAT::DOC::DESIGN_RULES,
+                                                        outputFn.GetName() ).FinalPath();
+
+        // Check before changing the board or its footprint cache. Exclusive creation below
+        // also refuses a rules file that appears after this check.
+        if( hasRules && wxFileName::Exists( rulesPath ) )
+            THROW_IO_ERROR( wxString::Format( _( "Import destination '%s' already exists." ), rulesPath ) );
+
         // Extract a project footprint library and re-link FPIDs, as the board editor does.
         // Each EasyEDA Pro project board needs a distinct cache; using the archive name makes
         // every board compete to publish the same .pretty directory.
         if( PCB_IO_MGR::ImportGeneratesProjectLibrary( fileType ) )
         {
-            const wxString reconciliationPath =
-                    job->m_importPcbId.empty() ? job->m_inputFile : outputPath;
-            ReconcileImportedFootprints( *pi, *board, *projectPtr, reconciliationPath, nullptr,
+            ReconcileImportedFootprints( *pi, *board, *projectPtr, outputPath, nullptr,
                                          *m_reporter );
         }
 
@@ -4098,33 +4272,79 @@ int PCBNEW_JOBS_HANDLER::JobImport( JOB* aJob )
             }
         }
 
-        // Save as KiCad format
+        // The GUI builds connectivity after import, propagating pad nets to connected tracks
+        // and vias. Do the same before serializing so reopening cannot change the saved nets.
+        if( !board->BuildConnectivity() )
+            THROW_IO_ERROR( _( "Could not build connectivity for the imported board." ) );
 
-        IO_RELEASER<PCB_IO> kicadPlugin( PCB_IO_MGR::FindPlugin( PCB_IO_MGR::KICAD_SEXP ) );
-        kicadPlugin->SaveBoard( outputPath, *board );
-        wxString importedRules = pi->GetImportedDesignRules();
+        board->SetFileName( outputPath );
+        PCB_IO_KICAD_SEXPR writer;
+        DOWNGRADE_FILE_TRANSACTION boardOutput;
+        const wxString stagedBoard = boardOutput.Stage( outputPath );
 
-        if( !importedRules.IsEmpty() )
+        if( stagedBoard.IsEmpty() )
+            THROW_IO_ERROR( _( "Could not stage the imported board." ) );
+
+        struct IMPORT_RULES_GUARD
         {
-            wxFileName rulesPath( outputPath );
-            rulesPath.SetExt( FILEEXT::DesignRulesFileExtension );
+            wxString path;
+            REPORTER& reporter;
+            bool remove = false;
 
-            wxFile rulesFile( rulesPath.GetFullPath(), wxFile::write );
+            ~IMPORT_RULES_GUARD()
+            {
+                if( remove && !wxRemoveFile( path ) )
+                {
+                    reporter.Report( wxString::Format(
+                            _( "Could not remove imported rules '%s' after import failed." ), path ),
+                            RPT_SEVERITY_ERROR );
+                }
+            }
+        } rulesGuard{ rulesPath, *m_reporter };
 
-            if( rulesFile.IsOpened() )
-            {
-                rulesFile.Write( importedRules );
-            }
-            else
-            {
-                m_reporter->Report( wxString::Format( _( "Could not write imported design rules to '%s'\n" ),
-                                                      rulesPath.GetFullPath() ),
-                                    RPT_SEVERITY_WARNING );
-            }
-        }
+        outputPolicy.Write( KEMI_FORMAT::DOC::PCB, outputPath,
+                [&]( const wxString& aStoragePath, const KEMI_FORMAT::OUTPUT_TARGET& aTarget )
+                {
+                    writer.SaveBoard( aStoragePath, *board, aTarget );
+
+                    // Do not expose the new board until its rules and settings are ready.
+                    pi->WriteImportedDesignRules( outputPolicy, outputFn.GetName() );
+                    rulesGuard.remove = hasRules;
+
+                    board->SynchronizeProperties();
+                    board->SynchronizeNetsAndNetClasses( false );
+
+                    if( !mgr.SaveProject( projectPtr->GetProjectFullName(), projectPtr )
+                        || !projectPtr->GetLocalSettings().SaveToFile( projectPtr->GetProjectPath(), true ) )
+                    {
+                        THROW_IO_ERROR( _( "Could not save the imported KemiCAD project settings." ) );
+                    }
+
+                    const wxString failedOutput = boardOutput.Commit();
+
+                    if( !failedOutput.IsEmpty() )
+                    {
+                        if( !boardOutput.GetRecoveryError().IsEmpty() )
+                            m_reporter->Report( boardOutput.GetRecoveryError(), RPT_SEVERITY_ERROR );
+
+                        THROW_IO_ERROR( wxString::Format(
+                                _( "Could not publish imported board '%s'." ), failedOutput ) );
+                    }
+
+                    rulesGuard.remove = false;
+                    return true;
+                }, stagedBoard );
 
         m_reporter->Report( wxString::Format( _( "Successfully saved imported board to '%s'\n" ), outputPath ),
                             RPT_SEVERITY_INFO );
+
+        if( job->m_collectFootprintLinks )
+        {
+            const IMPORT_PROJ_PROPS::FOOTPRINT_LINK_DATA links =
+                    CollectImportedFootprintLinks( *board, *projectPtr, *m_reporter );
+            job->m_footprintIds = links.ids;
+            job->m_footprintPadNumbers = links.pads;
+        }
 
         // Generate report if requested
         IMPORT_REPORT_DATA reportData;
@@ -4389,7 +4609,7 @@ int PCBNEW_JOBS_HANDLER::runPcbMerge( const wxString& aAncestor, const wxString&
         if( !Pgm().IsGUI() )
         {
             m_reporter->Report( _( "--interactive requires a GUI KiCad process; the console "
-                                   "kicad-cli cannot open dialogs.\n" ),
+                                   "kemicad-cli cannot open dialogs.\n" ),
                                 RPT_SEVERITY_ERROR );
             return CLI::EXIT_CODES::ERR_ARGS;
         }
@@ -4472,6 +4692,41 @@ int PCBNEW_JOBS_HANDLER::runPcbMerge( const wxString& aAncestor, const wxString&
         return CLI::EXIT_CODES::ERR_UNKNOWN;
     }
 
+    wxFileName proFn( aOutput );
+    proFn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) );
+    wxFileName druFn( aOutput );
+    druFn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::DESIGN_RULES, KEMI_FORMAT::FLAVOR::KEMI ) );
+    const wxString outputDirectory = wxFileName( aOutput ).GetPath();
+    const wxString fpTable = wxFileName( outputDirectory,
+            wxString::FromUTF8( FILEEXT::FootprintLibraryTableFileName ) ).GetFullPath();
+    const wxString symTable = wxFileName( outputDirectory,
+            wxString::FromUTF8( FILEEXT::SymbolLibraryTableFileName ) ).GetFullPath();
+
+    try
+    {
+        KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy(
+                outputDirectory.IsEmpty() ? wxString( wxS( "." ) ) : outputDirectory );
+        KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PCB, aOutput,
+                KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PCB, aOutput ), true );
+
+        if( applier.GetReport().projectFileTouched )
+            policy.CheckWritePath( KEMI_FORMAT::DOC::PROJECT, proFn.GetFullPath() );
+
+        if( applier.GetReport().customDrcRulesSet )
+            policy.CheckWritePath( KEMI_FORMAT::DOC::DESIGN_RULES, druFn.GetFullPath() );
+
+        if( applier.GetReport().fpLibTableSet )
+            policy.CheckWritePath( KEMI_FORMAT::DOC::PROJECT, fpTable );
+
+        if( applier.GetReport().symLibTableSet )
+            policy.CheckWritePath( KEMI_FORMAT::DOC::PROJECT, symTable );
+    }
+    catch( const IO_ERROR& error )
+    {
+        m_reporter->Report( error.What(), RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+    }
+
     // Serialize to the output path using the canonical PCB IO.
     PCB_IO_KICAD_SEXPR pcbIO;
 
@@ -4514,14 +4769,7 @@ int PCBNEW_JOBS_HANDLER::runPcbMerge( const wxString& aAncestor, const wxString&
             ancestor->GetProject()->GetProjectFile().m_BoardDrawingSheetFile = applier.GetReport().drawingSheetFile;
         }
 
-        wxFileName proFn( aOutput );
-        proFn.SetExt( FILEEXT::ProjectFileExtension );
-
-        // JSON-patch path: flush ancestor's in-memory project to its JSON
-        // cache, then patch only the diffed DOC_PROP fields onto the output
-        // file.  This preserves any non-diffed fields the user had at the
-        // output path (text variables, last paths, layer presets etc.) that
-        // a full SaveProjectCopy would silently overwrite.
+        // Patch only resolved fields into the native project sibling.
         PROJECT_FILE& ancProj = ancestor->GetProject()->GetProjectFile();
         ancProj.Store();
 
@@ -4549,79 +4797,46 @@ int PCBNEW_JOBS_HANDLER::runPcbMerge( const wxString& aAncestor, const wxString&
 
         if( !KICAD_DIFF::ApplyProjectFilePatches( proFn.GetFullPath(), *ancProj.Internals(), touched ) )
         {
-            // Patch failed (existing output unparseable or write error).
-            // Fall back to the legacy full-copy path so the user still gets
-            // a project file even if it overwrites non-diffed customisations.
-            if( !mgr.SaveProjectCopy( proFn.GetFullPath(), ancestor->GetProject() ) )
-            {
-                m_reporter->Report(
-                        wxString::Format( _( "Failed to save merged project file: %s\n" ), proFn.GetFullPath() ),
-                        RPT_SEVERITY_ERROR );
-                return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
-            }
+            m_reporter->Report( wxString::Format( _( "Failed to save merged project file: %s\n" ),
+                                                  proFn.GetFullPath() ), RPT_SEVERITY_ERROR );
+            return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
         }
+    }
 
-        // Write a project-dir sibling file from staged report content.  Empty
-        // content removes the file so a TAKE_ANCESTOR resolution against an
-        // ancestor with no file clears stale content at the output path.
-        auto writeStagedFile = [&]( const wxString& aPath, const wxString& aContent, const wxString& aLabel ) -> bool
+    // Empty resolutions become valid empty native files, so official sources stay untouched
+    // and cannot reappear as a fallback on reopening the merged project.
+    if( applier.GetReport().customDrcRulesSet )
+    {
+        const wxString rules = applier.GetReport().customDrcRules.IsEmpty()
+                ? wxString( wxS( "(version 2)\n" ) ) : applier.GetReport().customDrcRules;
+        DRC_RULE_SAVER saver;
+        wxString error;
+
+        if( !saver.SaveTextFile( druFn.GetFullPath(), rules, merged.get(), {}, &error ) )
         {
-            if( aContent.IsEmpty() )
-            {
-                if( wxFileExists( aPath ) )
-                    wxRemoveFile( aPath );
-
-                return true;
-            }
-
-            wxFile out;
-
-            if( !out.Open( aPath, wxFile::write ) || !out.Write( aContent ) )
-            {
-                m_reporter->Report( wxString::Format( _( "Failed to save merged %s: %s\n" ), aLabel, aPath ),
-                                    RPT_SEVERITY_ERROR );
-                return false;
-            }
-
-            return true;
-        };
-
-        // Custom DRC rules: write the applier's staged content next to the
-        // merged board so the chosen side's rules apply at next DRC run.
-        if( applier.GetReport().customDrcRulesSet )
-        {
-            wxFileName druFn( aOutput );
-            druFn.SetExt( FILEEXT::DesignRulesFileExtension );
-
-            if( !writeStagedFile( druFn.GetFullPath(), applier.GetReport().customDrcRules, _( "custom DRC rules" ) ) )
-            {
-                return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
-            }
+            m_reporter->Report( error, RPT_SEVERITY_ERROR );
+            return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
         }
+    }
 
-        // Footprint / symbol library tables: write into the merged project
-        // directory.  Both files have no extension.
-        if( applier.GetReport().fpLibTableSet )
-        {
-            wxFileName fpFn( aOutput );
-            fpFn.SetFullName( wxString::FromUTF8( FILEEXT::FootprintLibraryTableFileName ) );
+    auto writeTable = [&]( const wxString& aPath, const wxString& aContent )
+    {
+        const std::string bytes = aContent.ToStdString( wxConvUTF8 );
+        return KIPLATFORM::IO::AtomicWriteFile( aPath, bytes.data(), bytes.size() );
+    };
 
-            if( !writeStagedFile( fpFn.GetFullPath(), applier.GetReport().fpLibTable, _( "footprint library table" ) ) )
-            {
-                return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
-            }
-        }
+    if( applier.GetReport().fpLibTableSet
+            && !writeTable( fpTable, applier.GetReport().fpLibTable.IsEmpty()
+                    ? wxString( wxS( "(fp_lib_table (version 7))\n" ) ) : applier.GetReport().fpLibTable ) )
+    {
+        return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
+    }
 
-        if( applier.GetReport().symLibTableSet )
-        {
-            wxFileName symFn( aOutput );
-            symFn.SetFullName( wxString::FromUTF8( FILEEXT::SymbolLibraryTableFileName ) );
-
-            if( !writeStagedFile( symFn.GetFullPath(), applier.GetReport().symLibTable, _( "symbol library table" ) ) )
-            {
-                return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
-            }
-        }
+    if( applier.GetReport().symLibTableSet
+            && !writeTable( symTable, applier.GetReport().symLibTable.IsEmpty()
+                    ? wxString( wxS( "(sym_lib_table (version 7))\n" ) ) : applier.GetReport().symLibTable ) )
+    {
+        return CLI::EXIT_CODES::ERR_INVALID_OUTPUT_CONFLICT;
     }
 
     // Surface post-apply validator findings (refdes collisions, schema
@@ -5185,7 +5400,7 @@ int PCBNEW_JOBS_HANDLER::runFpLibMerge( const wxString& aAncestor, const wxStrin
                 if( wxFileName::FileExists( outFn.GetFullPath() ) )
                     wxRemoveFile( outFn.GetFullPath() );
             }
-            else if( wxFileName( outFn.GetFullPath() ).GetExt() == FILEEXT::KiCadFootprintFileExtension )
+            else if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::FOOTPRINT, outFn.GetExt() ) )
             {
                 // FootprintSave's .kicad_mod extension autodetection handles
                 // the write to the path as-given.
@@ -5198,7 +5413,12 @@ int PCBNEW_JOBS_HANDLER::runFpLibMerge( const wxString& aAncestor, const wxStrin
                 // autodetection would treat it as a library directory.
                 // Format directly via PRETTIFIED_FILE_OUTPUTFORMATTER, the
                 // same writer the sexpr lib cache uses.
+                const KEMI_FORMAT::FLAVOR flavor = merged.front()->IsKemiOnly()
+                        ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY;
+                KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::FOOTPRINT,
+                        outFn.GetFullPath(), flavor, merged.front()->IsKemiOnly() );
                 PRETTIFIED_FILE_OUTPUTFORMATTER formatter( outFn.GetFullPath() );
+                io.SetFootprintWriteFlavor( flavor );
                 io.SetOutputFormatter( &formatter );
                 io.Format( merged.front().get() );
                 formatter.Finish();

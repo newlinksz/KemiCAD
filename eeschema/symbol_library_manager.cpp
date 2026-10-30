@@ -26,6 +26,7 @@
 #include <env_paths.h>
 #include <pgm_base.h>
 #include <project_sch.h>
+#include <kemi_format_profile.h>
 #include <kiway.h>
 #include <core/profile.h>
 #include <core/wx_stl_compat.h>
@@ -36,17 +37,68 @@
 #include <list>
 #include <locale_io.h>
 #include <confirm.h>
+#include <gestfich.h>
+#include <md5_hash.h>
+#include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
+#include <sch_io/sch_io_lib_cache.h>
 #include <string_utils.h>
 #include <wildcards_and_files_ext.h>
-#include <kiplatform/io.h>
 #include <libraries/library_manager.h>
 #include <libraries/symbol_library_adapter.h>
+#include <fstream>
+#include <algorithm>
 
 #include "lib_logger.h"
 
 
+static wxFileName libraryFileName( const wxString& aPath )
+{
+    wxFileName fileName( aPath );
+
+    if( wxFileName::DirExists( aPath ) )
+        fileName.AssignDir( aPath );
+
+    fileName.Normalize( FN_NORMALIZE_FLAGS | wxPATH_NORM_ENV_VARS );
+    WX_FILENAME::ResolvePossibleSymlinks( fileName );
+    return fileName;
+}
+
+
+static bool sameLibraryPath( const wxString& aLeft, const wxString& aRight )
+{
+    auto key = []( const wxString& aPath )
+    {
+        wxString path = libraryFileName( aPath ).GetFullPath();
+
+        // A removed directory must retain its identity even when the save dialog omits
+        // its trailing separator and wxFileName can no longer infer that it is a directory.
+        while( path.length() > 1 && ( path.EndsWith( "/" ) || path.EndsWith( "\\" ) ) )
+        {
+            if( path.length() == 3 && path[1] == ':' )
+                break;
+
+            path.RemoveLast();
+        }
+
+        if( !wxFileName::IsCaseSensitive() )
+            path.MakeLower();
+
+        return path;
+    };
+
+    return key( aLeft ) == key( aRight );
+}
+
+
 SYMBOL_LIBRARY_MANAGER::SYMBOL_LIBRARY_MANAGER( SCH_BASE_FRAME& aFrame ) :
-        m_frame( aFrame )
+        m_frame( &aFrame )
+{
+    m_logger = new LIB_LOGGER();
+}
+
+
+SYMBOL_LIBRARY_MANAGER::SYMBOL_LIBRARY_MANAGER( PROJECT& aProject ) :
+        m_project( &aProject )
 {
     m_logger = new LIB_LOGGER();
 }
@@ -55,6 +107,12 @@ SYMBOL_LIBRARY_MANAGER::SYMBOL_LIBRARY_MANAGER( SCH_BASE_FRAME& aFrame ) :
 SYMBOL_LIBRARY_MANAGER::~SYMBOL_LIBRARY_MANAGER()
 {
     delete m_logger;
+}
+
+
+PROJECT& SYMBOL_LIBRARY_MANAGER::project() const
+{
+    return m_frame ? m_frame->Prj() : *m_project;
 }
 
 
@@ -72,44 +130,43 @@ bool SYMBOL_LIBRARY_MANAGER::HasModifications() const
 
 int SYMBOL_LIBRARY_MANAGER::GetHash() const
 {
-    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
     return adapter->GetModifyHash();
 }
 
 
 int SYMBOL_LIBRARY_MANAGER::GetLibraryHash( const wxString& aLibrary ) const
 {
-    if( const auto libBufIt = m_libs.find( aLibrary ); libBufIt != m_libs.end() )
-        return libBufIt->second.GetHash();
-
     LIBRARY_MANAGER& manager = Pgm().GetLibraryManager();
+    auto libBufIt = m_libs.find( aLibrary );
 
     if( std::optional<wxString> uri = manager.GetFullURI( LIBRARY_TABLE_TYPE::SYMBOL, aLibrary, true ); uri )
     {
         // Mix a file modification timestamp into the hash so that external changes (e.g. a git
         // branch switch) are detected by the library tree synchronizer without a restart.
-        wxFileName fn( *uri );
         long long  mtime = 0;
 
         wxLogNull silence;
 
-        fn.Normalize( FN_NORMALIZE_FLAGS );
-
-        if( fn.DirExists() )
+        try
         {
-            mtime = KIPLATFORM::IO::TimestampDir( fn.GetFullPath(),
-                        wxS( "*." ) + wxString( FILEEXT::KiCadSymbolLibFileExtension ) );
+            mtime = SCH_IO_LIB_CACHE::GetSymbolLibraryTimestamp( *uri );
         }
-        else if( fn.IsFileReadable() )
+        catch( const IO_ERROR& )
         {
-            mtime = fn.GetModificationTime().GetValue().GetValue();
+            // An unreadable directory must invalidate the previously displayed tree.
+            mtime = -1;
         }
 
         size_t base = std::hash<std::string>{}( aLibrary.ToStdString() + uri->ToStdString() );
+
+        if( libBufIt != m_libs.end() )
+            base ^= std::hash<int>{}( libBufIt->second.GetHash() );
+
         return static_cast<int>( base ^ static_cast<size_t>( mtime ) );
     }
 
-    return -1;
+    return libBufIt != m_libs.end() ? libBufIt->second.GetHash() : -1;
 }
 
 
@@ -142,6 +199,30 @@ bool SYMBOL_LIBRARY_MANAGER::SaveLibrary( const wxString& aLibrary, const wxStri
 {
     wxCHECK( aFileType != SCH_IO_MGR::SCH_FILE_T::SCH_LEGACY, false );
 
+    const bool projectRestricted = KEMI_FORMAT::HasKemiExt( project().GetProjectFullName() );
+    LIBRARY_MANAGER& manager = Pgm().GetLibraryManager();
+    const std::optional<wxString> uri = manager.GetFullURI( LIBRARY_TABLE_TYPE::SYMBOL, aLibrary, true );
+
+    try
+    {
+        if( !wxDirExists( aFileName ) )
+        {
+            if( uri && KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                               wxFileName( *uri ).GetExt() ) )
+            {
+                KEMI_FORMAT::ResolveNativeSaveTarget( KEMI_FORMAT::DOC::SYMBOL_LIB, *uri, aFileName );
+            }
+
+            KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SYMBOL_LIB, aFileName,
+                    KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::SYMBOL_LIB, aFileName ), projectRestricted );
+        }
+    }
+    catch( const IO_ERROR& error )
+    {
+        wxLogError( wxS( "%s" ), error.What() );
+        return false;
+    }
+
     wxFileName fn( aFileName );
 
     if( fn.FileExists() && !fn.IsFileWritable() )
@@ -158,65 +239,21 @@ bool SYMBOL_LIBRARY_MANAGER::SaveLibrary( const wxString& aLibrary, const wxStri
     if( it != m_libs.end() )
     {
         // Handle buffered library
-        LIB_BUFFER& libBuf = it->second;
-
-        const std::deque<std::shared_ptr<SYMBOL_BUFFER>>& symbolBuffers = libBuf.GetBuffers();
-
-        for( const std::shared_ptr<SYMBOL_BUFFER>& symbolBuf : symbolBuffers )
+        if( projectRestricted )
         {
-            wxCHECK2( symbolBuf, continue );
-
-            if( !libBuf.SaveBuffer( *symbolBuf, aFileName, &*pi, true ) )
-            {
-                // Something went wrong, but try to save other symbols
-                res = false;
-            }
+            for( const auto& buffer : it->second.GetBuffers() )
+                buffer->GetSymbol().SetKemiOnly();
         }
 
-        // clear the deleted symbols buffer only if data is saved to the original file
-        wxFileName original, destination( aFileName );
-        LIBRARY_MANAGER& manager = Pgm().GetLibraryManager();
-
-        if( std::optional<wxString> uri = manager.GetFullURI( LIBRARY_TABLE_TYPE::SYMBOL, aLibrary, true ); uri )
-        {
-            original = *uri;
-            original.Normalize( FN_NORMALIZE_FLAGS | wxPATH_NORM_ENV_VARS );
-        }
-
-        destination.Normalize( FN_NORMALIZE_FLAGS | wxPATH_NORM_ENV_VARS );
-
-        if( res && original == destination )
-        {
-            // Delete symbols that were removed from the buffer before clearing the deleted list
-            for( const std::shared_ptr<SYMBOL_BUFFER>& deletedBuf : libBuf.GetDeletedBuffers() )
-            {
-                wxCHECK2( deletedBuf, continue );
-
-                const wxString& originalName = deletedBuf->GetOriginal().GetName();
-
-                try
-                {
-                    if( pi->LoadSymbol( aFileName, originalName ) )
-                        pi->DeleteSymbol( aFileName, originalName, &properties );
-                }
-                catch( const IO_ERROR& ioe )
-                {
-                    wxLogError( _( "Error deleting symbol %s from library '%s'." ) + wxS( "\n%s" ),
-                                UnescapeString( originalName ),
-                                aFileName,
-                                ioe.What() );
-                    res = false;
-                }
-            }
-
-            libBuf.ClearDeletedBuffer();
-        }
+        return it->second.SaveLibrary( aFileName, &*pi, uri && sameLibraryPath( *uri, aFileName ) );
     }
     else
     {
         // Handle original library
         for( LIB_SYMBOL* symbol : getOriginalSymbols( aLibrary ) )
         {
+            if( projectRestricted )
+                symbol->SetKemiOnly();
             try
             {
                 if( symbol->IsDerived() )
@@ -272,6 +309,9 @@ bool SYMBOL_LIBRARY_MANAGER::SaveLibrary( const wxString& aLibrary, const wxStri
             }
         }
     }
+
+    if( !res )
+        return false;
 
     try
     {
@@ -361,31 +401,35 @@ bool SYMBOL_LIBRARY_MANAGER::ClearSymbolModified( const wxString& aSymbolName, c
 
 bool SYMBOL_LIBRARY_MANAGER::IsLibraryReadOnly( const wxString& aLibrary ) const
 {
-    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
     return !adapter->IsSymbolLibWritable( aLibrary );
 }
 
 
 bool SYMBOL_LIBRARY_MANAGER::IsLibraryLoaded( const wxString& aLibrary ) const
 {
-    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
     return adapter->IsLibraryLoaded( aLibrary );
 }
 
 
-std::list<LIB_SYMBOL*> SYMBOL_LIBRARY_MANAGER::EnumerateSymbols( const wxString& aLibrary ) const
+std::list<LIB_SYMBOL*> SYMBOL_LIBRARY_MANAGER::EnumerateSymbols( const wxString& aLibrary,
+                                                               bool aReloadCleanBuffer )
 {
     std::list<LIB_SYMBOL*> ret;
     auto libIt = m_libs.find( aLibrary );
 
     if( libIt != m_libs.end() )
     {
+        if( aReloadCleanBuffer )
+            libIt->second.ReloadIfChanged();
+
         for( const std::shared_ptr<SYMBOL_BUFFER>& symbolBuf : libIt->second.GetBuffers() )
             ret.push_back( &symbolBuf->GetSymbol() );
     }
     else
     {
-        SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
+        SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
         std::vector<LIB_SYMBOL*> symbols = adapter->GetSymbols( aLibrary );
 
         std::copy( symbols.begin(), symbols.end(), std::back_inserter( ret ) );
@@ -403,7 +447,13 @@ LIB_SYMBOL* SYMBOL_LIBRARY_MANAGER::GetBufferedSymbol( const wxString& aSymbolNa
 
     if( !bufferedSymbol ) // no buffer symbol found
     {
-        SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
+        SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
+        std::optional<LIBRARY_TABLE_ROW*> row = adapter->GetRow( aLibrary );
+
+        // Native buffers are complete snapshots. Falling back to the adapter's older cache
+        // could resurrect a symbol that was removed on disk before the clean buffer reloaded.
+        if( row && ( *row )->Type() == SCH_IO_MGR::ShowType( SCH_IO_MGR::SCH_KICAD ) )
+            return nullptr;
 
         // create a copy of the symbol
         try
@@ -448,7 +498,7 @@ LIB_SYMBOL* SYMBOL_LIBRARY_MANAGER::GetBufferedSymbol( const wxString& aSymbolNa
             msg.Printf( _( "Error loading symbol %s from library '%s'." ),
                         aSymbolName,
                         aLibrary );
-            DisplayErrorMessage( &m_frame, msg, e.What() );
+            DisplayErrorMessage( m_frame, msg, e.What() );
             bufferedSymbol = nullptr;
         }
     }
@@ -469,14 +519,18 @@ SCH_SCREEN* SYMBOL_LIBRARY_MANAGER::GetScreen( const wxString& aSymbolName, cons
 }
 
 
-SYMBOL_BUFFER* SYMBOL_LIBRARY_MANAGER::GetBuffer( const wxString& aSymbolName, const wxString& aLibrary )
+SYMBOL_BUFFER* SYMBOL_LIBRARY_MANAGER::GetBuffer( const wxString& aSymbolName, const wxString& aLibrary,
+                                                bool aReloadCleanBuffer )
 {
     if( !LibraryExists( aLibrary ) )
         return nullptr;
 
     LIB_BUFFER& libBuf = getLibraryBuffer( aLibrary );
 
-    // Buffers live as long as the manager, so the raw pointer dangles only if a caller outlives it.
+    if( aReloadCleanBuffer )
+        libBuf.ReloadIfChanged();
+
+    // Callers must not retain this pointer across a library reload.
     return libBuf.GetBuffer( aSymbolName ).get();
 }
 
@@ -617,6 +671,8 @@ bool SYMBOL_LIBRARY_MANAGER::RemoveSymbol( const wxString& aSymbolName, const wx
 
 LIB_SYMBOL* SYMBOL_LIBRARY_MANAGER::GetSymbol( const wxString& aSymbolName, const wxString& aLibrary ) const
 {
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
+
     // Try the library buffers first
     auto libIt = m_libs.find( aLibrary );
 
@@ -626,10 +682,14 @@ LIB_SYMBOL* SYMBOL_LIBRARY_MANAGER::GetSymbol( const wxString& aSymbolName, cons
 
         if( symbol )
             return symbol;
+
+        std::optional<LIBRARY_TABLE_ROW*> row = adapter->GetRow( aLibrary );
+
+        if( row && ( *row )->Type() == SCH_IO_MGR::ShowType( SCH_IO_MGR::SCH_KICAD ) )
+            return nullptr;
     }
 
     // Get the original symbol
-    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
     LIB_SYMBOL* symbol = nullptr;
 
     try
@@ -643,7 +703,7 @@ LIB_SYMBOL* SYMBOL_LIBRARY_MANAGER::GetSymbol( const wxString& aSymbolName, cons
         msg.Printf( _( "Cannot load symbol '%s' from library '%s'." ),
                     aSymbolName,
                     aLibrary );
-        DisplayErrorMessage( &m_frame, msg, e.What() );
+        DisplayErrorMessage( m_frame, msg, e.What() );
     }
 
     return symbol;
@@ -658,7 +718,7 @@ bool SYMBOL_LIBRARY_MANAGER::SymbolExists( const wxString& aSymbolName, const wx
     if( libBufIt != m_libs.end() )
         return libBufIt->second.GetBuffer( aSymbolName ) != nullptr;
 
-    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
 
     try
     {
@@ -700,7 +760,7 @@ bool SYMBOL_LIBRARY_MANAGER::LibraryExists( const wxString& aLibrary, bool aChec
     if( m_libs.count( aLibrary ) > 0 )
         return true;
 
-    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
 
     return adapter->HasLibrary( aLibrary, aCheckEnabled );
 }
@@ -754,7 +814,7 @@ bool SYMBOL_LIBRARY_MANAGER::HasDerivedSymbols( const wxString& aSymbolName, con
 
 size_t SYMBOL_LIBRARY_MANAGER::GetLibraryCount() const
 {
-    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
     return adapter->GetLibraryNames().size();
 }
 
@@ -768,11 +828,25 @@ wxString SYMBOL_LIBRARY_MANAGER::getLibraryName( const wxString& aFilePath )
 
 bool SYMBOL_LIBRARY_MANAGER::addLibrary( const wxString& aFilePath, bool aCreate, LIBRARY_TABLE_SCOPE aScope )
 {
+    if( aCreate )
+    {
+        try
+        {
+            KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SYMBOL_LIB, aFilePath,
+                    KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::SYMBOL_LIB, aFilePath ),
+                    KEMI_FORMAT::HasKemiExt( project().GetProjectFullName() ) );
+        }
+        catch( const IO_ERROR& error )
+        {
+            wxLogError( wxS( "%s" ), error.What() );
+            return false;
+        }
+    }
     wxString libName = getLibraryName( aFilePath );
     wxCHECK( !LibraryExists( libName ), false );  // either create or add an existing one
 
     // try to use path normalized to an environmental variable or project path
-    wxString relPath = NormalizePath( aFilePath, &Pgm().GetLocalEnvVariables(), &m_frame.Prj() );
+    wxString relPath = NormalizePath( aFilePath, &Pgm().GetLocalEnvVariables(), &project() );
 
     SCH_IO_MGR::SCH_FILE_T schFileType = SCH_IO_MGR::GuessPluginTypeFromLibPath( aFilePath, aCreate ? KICTL_CREATE
                                                                                                     : 0 );
@@ -780,7 +854,7 @@ bool SYMBOL_LIBRARY_MANAGER::addLibrary( const wxString& aFilePath, bool aCreate
     if( schFileType == SCH_IO_MGR::SCH_FILE_UNKNOWN )
         schFileType = SCH_IO_MGR::SCH_LEGACY;
 
-    SYMBOL_LIBRARY_ADAPTER*       adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
+    SYMBOL_LIBRARY_ADAPTER*       adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
     LIBRARY_MANAGER&              manager = Pgm().GetLibraryManager();
     std::optional<LIBRARY_TABLE*> optTable = manager.Table( LIBRARY_TABLE_TYPE::SYMBOL, aScope );
 
@@ -844,7 +918,7 @@ std::set<LIB_SYMBOL*> SYMBOL_LIBRARY_MANAGER::getOriginalSymbols( const wxString
     std::set<LIB_SYMBOL*> symbols;
     wxCHECK( LibraryExists( aLibrary ), symbols );
 
-    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame.Prj() );
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
 
     for( LIB_SYMBOL* symbol : adapter->GetSymbols( aLibrary ) )
         symbols.insert( symbol );
@@ -859,6 +933,24 @@ LIB_BUFFER& SYMBOL_LIBRARY_MANAGER::getLibraryBuffer( const wxString& aLibrary )
 
     if( it != m_libs.end() )
         return it->second;
+
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project() );
+    std::optional<LIBRARY_TABLE_ROW*> row = adapter->GetRow( aLibrary );
+
+    if( row && ( *row )->Type() == SCH_IO_MGR::ShowType( SCH_IO_MGR::SCH_KICAD ) )
+    {
+        LIBRARY_MANAGER& manager = Pgm().GetLibraryManager();
+        std::optional<wxString> uri = manager.GetFullURI( LIBRARY_TABLE_TYPE::SYMBOL, aLibrary, true );
+
+        if( !uri )
+            THROW_IO_ERRORF( _( "Cannot find symbol library '%s'." ), aLibrary );
+
+        // A fresh native reader ties the content snapshot to the symbols actually copied,
+        // rather than pairing possibly stale adapter objects with a new disk revision.
+        LIB_BUFFER buffer( aLibrary );
+        buffer.Load( *uri );
+        return m_libs.emplace( aLibrary, std::move( buffer ) ).first->second;
+    }
 
     // The requested buffer does not exist yet, so create one
     auto ret = m_libs.emplace( aLibrary, LIB_BUFFER( aLibrary ) );
@@ -968,6 +1060,224 @@ void SYMBOL_BUFFER::SetOriginal( std::unique_ptr<LIB_SYMBOL> aSymbol )
 bool SYMBOL_BUFFER::IsModified() const
 {
     return m_screen && m_screen->IsContentModified();
+}
+
+
+static std::map<wxString, std::string> symbolLibraryRevision( const wxString& aPath )
+{
+    std::vector<wxString> files;
+
+    if( wxFileName::DirExists( aPath ) )
+        files = SCH_IO_LIB_CACHE::GetSymbolLibraryFiles( aPath );
+    else
+        files.push_back( aPath );
+
+    std::map<wxString, std::string> revision;
+
+    for( const wxString& path : files )
+    {
+        std::ifstream file( ToFsPath( path ), std::ios::binary );
+
+        if( !file.is_open() )
+            THROW_IO_ERRORF( _( "Cannot read symbol library file '%s'." ), path );
+
+        MD5_HASH digest;
+        uint8_t  block[16384];
+
+        while( file )
+        {
+            file.read( reinterpret_cast<char*>( block ), sizeof( block ) );
+            digest.Hash( block, static_cast<uint32_t>( file.gcount() ) );
+        }
+
+        if( file.bad() || !file.eof() )
+            THROW_IO_ERRORF( _( "Cannot read symbol library file '%s'." ), path );
+
+        digest.Finalize();
+        revision.emplace( path, digest.Format( true ) );
+    }
+
+    return revision;
+}
+
+
+void LIB_BUFFER::Load( const wxString& aFileName )
+{
+    wxCHECK_RET( m_symbols.empty(), "Cannot load over an existing library edit buffer." );
+    m_sourceLoadError = true;
+
+    wxFileName source( aFileName );
+
+    if( wxFileName::DirExists( aFileName ) )
+        source.AssignDir( aFileName );
+
+    source.Normalize( FN_NORMALIZE_FLAGS | wxPATH_NORM_ENV_VARS );
+    m_sourceFileName = source.GetFullPath();
+    m_sourceRevision = symbolLibraryRevision( m_sourceFileName );
+
+    SCH_IO_KICAD_SEXPR io;
+    std::vector<LIB_SYMBOL*> symbols;
+    io.EnumerateSymbolLib( symbols, m_sourceFileName );
+    m_kemiOnly = m_kemiOnly || io.IsLibraryKemiOnly( m_sourceFileName );
+    std::map<wxString, wxString> parents;
+
+    for( LIB_SYMBOL* symbol : symbols )
+    {
+        if( symbol->IsDerived() )
+        {
+            std::shared_ptr<LIB_SYMBOL> parent = symbol->GetParent().lock();
+
+            if( !parent )
+                THROW_IO_ERRORF( _( "Symbol '%s' has an undefined parent." ), symbol->GetName() );
+
+            parents.emplace( symbol->GetName(), parent->GetName() );
+        }
+
+        CreateBuffer( std::make_unique<LIB_SYMBOL>( *symbol ), std::make_unique<SCH_SCREEN>() );
+    }
+
+    // Both working and original copies must outlive the temporary reader's parent objects.
+    for( const auto& [name, parentName] : parents )
+    {
+        std::shared_ptr<SYMBOL_BUFFER> buffer = GetBuffer( name );
+        LIB_SYMBOL* parent = GetSymbol( parentName );
+        buffer->GetSymbol().SetParent( parent );
+        buffer->GetOriginal().SetParent( parent );
+    }
+
+    if( sourceChanged() )
+        THROW_IO_ERRORF( _( "Library '%s' changed on disk. Reload it before saving." ), aFileName );
+
+    m_sourceLoadError = false;
+}
+
+
+bool LIB_BUFFER::sourceChanged() const
+{
+    return !m_sourceFileName.IsEmpty()
+           && symbolLibraryRevision( m_sourceFileName ) != m_sourceRevision;
+}
+
+
+void LIB_BUFFER::ReloadIfChanged()
+{
+    if( IsModified() || !sourceChanged() )
+        return;
+
+    // Parse before replacing the clean buffers so a failed reload leaves the old revision
+    // available for retry, without recording the changed disk contents as already loaded.
+    LIB_BUFFER replacement( m_libName );
+    replacement.Load( m_sourceFileName );
+    m_symbols.swap( replacement.m_symbols );
+    m_added.swap( replacement.m_added );
+    m_deleted.swap( replacement.m_deleted );
+    m_sourceRevision.swap( replacement.m_sourceRevision );
+    m_kemiOnly = m_kemiOnly || replacement.m_kemiOnly;
+    m_sourceLoadError = false;
+    ++m_hash;
+}
+
+
+bool LIB_BUFFER::SaveLibrary( const wxString& aFileName, SCH_IO* aPlugin, bool aIsOriginal )
+{
+    wxCHECK( aPlugin, false );
+
+    if( !m_sourceFileName.IsEmpty() )
+    {
+        // Directory URIs and save dialogs may spell the same path with different trailing
+        // separators. Native source protection must not depend on the caller's classification.
+        aIsOriginal = sameLibraryPath( m_sourceFileName, aFileName );
+    }
+
+    auto checkSource = [&]()
+    {
+        if( aIsOriginal && sourceChanged() )
+            THROW_IO_ERRORF( _( "Library '%s' changed on disk. Reload it before saving." ),
+                             m_sourceFileName );
+    };
+
+    try
+    {
+        if( m_sourceLoadError )
+            THROW_IO_ERROR( _( "Cannot save a library edit buffer whose loading failed." ) );
+
+        if( !wxDirExists( aFileName ) )
+        {
+            if( KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                        wxFileName( m_sourceFileName ).GetExt() ) )
+            {
+                KEMI_FORMAT::ResolveNativeSaveTarget( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                                    m_sourceFileName, aFileName );
+            }
+
+            const bool restricted = m_kemiOnly || KEMI_FORMAT::HasKemiExt( m_sourceFileName )
+                    || std::any_of( m_symbols.begin(), m_symbols.end(),
+                            []( const auto& aBuffer ) { return aBuffer->GetSymbol().IsKemiOnly(); } );
+            KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::SYMBOL_LIB, aFileName,
+                    KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::SYMBOL_LIB, aFileName ), restricted );
+        }
+
+        // Check the revision from when the edit buffer was loaded, before a fresh plugin
+        // can pair stale edits with the current contents of the destination.
+        checkSource();
+
+        std::vector<std::shared_ptr<SYMBOL_BUFFER>> ordered( m_symbols.begin(), m_symbols.end() );
+        std::sort( ordered.begin(), ordered.end(),
+                []( const std::shared_ptr<SYMBOL_BUFFER>& aLeft,
+                    const std::shared_ptr<SYMBOL_BUFFER>& aRight )
+                {
+                    return aLeft->GetSymbol().GetInheritanceDepth()
+                           < aRight->GetSymbol().GetInheritanceDepth();
+                } );
+
+        // Replacing a cached parent can invalidate descendants. Always write ancestors first,
+        // so every descendant is prepared again after its final parent has been installed.
+        for( const std::shared_ptr<SYMBOL_BUFFER>& buffer : ordered )
+        {
+            // Originals and deletions are committed only after the complete cache is flushed.
+            if( !SaveBuffer( *buffer, aFileName, aPlugin, true, false ) )
+                return false;
+        }
+
+        if( aIsOriginal )
+        {
+            std::map<std::string, UTF8> properties = { { SCH_IO_KICAD_LEGACY::PropBuffering, "" } };
+
+            for( const std::shared_ptr<SYMBOL_BUFFER>& buffer : m_deleted )
+            {
+                const wxString& name = buffer->GetOriginal().GetName();
+
+                if( aPlugin->LoadSymbol( aFileName, name ) )
+                    aPlugin->DeleteSymbol( aFileName, name, &properties );
+            }
+        }
+
+        checkSource();
+        aPlugin->SaveLibrary( aFileName );
+
+        if( aIsOriginal )
+        {
+            if( !m_sourceFileName.IsEmpty() )
+                m_sourceRevision = symbolLibraryRevision( m_sourceFileName );
+
+            for( const std::shared_ptr<SYMBOL_BUFFER>& buffer : m_symbols )
+                buffer->SetOriginal( std::make_unique<LIB_SYMBOL>( buffer->GetSymbol() ) );
+
+            ClearDeletedBuffer();
+        }
+    }
+    catch( const IO_ERROR& error )
+    {
+        wxLogError( _( "Error saving symbol library '%s'." ) + wxS( "\n%s" ), aFileName, error.What() );
+        return false;
+    }
+    catch( const std::exception& error )
+    {
+        wxLogError( _( "Error saving symbol library '%s'." ) + wxS( "\n%s" ), aFileName, error.what() );
+        return false;
+    }
+
+    return true;
 }
 
 
@@ -1084,7 +1394,7 @@ static wxString getParentName( const SYMBOL_BUFFER& aSymbolBuf )
 
 
 bool LIB_BUFFER::SaveBuffer( SYMBOL_BUFFER& aSymbolBuf, const wxString& aFileName, SCH_IO* aPlugin,
-                             bool aBuffer )
+                              bool aBuffer, bool aUpdateOriginal )
 {
     wxCHECK( !aFileName.IsEmpty(), false );
 
@@ -1114,7 +1424,7 @@ bool LIB_BUFFER::SaveBuffer( SYMBOL_BUFFER& aSymbolBuf, const wxString& aFileNam
         {
             try
             {
-                if( aPlugin->LoadSymbol( aFileName, originalName ) )
+                if( aPlugin->LoadSymbol( aFileName, originalName, aBuffer ? &properties : nullptr ) )
                     aPlugin->DeleteSymbol( aFileName, originalName, &properties );
             }
             catch( const IO_ERROR& ioe )
@@ -1137,7 +1447,8 @@ bool LIB_BUFFER::SaveBuffer( SYMBOL_BUFFER& aSymbolBuf, const wxString& aFileNam
 
         try
         {
-            cachedParent = aPlugin->LoadSymbol( aFileName, bufferedParent->GetName() );
+            cachedParent = aPlugin->LoadSymbol( aFileName, bufferedParent->GetName(),
+                                                aBuffer ? &properties : nullptr );
         }
         catch( const IO_ERROR& )
         {
@@ -1175,13 +1486,16 @@ bool LIB_BUFFER::SaveBuffer( SYMBOL_BUFFER& aSymbolBuf, const wxString& aFileNam
                 return false;
             }
 
-            std::unique_ptr<LIB_SYMBOL> originalParent = std::make_unique<LIB_SYMBOL>( *bufferedParent );
-            LIB_SYMBOL&                 parentRef = *originalParent;
-            aSymbolBuf.SetOriginal( std::move( originalParent ) );
+            if( aUpdateOriginal )
+            {
+                std::unique_ptr<LIB_SYMBOL> originalParent = std::make_unique<LIB_SYMBOL>( *bufferedParent );
+                LIB_SYMBOL&                 parentRef = *originalParent;
+                aSymbolBuf.SetOriginal( std::move( originalParent ) );
 
-            std::unique_ptr<LIB_SYMBOL> newSymbol = std::make_unique<LIB_SYMBOL>( libSymbol );
-            newSymbol->SetParent( &parentRef );
-            aSymbolBuf.SetOriginal( std::move( newSymbol ) );
+                std::unique_ptr<LIB_SYMBOL> newSymbol = std::make_unique<LIB_SYMBOL>( libSymbol );
+                newSymbol->SetParent( &parentRef );
+                aSymbolBuf.SetOriginal( std::move( newSymbol ) );
+            }
         }
         else
         {
@@ -1214,12 +1528,15 @@ bool LIB_BUFFER::SaveBuffer( SYMBOL_BUFFER& aSymbolBuf, const wxString& aFileNam
                 return false;
             }
 
-            std::shared_ptr<SYMBOL_BUFFER> originalBufferedParent = GetBuffer( bufferedParent->GetName() );
-            wxCHECK( originalBufferedParent, false );
+            if( aUpdateOriginal )
+            {
+                std::shared_ptr<SYMBOL_BUFFER> originalBufferedParent = GetBuffer( bufferedParent->GetName() );
+                wxCHECK( originalBufferedParent, false );
 
-            std::unique_ptr<LIB_SYMBOL> newSymbol = std::make_unique<LIB_SYMBOL>( libSymbol );
-            newSymbol->SetParent( &originalBufferedParent->GetSymbol() );
-            aSymbolBuf.SetOriginal( std::move( newSymbol ) );
+                std::unique_ptr<LIB_SYMBOL> newSymbol = std::make_unique<LIB_SYMBOL>( libSymbol );
+                newSymbol->SetParent( &originalBufferedParent->GetSymbol() );
+                aSymbolBuf.SetOriginal( std::move( newSymbol ) );
+            }
         }
     }
     else
@@ -1236,7 +1553,8 @@ bool LIB_BUFFER::SaveBuffer( SYMBOL_BUFFER& aSymbolBuf, const wxString& aFileNam
             return false;
         }
 
-        aSymbolBuf.SetOriginal( std::make_unique<LIB_SYMBOL>( libSymbol ) );
+        if( aUpdateOriginal )
+            aSymbolBuf.SetOriginal( std::make_unique<LIB_SYMBOL>( libSymbol ) );
     }
 
     bool res = true;

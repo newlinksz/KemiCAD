@@ -18,6 +18,7 @@ edge_clearance
 error
 exclusion
 footprint
+format_version
 graphic
 hole
 hole_aspect_ratio
@@ -26,6 +27,7 @@ hole_size
 hole_to_hole
 ignore
 inner
+kemi_dru
 layer
 length
 net_chain_length

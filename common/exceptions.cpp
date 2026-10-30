@@ -21,6 +21,7 @@
 #include <wx/string.h>
 #include <wx/translation.h>
 #include <ki_exception.h>
+#include <kemi_format_profile.h>
 
 
 const wxString IO_ERROR::What() const
@@ -108,12 +109,16 @@ void PARSE_ERROR::init( const wxString& aProblem, const char* aThrowersFile,
 
 
 void FUTURE_FORMAT_ERROR::init( const wxString& aRequiredVersion,
-                                const wxString& aRequiredGenerator )
+                                const wxString& aRequiredGenerator, bool aKemiOrigin )
 {
     requiredVersion = aRequiredVersion;
     requiredGenerator = aRequiredGenerator;
+    kemiOrigin = aKemiOrigin;
 
-    if( requiredGenerator.IsEmpty() )
+    // Only ever show a KemiCAD version.  Upstream KiCad generator versions (e.g. "10.99"
+    // written by KemiCAD <= 0.9.7 or by KiCad itself) fall back to the generic text.
+    // The version is only named when the file's own root/marker is KemiCAD's.
+    if( !KEMI_FORMAT::ShowKemiGeneratorVersion( requiredGenerator, kemiOrigin ) )
     {
         problem.Printf( _( "KemiCAD was unable to open this file because it was created with a "
                            "more recent version than the one you are running.\n\n"
@@ -125,7 +130,7 @@ void FUTURE_FORMAT_ERROR::init( const wxString& aRequiredVersion,
     {
         problem.Printf( _( "KemiCAD was unable to open this file because it was created with a "
                            "more recent version than the one you are running.\n\n"
-                           "To open it you will need to upgrade KemiCAD (created by %s, file "
+                           "To open it you will need to upgrade KemiCAD (created by KemiCAD %s, file "
                            "format dated %s or later)." ),
                         aRequiredGenerator, aRequiredVersion );
     }
@@ -133,10 +138,11 @@ void FUTURE_FORMAT_ERROR::init( const wxString& aRequiredVersion,
 
 
 FUTURE_FORMAT_ERROR::FUTURE_FORMAT_ERROR( const wxString& aRequiredVersion,
-                                          const wxString& aRequiredGenerator ) :
+                                          const wxString& aRequiredGenerator,
+                                          bool aKemiOrigin ) :
         PARSE_ERROR()
 {
-    init( aRequiredVersion, aRequiredGenerator );
+    init( aRequiredVersion, aRequiredGenerator, aKemiOrigin );
 
     lineNumber = 0;
     byteIndex = 0;
@@ -145,18 +151,20 @@ FUTURE_FORMAT_ERROR::FUTURE_FORMAT_ERROR( const wxString& aRequiredVersion,
 
 FUTURE_FORMAT_ERROR::FUTURE_FORMAT_ERROR( const PARSE_ERROR& aParseError,
                                           const wxString& aRequiredVersion,
-                                          const wxString& aRequiredGenerator ) :
+                                          const wxString& aRequiredGenerator,
+                                          bool aKemiOrigin ) :
         PARSE_ERROR()
 {
     if( const FUTURE_FORMAT_ERROR* ffe = dynamic_cast<const FUTURE_FORMAT_ERROR*>( &aParseError ) )
     {
         requiredVersion = ffe->requiredVersion;
         requiredGenerator = ffe->requiredGenerator;
+        kemiOrigin = ffe->kemiOrigin;
         problem = ffe->Problem();
     }
     else
     {
-        init( aRequiredVersion, aRequiredGenerator );
+        init( aRequiredVersion, aRequiredGenerator, aKemiOrigin );
 
         if( !aParseError.Problem().IsEmpty() )
             problem += wxS( "\n\n" ) + _( "Full error text:" ) + wxS( "\n" ) +

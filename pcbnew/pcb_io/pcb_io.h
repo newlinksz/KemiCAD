@@ -37,6 +37,12 @@ class FOOTPRINT;
 class PROJECT;
 class PROGRESS_REPORTER;
 
+namespace KEMI_FORMAT
+{
+class KEMI_ONLY_OUTPUT_POLICY;
+class OUTPUT_TARGET;
+}
+
 // MIKE WILLIAMS TODO: convert all of the other stringly-typed IO plugin properties to use constants
 namespace PCB_IO_LOAD_PROPERTIES
 {
@@ -185,6 +191,15 @@ public:
      */
     virtual wxString GetImportedDesignRules() const { return wxEmptyString; }
 
+    /**
+     * Save imported rules as a Kemi container under the policy's output directory and add
+     * the successful target to its manifest.  aName is the project name or rules path;
+     * explicit official extensions and existing files are rejected before writing.
+     * Empty rules create no file.  Failures throw IO_ERROR and leave the rules in memory.
+     */
+    void WriteImportedDesignRules( KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY& aPolicy,
+                                   const wxString& aName ) const;
+
 
     /**
      * Write @a aBoard to a storage file in a format that this PCB_IO implementation knows
@@ -319,6 +334,11 @@ public:
      * @throw IO_ERROR if there is a problem saving.
      */
     virtual void FootprintSave( const wxString& aLibraryPath, const FOOTPRINT* aFootprint,
+                                const std::map<std::string, UTF8>* aProperties = nullptr );
+
+    /** Write an import footprint to a concrete storage file using the final target's format. */
+    virtual void FootprintSave( const wxString& aStoragePath, const FOOTPRINT* aFootprint,
+                                const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
                                 const std::map<std::string, UTF8>* aProperties = nullptr );
 
     /**

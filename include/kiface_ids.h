@@ -92,7 +92,13 @@ enum KIFACE_ADDR_ID : int
     /// Function pointer type: void (*)( const wxString& aFootprint, PROJECT* aProject,
     ///                                  std::set<wxString>& aPadNumbers )
     /// Fills aPadNumbers with the numbered pads of aFootprint.
-    KIFACE_FOOTPRINT_PAD_NUMBERS
+    KIFACE_FOOTPRINT_PAD_NUMBERS,
+
+    /// Function pointer type: bool (*)( const wxString& aFootprint, PROJECT* aProject,
+    ///                                  std::set<wxString>& aPadNumbers, wxString& aError )
+    /// Returns true only after loading the footprint, including one with no numbered pads.
+    /// On failure, clears aPadNumbers and supplies a diagnostic in aError.
+    KIFACE_FOOTPRINT_PAD_QUERY
 };
 
 #endif // KIFACE_IDS

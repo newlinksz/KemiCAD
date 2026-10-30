@@ -52,7 +52,7 @@ struct NETCHAIN_SYNTHETIC_FILTER_FIXTURE
 
         wxFileName::Mkdir( m_workDir.GetFullPath(), 0755, wxPATH_MKDIR_FULL );
 
-        wxString projectPath = m_workDir.GetFullPath() + wxT( "synth_filter.kicad_pro" );
+        wxString projectPath = m_workDir.GetFullPath() + wxS( "synth_filter.kemi_pro" );
         m_tempFiles.push_back( projectPath );
 
         m_settingsManager.LoadProject( projectPath.ToStdString() );
@@ -156,8 +156,8 @@ BOOST_FIXTURE_TEST_CASE( NetChainSyntheticNamesAreFilteredFromOutputs,
             BOOST_REQUIRE_EQUAL( committed->GetNets().count( synthName ), 1u );
             SCH_SHEET* topSheet = m_schematic->GetTopLevelSheet();
             SCH_SCREEN* topScreen = topSheet->GetScreen();
-            wxString rootFileName = PathInWorkDir( wxT( "synth_filter.kicad_sch" ) );
-            topSheet->SetFileName( wxT( "synth_filter.kicad_sch" ) );
+            wxString rootFileName = PathInWorkDir( wxS( "synth_filter.kemi_sch" ) );
+            topSheet->SetFileName( wxS( "synth_filter.kemi_sch" ) );
             topScreen->SetFileName( rootFileName );
 
             // 1. XML netlist exporter (KiCad-internal flag emits <net_chains>).

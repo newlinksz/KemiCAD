@@ -405,15 +405,19 @@ int SCH_EDITOR_CONTROL::SaveCurrSheetCopyAs( const TOOL_EVENT& aEvent )
 {
     SCH_SHEET*   curr_sheet = m_frame->GetCurrentSheet().Last();
     wxFileName   curr_fn = curr_sheet->GetFileName();
+    const bool restricted = true;
     wxFileDialog dlg( m_frame, _( "Schematic Files" ), curr_fn.GetPath(), curr_fn.GetFullName(),
-                      FILEEXT::KiCadSchematicFileWildcard(), wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
+                      restricted ? wxString( wxS( "KemiCAD schematic (*.kemi_sch)|*.kemi_sch" ) )
+                                 : FILEEXT::KiCadSchematicFileWildcard(),
+                      wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
 
     KIPLATFORM::UI::AllowNetworkFileSystems( &dlg );
 
     if( dlg.ShowModal() == wxID_CANCEL )
         return false;
 
-    wxString newFilename = EnsureFileExtension( dlg.GetPath(), FILEEXT::KiCadSchematicFileExtension );
+    wxString newFilename = restricted ? dlg.GetPath()
+            : EnsureFileExtension( dlg.GetPath(), FILEEXT::KiCadSchematicFileExtension );
 
     m_frame->saveSchematicFile( curr_sheet, newFilename, true );
     return 0;
@@ -621,6 +625,8 @@ int SCH_EDITOR_CONTROL::ExportSymbolsToLibrary( const TOOL_EVENT& aEvent )
     {
         SCH_SYMBOL* symbol = symbols[i].GetSymbol();
         LIB_SYMBOL* libSymbol = symbol->GetLibSymbolRef().get();
+        if( m_frame->Schematic().IsKemiOnly() )
+            libSymbol->SetKemiOnly();
         LIB_ID      id = libSymbol->GetLibId();
 
         if( libSymbols.count( id ) )

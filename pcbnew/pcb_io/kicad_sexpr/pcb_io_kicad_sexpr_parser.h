@@ -256,6 +256,7 @@ private:
     void skipCurrent();
 
     void parseHeader();
+    void parseKemiFormatVersion();
     void parseGeneralSection();
     void parsePAGE_INFO();
     void parseTITLE_BLOCK();

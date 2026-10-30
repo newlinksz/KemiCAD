@@ -19,6 +19,9 @@
  */
 
 #include <i18n_utility.h>
+#include <kemi_format_profile.h>
+#include <ki_exception.h>
+#include <trace_helpers.h>
 #include <json_common.h>
 
 #include <bitmaps/bitmaps_list.h>
@@ -270,13 +273,73 @@ void JOBSET::RemoveJob( size_t aJobIdx )
 
 bool JOBSET::SaveToFile( const wxString& aDirectory, bool aForce )
 {
-    bool success = JSON_SETTINGS::SaveToFile( aDirectory, aForce );
-    if( success )
-    {
-        m_dirty = false;
-    }
+    const wxString original = GetFilename();
 
-    return success;
+    try
+    {
+        wxFileName source( GetFullFilename() );
+
+        if( !aDirectory.IsEmpty() )
+            source.SetPath( aDirectory );
+
+        SetFilename( KEMI_FORMAT::ResolveNativeSaveTarget( KEMI_FORMAT::DOC::JOBSET, source.GetFullPath() ) );
+        const bool success = JSON_SETTINGS::SaveToFile( aDirectory, aForce );
+
+        if( success )
+        {
+            m_dirty = false;
+            m_fileNameWithoutPath = wxFileName( GetFullFilename() ).GetFullName();
+        }
+        else
+            SetFilename( original );
+
+        return success;
+    }
+    catch( const IO_ERROR& error )
+    {
+        SetFilename( original );
+        m_lastSaveFailed = true;
+        wxLogTrace( traceSettings, wxS( "Refusing jobset output: %s" ), error.What() );
+        return false;
+    }
+}
+
+
+bool JOBSET::SaveAs( const wxString& aFilename )
+{
+    const wxString oldFilename = GetFilename();
+
+    try
+    {
+        const wxString target = KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::JOBSET,
+                                                                  aFilename, IsKemiOnly() );
+
+        // Keep the source identity until the first native destination has been checked.
+        if( !KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::JOBSET,
+                                     wxFileName( GetFullFilename() ).GetExt() )
+                && wxFileName::Exists( target ) )
+        {
+            THROW_IO_ERROR( _( "Native save target already exists. Choose another name." ) );
+        }
+
+        SetFilename( target );
+
+        if( !SaveToFile( wxEmptyString, true ) )
+        {
+            SetFilename( oldFilename );
+            return false;
+        }
+
+        m_fileNameWithoutPath = wxFileName( GetFullFilename() ).GetFullName();
+        return true;
+    }
+    catch( const IO_ERROR& error )
+    {
+        SetFilename( oldFilename );
+        m_lastSaveFailed = true;
+        wxLogTrace( traceSettings, wxT( "Refusing jobset Save As: %s" ), error.What() );
+        return false;
+    }
 }
 
 

@@ -54,7 +54,7 @@
 
 
 #ifndef QA_KICAD_CLI_PATH
-#define QA_KICAD_CLI_PATH "kicad-cli"
+#define QA_KICAD_CLI_PATH "kemicad-cli"
 #endif
 
 
@@ -77,6 +77,11 @@ public:
 
         if( m_callback )
             m_callback( aStatus, output, error );
+    }
+
+    void ClearCallback()
+    {
+        m_callback = {};
     }
 
     static void drainStream( wxInputStream* aStream, wxString& aDest )
@@ -489,7 +494,8 @@ public:
     /**
      * Ensure the api-server is running and the shared client is connected and responsive.
      */
-    bool EnsureReady( const wxString& aCliPath, wxString* aError )
+    bool EnsureReady( const wxString& aCliPath, wxString* aError,
+                      const wxString& aPreloadPath = wxEmptyString )
     {
         if( m_ready )
         {
@@ -505,7 +511,7 @@ public:
 
         BOOST_TEST_MESSAGE( "Starting API server with CLI path: " << aCliPath );
 
-        if( !startServerProcess( aCliPath, aError ) )
+        if( !startServerProcess( aCliPath, aError, aPreloadPath ) )
             return false;
 
         if( !connectAndWaitReady( aError ) )
@@ -525,6 +531,10 @@ public:
         m_ready = false;
         m_client.Disconnect();
 
+        // A delayed termination event from the old process must not clear a new server's state.
+        if( m_process )
+            m_process->ClearCallback();
+
         if( m_pid != 0 && isProcessAlive() )
         {
 #ifdef __WXMAC__
@@ -533,6 +543,9 @@ public:
             wxProcess::Kill( m_pid, wxSIGKILL, wxKILL_CHILDREN );
 #endif
         }
+
+        for( int attempt = 0; attempt < 100 && isProcessAlive(); ++attempt )
+            wxMilliSleep( 20 );
 
         m_pid = 0;
         m_process = nullptr;
@@ -587,7 +600,8 @@ private:
     API_SERVER_MANAGER( const API_SERVER_MANAGER& ) = delete;
     API_SERVER_MANAGER& operator=( const API_SERVER_MANAGER& ) = delete;
 
-    bool startServerProcess( const wxString& aCliPath, wxString* aError )
+    bool startServerProcess( const wxString& aCliPath, wxString* aError,
+                             const wxString& aPreloadPath )
     {
         if( m_pid != 0 )
             return true;
@@ -618,8 +632,12 @@ private:
         m_process->Redirect();
 
         std::vector<const wchar_t*> args = { aCliPath.wc_str(), wxS( "api-server" ), wxS( "--socket" ),
-                                             m_socketPath.wc_str(), nullptr };
+                                             m_socketPath.wc_str() };
 
+        if( !aPreloadPath.IsEmpty() )
+            args.push_back( aPreloadPath.wc_str() );
+
+        args.push_back( nullptr );
         m_pid = wxExecute( args.data(), wxEXEC_ASYNC, m_process );
 
         if( m_pid == 0 )
@@ -781,6 +799,13 @@ public:
         manager.Reset();
 
         return manager.EnsureReady( cliPath, &m_lastError );
+    }
+
+    bool StartWithDocument( const wxString& aPath )
+    {
+        API_SERVER_MANAGER& manager = API_SERVER_MANAGER::Instance();
+        manager.Reset();
+        return manager.EnsureReady( m_cliPath, &m_lastError, aPath );
     }
 
     API_TEST_CLIENT& Client() { return API_SERVER_MANAGER::Instance().Client(); }

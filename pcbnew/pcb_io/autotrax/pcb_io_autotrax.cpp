@@ -217,7 +217,7 @@ void PCB_IO_AUTOTRAX::reportGaps() const
 
     if( m_unmappedItems )
     {
-        reporter().Report( wxString::Format( _( "Autotrax import: %d item(s) on a layer with no KiCad equivalent "
+        reporter().Report( wxString::Format( _( "Autotrax import: %d item(s) on a layer with no KemiCAD equivalent "
                                                 "were skipped." ),
                                              m_unmappedItems ),
                            RPT_SEVERITY_WARNING );

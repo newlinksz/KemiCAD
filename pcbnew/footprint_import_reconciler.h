@@ -35,6 +35,11 @@ class PCB_IO;
 class PROJECT;
 class UTF8;
 
+namespace IMPORT_PROJ_PROPS
+{
+struct FOOTPRINT_LINK_DATA;
+}
+
 /**
  * Outcome of a post-import footprint-library reconciliation pass.
  */
@@ -132,5 +137,13 @@ ReconcileImportedFootprints( PCB_IO& aPlugin, BOARD& aBoard, PROJECT& aProject,
  * A footprint with no name, and a reference used more than once, are left out.
  */
 std::map<wxString, wxString> ImportedFootprintIds( const BOARD& aBoard );
+
+/**
+ * Capture the actual footprint IDs and pad sets of one successful paired import.
+ * Every eligible ID must resolve in this project's table to the same physical pad set.
+ * Duplicate references are omitted with a warning; unresolved or inconsistent libraries throw.
+ */
+IMPORT_PROJ_PROPS::FOOTPRINT_LINK_DATA CollectImportedFootprintLinks(
+        const BOARD& aBoard, PROJECT& aProject, REPORTER& aReporter );
 
 #endif // FOOTPRINT_IMPORT_RECONCILER_H

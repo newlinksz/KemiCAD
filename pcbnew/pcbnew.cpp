@@ -20,6 +20,7 @@
  */
 
 #include <pgm_base.h>
+#include <kemi_project_paths.h>
 #include <eda_pattern_match.h>
 #include <background_jobs_monitor.h>
 #include <cli_progress_reporter.h>
@@ -38,6 +39,7 @@
 #include <pcb_edit_frame.h>
 #include <macros.h>
 #include <gestfich.h>
+#include <pcbnew_save_file_as.h>
 #include <paths.h>
 #include <pcbnew_settings.h>
 #include <footprint.h>
@@ -53,7 +55,10 @@
 #include <footprint_info_impl.h>
 #include <footprint.h>
 #include <board.h>
+#include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 #include <board_loader.h>
+#include <import_design_rules.h>
+#include <kemi_format_profile.h>
 #include <lib_id.h>
 #include <nlohmann/json.hpp>
 #include <dialogs/dialog_configure_paths.h>
@@ -326,6 +331,37 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
     {}
 
     bool OnKifaceStart( PGM_BASE* aProgram, int aCtlBits, KIWAY* aKiway ) override;
+
+    bool SaveNativeDocument( const wxString& aSource, const wxString& aTarget ) override
+    {
+        if( KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::DESIGN_RULES, wxFileName( aTarget ).GetExt() ) )
+        {
+            SaveNativeDesignRules( aSource, aTarget );
+            return true;
+        }
+
+        PCB_IO_KICAD_SEXPR io;
+
+        if( KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::FOOTPRINT, wxFileName( aTarget ).GetExt() ) )
+        {
+            wxString name;
+            std::unique_ptr<FOOTPRINT> footprint( io.ImportFootprint( aSource, name ) );
+
+            if( !footprint )
+                return false;
+
+            io.FootprintSave( aTarget, footprint.get() );
+            return true;
+        }
+
+        std::unique_ptr<BOARD> board = io.LoadBoard( aSource );
+
+        if( !board )
+            return false;
+
+        io.SaveBoard( aTarget, *board );
+        return true;
+    }
 
     void Reset() override;
 
@@ -854,114 +890,8 @@ void IFACE::SaveFileAs( const wxString& aProjectBasePath, const wxString& aSrcPr
                         const wxString& aNewProjectBasePath, const wxString& aNewProjectName,
                         const wxString& aSrcFilePath, wxString& aErrors )
 {
-    wxFileName destFile( aSrcFilePath );
-    wxString   destPath = destFile.GetPathWithSep();
-    wxUniChar  pathSep = wxFileName::GetPathSeparator();
-    wxString   ext = destFile.GetExt();
-
-    if( destPath.StartsWith( aProjectBasePath + pathSep ) )
-        destPath.Replace( aProjectBasePath, aNewProjectBasePath, false );
-
-    wxString srcProjectFootprintLib = pathSep + aSrcProjectName + wxT( ".pretty" ) + pathSep;
-    wxString newProjectFootprintLib = pathSep + aNewProjectName + wxT( ".pretty" ) + pathSep;
-
-    destPath.Replace( srcProjectFootprintLib, newProjectFootprintLib, true );
-
-    destFile.SetPath( destPath );
-
-    if( ext == FILEEXT::KiCadPcbFileExtension
-        || ext == FILEEXT::KiCadPcbFileExtension + FILEEXT::BackupFileSuffix )
-    {
-        if( destFile.GetName() == aSrcProjectName )
-            destFile.SetName( aNewProjectName  );
-
-        CopySexprFile( aSrcFilePath, destFile.GetFullPath(),
-                [&]( const std::string& token, wxString& value )
-                {
-                    if( token == "sheetfile" )
-                    {
-                        for( const wxString extension : { wxT( ".sch" ), wxT( ".kicad_sch" ) } )
-                        {
-                            if( value == aSrcProjectName + extension )
-                            {
-                                value = aNewProjectName + extension;
-                                return true;
-                            }
-                            else if( value == aProjectBasePath + "/" + aSrcProjectName + extension )
-                            {
-                                value = aNewProjectBasePath + "/" + aNewProjectName + extension;
-                                return true;
-                            }
-                            else if( value.StartsWith( aProjectBasePath ) )
-                            {
-                                value.Replace( aProjectBasePath, aNewProjectBasePath, false );
-                                return true;
-                            }
-                        }
-                    }
-
-                    return false;
-                },
-                aErrors );
-    }
-    else if( ext == FILEEXT::LegacyPcbFileExtension )
-    {
-        if( destFile.GetName() == aSrcProjectName )
-            destFile.SetName( aNewProjectName );
-
-        KiCopyFile( aSrcFilePath, destFile.GetFullPath(), aErrors );
-    }
-    else if( ext == FILEEXT::LegacyFootprintLibPathExtension
-             || ext == FILEEXT::KiCadFootprintFileExtension )
-    {
-        // Footprints are not project-specific.  Keep their source names.
-        KiCopyFile( aSrcFilePath, destFile.GetFullPath(), aErrors );
-    }
-    else if( ext == FILEEXT::FootprintAssignmentFileExtension )
-    {
-        // TODO
-    }
-    else if( ext == wxT( "rpt" ) )
-    {
-        // DRC must be the "gold standard".  Since we can't guarantee that there aren't
-        // any non-deterministic cases in the save-as algorithm, we don't want to certify
-        // the result with the source's DRC report.  Therefore copy it under the old
-        // name.
-        KiCopyFile( aSrcFilePath, destFile.GetFullPath(), aErrors );
-    }
-    else if( destFile.GetName() == FILEEXT::FootprintLibraryTableFileName )
-    {
-        wxFileName    libTableFn( aSrcFilePath );
-        LIBRARY_TABLE libTable( libTableFn, LIBRARY_TABLE_SCOPE::PROJECT );
-        libTable.SetPath( destFile.GetFullPath() );
-        libTable.SetType( LIBRARY_TABLE_TYPE::FOOTPRINT );
-
-        for( LIBRARY_TABLE_ROW& row : libTable.Rows() )
-        {
-            wxString uri = row.URI();
-
-            uri.Replace( wxT( "/" ) + aSrcProjectName + wxT( ".pretty" ),
-                         wxT( "/" ) + aNewProjectName + wxT( ".pretty" ) );
-
-            row.SetURI( uri );
-        }
-
-        libTable.Save().map_error(
-                [&]( const LIBRARY_ERROR& aError )
-                {
-                        wxString msg;
-
-                        if( !aErrors.empty() )
-                            aErrors += wxT( "\n" );
-
-                        msg.Printf( _( "Cannot copy file '%s'." ), destFile.GetFullPath() );
-                        aErrors += msg;
-                } );
-    }
-    else
-    {
-        wxFAIL_MSG( wxT( "Unexpected filetype for Pcbnew::SaveFileAs()" ) );
-    }
+    PCBNEW_SaveFileAs( aProjectBasePath, aSrcProjectName, aNewProjectBasePath, aNewProjectName,
+                       aSrcFilePath, aErrors );
 }
 
 
@@ -1112,12 +1042,12 @@ bool IFACE::handleOpenFootprint( const wxString& aProjectPath, const wxString& a
 
 bool IFACE::handleOpenPcb( const wxString& aPath, KICAD_API_SERVER* aServer, wxString* aError )
 {
-    wxFileName projectPath( aPath );
-
-    if( projectPath.GetExt() == FILEEXT::KiCadPcbFileExtension )
-        projectPath.SetExt( FILEEXT::ProjectFileExtension );
-    else if( projectPath.GetExt() != FILEEXT::ProjectFileExtension )
-        projectPath.SetExt( FILEEXT::ProjectFileExtension );
+    wxFileName inputFile( aPath );
+    const bool isDocument = KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PCB, inputFile.GetExt() )
+            || KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PCB, inputFile.GetExt() );
+    wxFileName projectPath( KEMI_FORMAT::RelatedDocumentPath(
+            isDocument ? KEMI_FORMAT::DOC::PCB : KEMI_FORMAT::DOC::PROJECT,
+            KEMI_FORMAT::DOC::PROJECT, aPath ) );
 
     projectPath.MakeAbsolute();
 
@@ -1146,8 +1076,10 @@ bool IFACE::handleOpenPcb( const wxString& aPath, KICAD_API_SERVER* aServer, wxS
         return false;
     }
 
-    wxFileName boardPath( projectPath );
-    boardPath.SetExt( FILEEXT::KiCadPcbFileExtension );
+    wxFileName boardPath( isDocument ? inputFile.GetFullPath()
+            : KEMI_FORMAT::RelatedDocumentPath( KEMI_FORMAT::DOC::PROJECT,
+                                                KEMI_FORMAT::DOC::PCB, projectPath.GetFullPath() ) );
+    boardPath.MakeAbsolute();
 
     if( !boardPath.FileExists() )
     {
@@ -1221,7 +1153,8 @@ bool IFACE::handleCreatePcb( const wxString& aPath, KICAD_API_SERVER* aServer, w
     boardPath.MakeAbsolute();
 
     wxFileName projectPath( boardPath );
-    projectPath.SetExt( FILEEXT::ProjectFileExtension );
+    projectPath.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT,
+                                         KEMI_FORMAT::FLAVOR::KEMI ) );
 
     if( m_openContext && m_openContext->IsContentModified() )
     {

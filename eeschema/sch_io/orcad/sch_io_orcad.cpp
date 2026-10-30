@@ -450,7 +450,7 @@ SCH_SHEET* SCH_IO_ORCAD::LoadSchematicFile( const wxString& aFileName, SCHEMATIC
     {
         THROW_IO_ERROR( wxString::Format( _( "'%s' contains a complete OrCAD Capture design and cannot be "
                                              "loaded as a hierarchical sheet. Use File > Import > "
-                                             "Non-KiCad Schematic... instead." ),
+                                             "Non-KemiCAD Schematic... instead." ),
                                           aFileName ) );
     }
 

@@ -36,6 +36,8 @@
 #include <sch_io/sch_io_mgr.h>
 #include <settings/settings_manager.h>
 #include <wildcards_and_files_ext.h>
+#include <kemi_format_profile.h>
+#include <ki_exception.h>
 #include <tool/tool_manager.h>
 #include <kiface_base.h>
 
@@ -56,7 +58,9 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName, bool aSet
                                             bool aForceDefaultProject, PROJECT* aProject,
                                             bool aCalculateConnectivity, REPORTER* aRootReporter )
 {
-    if( aFileName.EndsWith( FILEEXT::KiCadSchematicFileExtension ) )
+    const wxString schExt = wxFileName( aFileName ).GetExt();
+
+    if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::SCHEMATIC, schExt ) )
         return LoadSchematic( aFileName, SCH_IO_MGR::SCH_KICAD, aSetActive, aForceDefaultProject,
                               aProject, aCalculateConnectivity, aRootReporter );
     else if( aFileName.EndsWith( FILEEXT::LegacySchematicFileExtension ) )
@@ -94,9 +98,25 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
                                             bool aCalculateConnectivity, REPORTER* aRootReporter )
 {
     wxFileName pro = aFileName;
-    pro.SetExt( FILEEXT::ProjectFileExtension );
     pro.MakeAbsolute();
+
+    // Prefer the sibling project matching the schematic flavor (.kemi_sch -> .kemi_pro).
+    const KEMI_FORMAT::FLAVOR schFlavor =
+            KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::SCHEMATIC, pro.GetFullPath() );
+    pro.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, schFlavor ) );
     wxString projectPath = pro.GetFullPath();
+
+    if( !wxFileExists( projectPath ) )
+    {
+        const KEMI_FORMAT::FLAVOR other = ( schFlavor == KEMI_FORMAT::FLAVOR::KEMI )
+                                                  ? KEMI_FORMAT::FLAVOR::LEGACY
+                                                  : KEMI_FORMAT::FLAVOR::KEMI;
+        wxFileName alt( pro );
+        alt.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, other ) );
+
+        if( wxFileExists( alt.GetFullPath() ) )
+            projectPath = alt.GetFullPath();
+    }
 
     // Ensure the "C" locale is temporary set, before reading any file
     // It also avoid wxWidget alerts about locale issues, later, when using Python 3
@@ -116,8 +136,24 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
         {
             if( wxFileExists( projectPath ) )
             {
-                mgr.LoadProject( projectPath, aSetActive );
+                const bool loadedOk = mgr.LoadProject( projectPath, aSetActive );
                 project = mgr.GetProject( projectPath );
+
+                // A rejected Kemi project (missing marker / unsupported version) still
+                // registers an object; do not fall back to defaults and continue CLI work.
+                if( project && !loadedOk )
+                {
+                    const wxString& loadError = project->GetProjectFile().GetLoadError();
+
+                    if( !loadError.IsEmpty() )
+                    {
+                        if( aRootReporter )
+                            aRootReporter->Report( loadError, RPT_SEVERITY_ERROR );
+
+                        mgr.UnloadProject( project, false );
+                        return nullptr;
+                    }
+                }
             }
         }
         else if( s_SchEditFrame && project == &mgr.Prj() )
@@ -263,6 +299,26 @@ SCHEMATIC* EESCHEMA_HELPERS::LoadSchematic( const wxString& aFileName,
                     rootSheet->SetName( _( "Root" ) );
             }
         }
+
+        // Sub-sheet load failures are collected on the plugin rather than thrown.
+        // Refuse an incomplete hierarchy so CLI netlist/BOM/ERC cannot proceed.
+        if( !pi->GetError().IsEmpty() )
+        {
+            const wxString err = pi->GetError();
+
+            if( aRootReporter )
+                aRootReporter->Report( err, RPT_SEVERITY_ERROR );
+
+            THROW_IO_ERROR( err );
+        }
+    }
+    catch( const IO_ERROR& ioe )
+    {
+        if( aRootReporter )
+            aRootReporter->Report( ioe.What(), RPT_SEVERITY_ERROR );
+
+        schematic->SetProject( nullptr );
+        return nullptr;
     }
     catch( ... )
     {

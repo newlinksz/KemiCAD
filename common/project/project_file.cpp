@@ -20,6 +20,8 @@
  */
 
 #include <project.h>
+#include <kemi_format_profile.h>
+#include <ki_exception.h>
 #include <project/component_class_settings.h>
 #include <project/net_settings.h>
 #include <project/tuning_profiles.h>
@@ -825,6 +827,9 @@ bool PROJECT_FILE::LoadFromFile( const wxString& aDirectory )
 
     if( success )
     {
+        const wxString schematicExtension = KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC,
+                KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PROJECT, GetFullFilename() ) );
+
         // Migrate from old single-root format to top_level_sheets format
         if( m_topLevelSheets.empty() && m_project )
         {
@@ -834,7 +839,7 @@ bool PROJECT_FILE::LoadFromFile( const wxString& aDirectory )
             TOP_LEVEL_SHEET_INFO defaultSheet;
             defaultSheet.uuid = niluuid;  // Use niluuid for the first/default sheet
             defaultSheet.name = projectName;
-            defaultSheet.filename = projectName + ".kicad_sch";
+            defaultSheet.filename = projectName + wxS( "." ) + schematicExtension;
 
             m_topLevelSheets.push_back( std::move( defaultSheet ) );
 
@@ -862,7 +867,7 @@ bool PROJECT_FILE::LoadFromFile( const wxString& aDirectory )
                     continue;
 
                 // Try the project-name-based filename
-                wxString expectedFile = projectName + wxS( "." ) + FILEEXT::KiCadSchematicFileExtension;
+                wxString expectedFile = projectName + wxS( "." ) + schematicExtension;
 
                 wxFileName candidateFile( projectPath, expectedFile );
 
@@ -898,7 +903,7 @@ bool PROJECT_FILE::SaveToFile( const wxString& aDirectory, bool aForce )
 {
     wxASSERT( m_project );
 
-    Set( "meta.filename", m_project->GetProjectName() + "." + FILEEXT::ProjectFileExtension );
+    Set( "meta.filename", wxFileName( GetFullFilename() ).GetFullName() );
 
     // Even if parameters were not modified, we should resave after migration
     bool force = aForce || m_wasMigrated;
@@ -915,13 +920,15 @@ std::string PROJECT_FILE::SerializeToString()
 {
     wxASSERT( m_project );
 
-    Set( "meta.filename", m_project->GetProjectName() + "." + FILEEXT::ProjectFileExtension );
+    Set( "meta.filename", wxFileName( GetFullFilename() ).GetFullName() );
 
     m_modified |= flushToStore();
 
     try
     {
-        return formatFileContents();
+        wxFileName target( GetFullFilename() );
+        target.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) );
+        return formatFileContents( target.GetFullPath() );
     }
     catch( ... )
     {
@@ -933,18 +940,33 @@ std::string PROJECT_FILE::SerializeToString()
 
 bool PROJECT_FILE::SaveAs( const wxString& aDirectory, const wxString& aFile )
 {
-    wxFileName oldFilename( GetFilename() );
+    wxString destination;
+
+    try
+    {
+        destination = KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::PROJECT,
+                                                       aFile, IsKemiOnly() );
+    }
+    catch( const IO_ERROR& error )
+    {
+        m_lastSaveFailed = true;
+        wxLogTrace( traceSettings, wxT( "Refusing project Save As: %s" ), error.What() );
+        return false;
+    }
+
+    wxFileName oldFilename( GetFullFilename() );
     wxString   oldProjectName = oldFilename.GetName();
     wxString   oldProjectPath = oldFilename.GetPath();
 
-    Set( "meta.filename", aFile + "." + FILEEXT::ProjectFileExtension );
-    SetFilename( aFile );
+    SetFilename( destination );
+    Set( "meta.filename", wxFileName( GetFullFilename() ).GetFullName() );
+    wxString newProjectName = wxFileName( GetFullFilename() ).GetName();
 
     auto updatePath =
             [&]( wxString& aPath )
             {
                 if( aPath.StartsWith( oldProjectName + wxS( "." ) ) )
-                    aPath.Replace( oldProjectName, aFile, false );
+                    aPath.Replace( oldProjectName, newProjectName, false );
                 else if( aPath.StartsWith( oldProjectPath + wxS( "/" ) ) )
                     aPath.Replace( oldProjectPath, aDirectory, false );
             };
@@ -975,7 +997,33 @@ bool PROJECT_FILE::SaveAs( const wxString& aDirectory, const wxString& aFile )
 
         // Also update the display name if it matches the old project name
         if( sheetInfo.name == oldProjectName )
-            sheetInfo.name = aFile;
+            sheetInfo.name = newProjectName;
+    }
+
+    for( auto& boardInfo : m_boards )
+    {
+        wxFileName board( boardInfo.second );
+
+        if( !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PCB, board.GetExt() ) )
+            continue;
+
+        const bool relative = board.IsRelative();
+
+        if( !board.Normalize( wxPATH_NORM_ABSOLUTE | wxPATH_NORM_DOTS, oldProjectPath )
+            || !board.MakeRelativeTo( oldProjectPath )
+            || ( !board.GetDirs().IsEmpty() && board.GetDirs().front() == wxS( ".." ) ) )
+        {
+            continue;
+        }
+
+        // Match the file copy: dotted extra board names do not follow the project name.
+        if( board.GetName().IsSameAs( oldProjectName, wxFileName::IsCaseSensitive() ) )
+            board.SetName( newProjectName );
+
+        if( !relative && !board.MakeAbsolute( aDirectory ) )
+            continue;
+
+        boardInfo.second = board.GetFullPath();
     }
 
     // If we're actually going ahead and doing the save, the flag that keeps code from doing the save

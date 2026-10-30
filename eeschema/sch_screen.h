@@ -156,8 +156,15 @@ public:
 
     const wxString& GetFileName() const                     { return m_fileName; }
 
+    bool IsKemiOnly() const { return m_kemiOnly; }
+    void SetKemiOnly() { m_kemiOnly = true; }
+
     void SetFileReadOnly( bool aIsReadOnly )                { m_isReadOnly = aIsReadOnly; }
-    bool IsReadOnly() const                                 { return m_isReadOnly; }
+    bool IsReadOnly() const                                 { return m_isReadOnly || m_hasLoadError; }
+
+    /// A failed load must never become writable merely because the file permissions allow it.
+    void SetLoadError( bool aHasError )                      { m_hasLoadError = aHasError; }
+    bool HasLoadError() const                               { return m_hasLoadError; }
 
     void SetFileExists( bool aFileExists )                  { m_fileExists = aFileExists; }
     bool FileExists() const                                 { return m_fileExists; }
@@ -771,12 +778,14 @@ private:
                                             // `InitZoom()`.
 
     bool        m_isReadOnly;               ///< Read only status of the screen file.
+    bool        m_hasLoadError = false;     ///< Incomplete or rejected input; saving is forbidden.
 
     /// Flag to indicate the file associated with this screen has been created.
     bool        m_fileExists;
 
     /// Library symbols required for this schematic.
     std::map<wxString, LIB_SYMBOL*> m_libSymbols;
+    bool m_kemiOnly = false; ///< Survives Save As and temporary snapshot names.
 
     /**
      * The list of symbol instances loaded from the schematic file.

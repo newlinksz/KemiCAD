@@ -23,6 +23,7 @@
 #ifndef SCH_IO_KICAD_SEXPR_H_
 #define SCH_IO_KICAD_SEXPR_H_
 
+#include <kemi_format_profile.h>
 #include <memory>
 #include <sch_io/sch_io.h>
 #include <sch_io/sch_io_mgr.h>
@@ -74,13 +75,13 @@ public:
     const IO_BASE::IO_FILE_DESC GetSchematicFileDesc() const override
     {
         return IO_BASE::IO_FILE_DESC( _HKI( "KemiCAD s-expression schematic files" ),
-                                      { FILEEXT::KiCadSchematicFileExtension } );
+                                      KEMI_FORMAT::ReadableExts( KEMI_FORMAT::DOC::SCHEMATIC ) );
     }
 
     const IO_BASE::IO_FILE_DESC GetLibraryDesc() const override
     {
         return IO_BASE::IO_FILE_DESC( _HKI( "KemiCAD symbol library files" ),
-                                      { FILEEXT::KiCadSymbolLibFileExtension } );
+                                      KEMI_FORMAT::ReadableExts( KEMI_FORMAT::DOC::SYMBOL_LIB ) );
     }
 
     /**
@@ -102,12 +103,19 @@ public:
     void SaveSchematicFile( const wxString& aFileName, SCH_SHEET* aSheet, SCHEMATIC* aSchematic,
                             const std::map<std::string, UTF8>* aProperties = nullptr ) override;
 
+    /// Write an import target using its explicit flavor, including through a staging path.
+    void SaveSchematicFile( const wxString& aStoragePath, SCH_SHEET* aSheet, SCHEMATIC* aSchematic,
+                            const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+                            const std::map<std::string, UTF8>* aProperties = nullptr );
+
     /** Serialize a schematic sheet to an OUTPUTFORMATTER without file I/O or Prettify.
      *  Handles init() and Format().
+     *  Select aFlavor from the document destination, never from a snapshot storage path.
      *  Skips GroupsSanityCheck and SetFileExists side effects. */
     void FormatSchematicToFormatter( OUTPUTFORMATTER* aOut, SCH_SHEET* aSheet,
                                      SCHEMATIC* aSchematic,
-                                     const std::map<std::string, UTF8>* aProperties = nullptr );
+                                     const std::map<std::string, UTF8>* aProperties = nullptr,
+                                     KEMI_FORMAT::FLAVOR aFlavor = KEMI_FORMAT::FLAVOR::LEGACY );
 
     void Format( SCH_SHEET* aSheet );
 
@@ -124,16 +132,25 @@ public:
                             const std::map<std::string, UTF8>* aProperties = nullptr ) override;
     void SaveSymbol( const wxString& aLibraryPath, std::unique_ptr<LIB_SYMBOL> aSymbol,
                      const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+    void SaveSymbol( const wxString& aLibraryPath, std::unique_ptr<LIB_SYMBOL> aSymbol,
+                     const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+                     const std::map<std::string, UTF8>* aProperties = nullptr );
     void DeleteSymbol( const wxString& aLibraryPath, const wxString& aSymbolName,
                        const std::map<std::string, UTF8>* aProperties = nullptr ) override;
     void CreateLibrary( const wxString& aLibraryPath,
                         const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+    void CreateLibrary( const wxString& aLibraryPath, const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+                        const std::map<std::string, UTF8>* aProperties = nullptr );
     bool DeleteLibrary( const wxString& aLibraryPath,
                         const std::map<std::string, UTF8>* aProperties = nullptr ) override;
     void SaveLibrary( const wxString& aLibraryPath,
                       const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+    void SaveLibrary( const wxString& aLibraryPath, const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+                      const std::map<std::string, UTF8>* aProperties = nullptr );
 
     bool CanReadLibrary( const wxString& aLibraryPath ) const override;
+
+    bool IsLibraryKemiOnly( const wxString& aLibraryPath );
 
     bool IsLibraryWritable( const wxString& aLibraryPath ) override;
 
@@ -148,6 +165,15 @@ public:
     static void FormatLibSymbol( LIB_SYMBOL* aPart, OUTPUTFORMATTER& aFormatter );
 
 private:
+    void saveSchematicFile( const wxString& aFileName, SCH_SHEET* aSheet, SCHEMATIC* aSchematic,
+                            const std::map<std::string, UTF8>* aProperties,
+                            KEMI_FORMAT::FLAVOR aFlavor );
+    void createLibrary( const wxString& aLibraryPath,
+                        const KEMI_FORMAT::OUTPUT_TARGET* aTarget );
+    void saveLibrary( const wxString& aLibraryPath,
+                      const std::map<std::string, UTF8>* aProperties,
+                      const KEMI_FORMAT::OUTPUT_TARGET* aTarget );
+
     void loadHierarchy( const SCH_SHEET_PATH& aParentSheetPath, SCH_SHEET* aSheet );
     void loadFile( const wxString& aFileName, SCH_SHEET* aSheet );
 
@@ -188,6 +214,7 @@ protected:
     SCH_SHEET_PATH          m_currentSheetPath;
     SCHEMATIC*              m_schematic = nullptr;  ///< init() reads this before assigning it.
     OUTPUTFORMATTER*        m_out;              ///< The formatter for saving SCH_SCREEN objects.
+    KEMI_FORMAT::FLAVOR     m_writeFlavor = KEMI_FORMAT::FLAVOR::LEGACY; ///< Root flavor of the file being written.
     SCH_IO_KICAD_SEXPR_LIB_CACHE* m_cache;
 
     /// initialize PLUGIN like a constructor would.

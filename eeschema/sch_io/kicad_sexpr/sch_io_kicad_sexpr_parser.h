@@ -87,6 +87,8 @@ public:
 
     void ParseLib( LIB_SYMBOL_MAP& aSymbolLibMap );
 
+    bool IsKemiOnly() const { return m_kemiOnly; }
+
     /**
      * Parse internal #LINE_READER object into symbols and return all found.
      */
@@ -152,6 +154,7 @@ public:
     }
 
 private:
+    bool m_kemiOnly = false;
     // Group membership info refers to other Uuids in the file.
     // We don't want to rely on group declarations being last in the file, so
     // we store info about the group declarations here during parsing and then resolve

@@ -264,6 +264,12 @@ public:
 
     wxFileName GetTemporaryFileName( const wxString& aName ) const;
 
+    /** Extract a cache entry into an explicit directory, retaining native output policy. */
+    wxFileName WriteCacheFile( const wxString& aName, const wxString& aDirectory ) const;
+
+    void SetKemiOnlyEmbeddedFiles( bool aRestricted = true ) { m_kemiOnly |= aRestricted; }
+    bool IsKemiOnlyEmbeddedFiles() const { return m_kemiOnly; }
+
     wxFileName GetTemporaryFileName( EMBEDDED_FILE* aFile ) const;
 
     void ClearEmbeddedFiles( bool aDeleteFiles = true )
@@ -304,6 +310,7 @@ private:
     std::map<wxString, std::shared_ptr<EMBEDDED_FILE>> m_files;
     std::vector<wxString>                              m_fontFiles;
     FILE_ADDED_CALLBACK                                m_fileAddedCallback;
+    bool                                               m_kemiOnly = false;
 
 protected:
     bool m_embedFonts = false; ///< If set, fonts will be embedded in the element on save.

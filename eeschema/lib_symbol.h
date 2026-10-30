@@ -243,6 +243,9 @@ public:
     const wxString GetLibraryName() const;
 
     LEGACY_SYMBOL_LIB* GetLib() const          { return m_library; }
+
+    bool IsKemiOnly() const { return m_kemiOnly; }
+    void SetKemiOnly() { m_kemiOnly = true; SetKemiOnlyEmbeddedFiles(); }
     void SetLib( LEGACY_SYMBOL_LIB* aLibrary );
 
     timestamp_t GetLastModDate() const { return m_lastModDate; }
@@ -1052,6 +1055,7 @@ private:
     LIB_ITEMS_CONTAINER m_drawings;
 
     LEGACY_SYMBOL_LIB*  m_library;
+    bool               m_kemiOnly = false;
     wxString            m_name;
     wxString            m_keyWords;         ///< Search keywords
     wxArrayString       m_fpFilters;        ///< List of suitable footprint names for the symbol

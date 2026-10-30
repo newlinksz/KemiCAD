@@ -17,6 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <kemi_format_profile.h>
 #include "kigit_pcb_merge.h"
 #include <git/kigit_merge_blob_utils.h>
 
@@ -81,12 +82,13 @@ KIGIT_PCB_MERGE_DIFFERENCES KIGIT_PCB_MERGE::compareBoards( BOARD* aAncestor, BO
 }
 
 
-std::string KIGIT_PCB_MERGE::FormatBoard( BOARD* aBoard )
+std::string KIGIT_PCB_MERGE::FormatBoard( BOARD* aBoard, const wxString& aTargetPath )
 {
     STRING_FORMATTER   formatter;
     PCB_IO_KICAD_SEXPR pcbIO;
 
-    pcbIO.FormatBoardToFormatter( &formatter, aBoard );
+    pcbIO.FormatBoardToFormatter( &formatter, aBoard, nullptr,
+                                 KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PCB, aTargetPath ) );
 
     std::string text = std::move( formatter.MutableString() );
 
@@ -120,11 +122,15 @@ int KIGIT_PCB_MERGE::Merge()
 
     // Parse each side from its decoded blob contents. LoadMergeBlobs has freed
     // the underlying git_blob objects, so the boards are built from the strings.
-    STRING_LINE_READER         ancestor_reader( blobs.ancestor, wxS( "ancestor" ) );
+    const git_index_entry* ancestor = git_merge_driver_source_ancestor( m_mergeDriver );
+    const git_index_entry* ours = git_merge_driver_source_ours( m_mergeDriver );
+    const git_index_entry* theirs = git_merge_driver_source_theirs( m_mergeDriver );
+
+    STRING_LINE_READER         ancestor_reader( blobs.ancestor, wxString::FromUTF8( ancestor->path ) );
     PCB_IO_KICAD_SEXPR_PARSER  ancestor_parser( &ancestor_reader, nullptr, nullptr );
-    STRING_LINE_READER         ours_reader( blobs.ours, wxS( "ours" ) );
+    STRING_LINE_READER         ours_reader( blobs.ours, wxString::FromUTF8( ours->path ) );
     PCB_IO_KICAD_SEXPR_PARSER  ours_parser( &ours_reader, nullptr, nullptr );
-    STRING_LINE_READER         theirs_reader( blobs.theirs, wxS( "theirs" ) );
+    STRING_LINE_READER         theirs_reader( blobs.theirs, wxString::FromUTF8( theirs->path ) );
     PCB_IO_KICAD_SEXPR_PARSER  theirs_parser( &theirs_reader, nullptr, nullptr );
 
     std::unique_ptr<BOARD> ancestor_board;
@@ -201,7 +207,7 @@ int KIGIT_PCB_MERGE::Merge()
 
     try
     {
-        serialized = FormatBoard( merged.get() );
+        serialized = FormatBoard( merged.get(), wxString::FromUTF8( ours->path ) );
     }
     catch( const IO_ERROR& ioe )
     {

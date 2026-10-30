@@ -73,6 +73,8 @@
 #include <convert_basic_shapes_to_polygon.h>    // for RECT_CHAMFER_POSITIONS definition
 #include <math/util.h>                           // KiROUND, Clamp
 #include <string_utils.h>
+#include <kemi_format_profile.h>
+#include <limits>
 #include <stroke_params_parser.h>
 #include <wx/log.h>
 #include <progress_reporter.h>
@@ -1076,7 +1078,9 @@ bool PCB_IO_KICAD_SEXPR_PARSER::IsValidBoardHeader()
     if( CurTok() != T_LEFT  )
         return false;
 
-    if( NextTok() != T_kicad_pcb)
+    T root = NextTok();
+
+    if( root != T_kicad_pcb && root != T_kemi_pcb )
         return false;
 
     return true;
@@ -1106,6 +1110,7 @@ BOARD_ITEM* PCB_IO_KICAD_SEXPR_PARSER::Parse()
 
     switch( NextTok() )
     {
+    case T_kemi_pcb:
     case T_kicad_pcb:
         if( m_board == nullptr )
             m_board = new BOARD();
@@ -1113,13 +1118,22 @@ BOARD_ITEM* PCB_IO_KICAD_SEXPR_PARSER::Parse()
         item = parseBOARD();
         break;
 
+    case T_kemi_footprint:
     case T_module:      // legacy token
     case T_footprint:
+    {
+        wxString kemiError = KEMI_FORMAT::CheckRootForSource( KEMI_FORMAT::DOC::FOOTPRINT, CurSource(),
+                                                              CurTok() == T_kemi_footprint );
+
+        if( !kemiError.IsEmpty() )
+            THROW_IO_ERROR( kemiError );
+
         item = parseFOOTPRINT( initial_comments.release() );
 
         // Locking a footprint has no meaning outside of a board.
         item->SetLocked( false );
         break;
+    }
 
     default:
         wxString err;
@@ -1162,6 +1176,9 @@ BOARD* PCB_IO_KICAD_SEXPR_PARSER::parseBOARD()
 
 BOARD* PCB_IO_KICAD_SEXPR_PARSER::parseBOARD_unchecked()
 {
+    if( CurTok() == T_kemi_pcb )
+        m_board->SetKemiOnly();
+
     T token;
     std::map<wxString, wxString> properties;
 
@@ -1173,7 +1190,7 @@ BOARD* PCB_IO_KICAD_SEXPR_PARSER::parseBOARD_unchecked()
                 if( m_requiredVersion > SEXPR_BOARD_FILE_VERSION )
                 {
                     throw FUTURE_FORMAT_ERROR( fmt::format( "{}", m_requiredVersion ),
-                                               m_generatorVersion );
+                                               m_generatorVersion, m_board && m_board->IsKemiOnly() );
                 }
             };
 
@@ -1801,14 +1818,54 @@ void PCB_IO_KICAD_SEXPR_PARSER::resolveGroups( BOARD_ITEM* aParent )
 }
 
 
+void PCB_IO_KICAD_SEXPR_PARSER::parseKemiFormatVersion()
+{
+    NeedNUMBER( "format_version" );
+    long version;
+
+    // Reject fractional and overflowing numbers instead of truncating or wrapping to version 1.
+    if( !FromUTF8().ToLong( &version )
+            || version < std::numeric_limits<int>::min()
+            || version > std::numeric_limits<int>::max() )
+    {
+        THROW_IO_ERRORF( _( "Unsupported KemiCAD format_version '%s'." ), FromUTF8() );
+    }
+
+    const wxString versionError =
+            KEMI_FORMAT::CheckFormatVersion( KEMI_FORMAT::DOC::PCB, static_cast<int>( version ) );
+
+    if( !versionError.IsEmpty() )
+        THROW_IO_ERROR( versionError );
+
+    NeedRIGHT();
+}
+
+
 void PCB_IO_KICAD_SEXPR_PARSER::parseHeader()
 {
-    wxCHECK_RET( CurTok() == T_kicad_pcb,
+    wxCHECK_RET( CurTok() == T_kicad_pcb || CurTok() == T_kemi_pcb,
                  wxT( "Cannot parse " ) + GetTokenString( CurTok() ) + wxT( " as a header." ) );
+
+    const bool isKemi = ( CurTok() == T_kemi_pcb );
+    wxString   kemiError = KEMI_FORMAT::CheckRootForSource( KEMI_FORMAT::DOC::PCB, CurSource(), isKemi );
+
+    if( !kemiError.IsEmpty() )
+        THROW_IO_ERROR( kemiError );
 
     NeedLEFT();
 
     T tok = NextTok();
+
+    if( isKemi )
+    {
+        if( tok != T_format_version )
+            Expecting( "format_version" );
+
+        parseKemiFormatVersion();
+
+        NeedLEFT();
+        tok = NextTok();
+    }
 
     if( tok == T_version )
     {
@@ -6076,9 +6133,11 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT( wxArrayString* aInitialCom
 
 FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* aInitialComments )
 {
-    wxCHECK_MSG( CurTok() == T_module || CurTok() == T_footprint, nullptr,
+    wxCHECK_MSG( CurTok() == T_module || CurTok() == T_footprint || CurTok() == T_kemi_footprint, nullptr,
                  wxT( "Cannot parse " ) + GetTokenString( CurTok() ) + wxT( " as FOOTPRINT." ) );
 
+    const bool isKemi = CurTok() == T_kemi_footprint;
+    bool       hasFormatVersion = false;
     wxString name;
     VECTOR2I pt;
     T        token;
@@ -6088,6 +6147,9 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
     double   parsedScaleY = 1.0;
 
     std::unique_ptr<FOOTPRINT> footprint = std::make_unique<FOOTPRINT>( m_board );
+
+    if( isKemi || ( m_board && m_board->IsKemiOnly() ) )
+        footprint->SetKemiOnly();
 
     footprint->SetInitialComments( aInitialComments );
 
@@ -6111,7 +6173,7 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
             [&]()
             {
                 if( m_requiredVersion > SEXPR_BOARD_FILE_VERSION )
-                    throw FUTURE_FORMAT_ERROR( fmt::format( "{}", m_requiredVersion ), m_generatorVersion );
+                    throw FUTURE_FORMAT_ERROR( fmt::format( "{}", m_requiredVersion ), m_generatorVersion, isKemi );
             };
 
     for( token = NextTok(); token != T_RIGHT; token = NextTok() )
@@ -6121,6 +6183,18 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
 
         switch( token )
         {
+        case T_format_version:
+        {
+            // KemiCAD container version of a standalone .kemi_mod footprint
+            if( !isKemi || hasFormatVersion )
+                THROW_IO_ERROR( _( "Unexpected or duplicate KemiCAD footprint format_version." ) );
+
+            hasFormatVersion = true;
+            parseKemiFormatVersion();
+
+            break;
+        }
+
         case T_version:
         {
             // Theoretically a footprint nested in a PCB could declare its own version, though
@@ -7071,6 +7145,9 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
 
     footprint->SetFPID( fpid );
 
+    if( isKemi && !hasFormatVersion )
+        THROW_IO_ERROR( _( "KemiCAD footprint is missing format_version." ) );
+
     return footprint.release();
 }
 
@@ -7179,8 +7256,13 @@ PAD* PCB_IO_KICAD_SEXPR_PARSER::parsePAD( FOOTPRINT* aParent )
         break;
 
     case T_np_thru_hole:
+    {
+        // SetAttribute( NPTH ) clears the number; KemiCAD keeps NPTH pad numbers.
+        const wxString number = pad->GetNumber();
         pad->SetAttribute( PAD_ATTRIB::NPTH );
+        pad->SetNumber( number );
         break;
+    }
 
     default:
         Expecting( "thru_hole, smd, connect, or np_thru_hole" );
@@ -7800,10 +7882,11 @@ PAD* PCB_IO_KICAD_SEXPR_PARSER::parsePAD( FOOTPRINT* aParent )
         }
     }
 
-    if( !pad->CanHaveNumber() )
+    if( pad->IsAperturePad() && pad->GetAttribute() != PAD_ATTRIB::NPTH )
     {
         // At some point it was possible to assign a number to aperture pads so we need to clean
-        // those out here.
+        // those out here.  NPTH pad numbers are kept (KemiCAD: imported mechanical pin numbers,
+        // e.g. CN602 7/8); they are still excluded from nets/parity via CanHaveNumber().
         pad->SetNumber( wxEmptyString );
     }
 

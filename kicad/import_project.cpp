@@ -1,3 +1,4 @@
+#include <vector>
 /*
  * This program source code file is part of KiCad, a free EDA CAD application.
  *
@@ -32,6 +33,13 @@
 #include <kidialog.h>
 #include <kiplatform/ui.h>
 #include <wildcards_and_files_ext.h>
+#include <kemi_format_profile.h>
+#include <kemi_project_import.h>
+#include <import_proj_properties.h>
+#include <ki_exception.h>
+#include <pgm_base.h>
+#include <project.h>
+#include <settings/settings_manager.h>
 #include <io/pads/pads_common.h>
 
 #include <sch_io/sch_io_mgr.h>
@@ -96,8 +104,10 @@ void KICAD_MANAGER_FRAME::ImportNonKiCadProject( const wxString& aWindowTitle,
         wxString targetDir = prodlg.GetPath();
 
         importProj.m_TargetProj.SetPath( targetDir );
-        importProj.m_TargetProj.SetName( importProj.m_InputFile.GetName() );
-        importProj.m_TargetProj.SetExt( FILEEXT::ProjectFileExtension );
+        importProj.m_TargetProj.SetName(
+                IMPORT_PROJ_PROPS::StripImportDateSuffix( importProj.m_InputFile.GetName() ) );
+        importProj.m_TargetProj.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT,
+                                                        KEMI_FORMAT::FLAVOR::KEMI ) );
         importProj.m_TargetProj.MakeAbsolute();
 
         if( !importProj.m_TargetProj.DirExists() )
@@ -158,15 +168,90 @@ void KICAD_MANAGER_FRAME::ImportNonKiCadProject( const wxString& aWindowTitle,
         break;
     }
 
-    CreateNewProject( importProj.m_TargetProj.GetFullPath(), false /* Don't create stub files */ );
-    LoadProject( importProj.m_TargetProj );
+    try
+    {
+        const KEMI_FORMAT::PROJECT_IMPORT_TARGETS targets = KEMI_FORMAT::ResolveProjectImportTargets(
+                importProj.m_TargetProj.GetFullPath(), inputPath, importProj.m_TargetProj.GetPath() );
+
+        KEMI_FORMAT::CreateProjectImportFiles( targets );
+        importProj.m_TargetProj.Assign( targets.project );
+    }
+    catch( const IO_ERROR& error )
+    {
+        DisplayErrorMessage( this, _( "Could not create the imported KemiCAD project." ), error.What() );
+        return;
+    }
+
+    struct IMPORT_FILES_GUARD
+    {
+        wxFileName project;
+        wxWindow* parent;
+        bool loaded = false;
+
+        ~IMPORT_FILES_GUARD()
+        {
+            if( loaded )
+                return;
+
+            // These files were created only after the no-overwrite check. Leave the
+            // chosen directory and all unrelated files alone, including on exceptions.
+            wxFileName local( project );
+            local.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT_LOCAL,
+                                           KEMI_FORMAT::FLAVOR::KEMI ) );
+            bool cleaned = true;
+
+            for( const wxString& path : { local.GetFullPath(), project.GetFullPath() } )
+            {
+                if( wxFileExists( path ) && !wxRemoveFile( path ) )
+                    cleaned = false;
+            }
+
+            if( !cleaned )
+                DisplayErrorMessage( parent, _( "Could not remove the unused imported project files." ) );
+        }
+    } importFiles{ importProj.m_TargetProj, this };
+
+    // Loading closes the old project's editor frames before the import mails are dispatched.
+    if( !LoadProject( importProj.m_TargetProj ) )
+        return;
+
+    importFiles.loaded = true;
 
     if( isPadsProject )
         importProj.ImportPadsFiles();
     else
         importProj.ImportFiles( aSchFileType, aPcbFileType );
 
-    importProj.SaveImportedFiles();
+    try
+    {
+        if( !importProj.SaveImportedFiles() )
+            THROW_IO_ERROR( _( "An imported editor did not confirm that its design was saved." ) );
+
+        wxFileName board( importProj.m_TargetProj );
+        board.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, KEMI_FORMAT::FLAVOR::KEMI ) );
+
+        if( board.FileExists() )
+            KEMI_FORMAT::RegisterImportedBoards( Prj(), { board.GetFullPath() } );
+
+        if( !Pgm().GetSettingsManager().SaveProject( Prj().GetProjectFullName() ) )
+            THROW_IO_ERROR( _( "Could not save the imported project's settings." ) );
+    }
+    catch( const IO_ERROR& error )
+    {
+        DisplayErrorMessage( this, _( "Could not finish the imported project. No project archive was created." ),
+                             error.What() );
+        return;
+    }
+
+    if( !KEMI_FORMAT::WriteImportZip( importProj.m_TargetProj.GetFullPath(), nullptr,
+                                        std::vector<wxString>{ inputPath } ) )
+    {
+        DisplayErrorMessage( this,
+                             _( "The project was imported, but the zip archive could not be "
+                                "written (the destination may collide with the source file, "
+                                "or the folder is not writable)." ) );
+    }
+
     ReCreateTreePrj();
     m_active_project = true;
 }

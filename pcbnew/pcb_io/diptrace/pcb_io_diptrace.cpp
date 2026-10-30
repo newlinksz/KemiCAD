@@ -31,9 +31,6 @@
 
 #include <wx/string.h>
 #include <wx/wfstream.h>
-#include <wx/file.h>
-#include <wx/filename.h>
-#include <wx/log.h>
 
 
 PCB_IO_DIPTRACE::PCB_IO_DIPTRACE() : PCB_IO( wxS( "DipTrace" ) )
@@ -77,6 +74,7 @@ bool PCB_IO_DIPTRACE::CanReadBoard( const wxString& aFileName ) const
 void PCB_IO_DIPTRACE::loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsNewLoad,
                                  const std::map<std::string, UTF8>* aProperties, PROJECT* aProject )
 {
+    m_importedDesignRules.clear();
     m_props = aProperties;
     m_board = &aBoard;
 
@@ -91,25 +89,8 @@ void PCB_IO_DIPTRACE::loadBoard( const wxString& aFileName, BOARD& aBoard, bool 
     DIPTRACE::PCB_PARSER parser( aFileName, m_board );
     parser.Parse();
 
-    // Emit a sidecar .kicad_dru for per-zone DipTrace properties KiCad cannot
-    // store natively. Skip when appending so an existing project's rules survive.
+    // The output owner persists the rules beside the final imported board.  Loading alone
+    // must not create a sidecar in the source directory or replace append-target rules.
     if( aIsNewLoad )
-    {
-        wxString rules = parser.GenerateDesignRules();
-
-        if( !rules.IsEmpty() )
-        {
-            wxFileName drcPath( aFileName );
-            drcPath.SetExt( wxT( "kicad_dru" ) );
-
-            wxFile drcFile( drcPath.GetFullPath(), wxFile::write );
-
-            if( drcFile.IsOpened() )
-                drcFile.Write( rules );
-            else
-                Report( wxString::Format( _( "DipTrace import: could not write design rules to '%s'; "
-                                             "imported board is missing DipTrace-specific clearance rules." ),
-                                          drcPath.GetFullPath() ), RPT_SEVERITY_WARNING );
-        }
-    }
+        m_importedDesignRules = parser.GenerateDesignRules();
 }

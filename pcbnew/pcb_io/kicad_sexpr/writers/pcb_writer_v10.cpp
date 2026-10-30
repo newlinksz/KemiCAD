@@ -25,6 +25,7 @@
 #include <wx/ffile.h>
 #include <wx/mstream.h>
 #include <board.h>
+#include <kemi_format_profile.h>
 #include <board_design_settings.h>
 #include <board_stackup_manager/board_stackup.h>
 #include <board_stackup_manager/stackup_predefined_prms.h>
@@ -146,6 +147,12 @@ static void formatBoardStackupV10( OUTPUTFORMATTER* aFormatter, const BOARD* aBo
 
 void PCB_WRITER_V10::SaveBoard( const wxString& aFileName, BOARD* aBoard )
 {
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PCB, aFileName,
+                                        KEMI_FORMAT::FLAVOR::LEGACY, true );
+
+    if( aBoard->IsKemiOnly() )
+        THROW_IO_ERROR( _( "KemiCAD data cannot be exported to an official KiCad format." ) );
+
     PRETTIFIED_FILE_OUTPUTFORMATTER formatter( aFileName );
     FormatBoardToFormatter( &formatter, aBoard );
     formatter.Finish();
@@ -154,6 +161,9 @@ void PCB_WRITER_V10::SaveBoard( const wxString& aFileName, BOARD* aBoard )
 
 void PCB_WRITER_V10::FormatBoardToFormatter( OUTPUTFORMATTER* aOut, BOARD* aBoard )
 {
+    if( aBoard->IsKemiOnly() )
+        THROW_IO_ERROR( _( "KemiCAD data cannot be exported to an official KiCad format." ) );
+
     m_ctl = CTL_FOR_BOARD;
     m_board = aBoard;
 
@@ -2712,6 +2722,12 @@ void PCB_WRITER_V10::format( const ZONE_LAYER_PROPERTIES& aZoneLayerProperties, 
 
 void PCB_WRITER_V10::SaveFootprintFile( const wxString& aFileName, FOOTPRINT* aFootprint )
 {
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::FOOTPRINT, aFileName,
+                                        KEMI_FORMAT::FLAVOR::LEGACY, true );
+
+    if( aFootprint->IsKemiOnly() )
+        THROW_IO_ERROR( _( "KemiCAD data cannot be exported to an official KiCad format." ) );
+
     if( aFootprint->GetAreFontsEmbedded() )
         aFootprint->EmbedFonts();
     else

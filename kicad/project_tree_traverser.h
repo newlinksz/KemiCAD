@@ -23,6 +23,8 @@
 #include <wx/dir.h>
 #include <wx/filename.h>
 #include <wx/string.h>
+#include <functional>
+#include <vector>
 
 class KICAD_MANAGER_FRAME;
 
@@ -32,6 +34,10 @@ class KICAD_MANAGER_FRAME;
  * This class can operate in two modes:
  * 1. With KICAD_MANAGER_FRAME: Uses KIFACE interfaces for proper file type handling
  * 2. Without KICAD_MANAGER_FRAME (nullptr): Simple file copying for templates
+ *
+ * Traverse first to plan and validate destinations, then call CopyFiles().
+ * aKemiOnly carries the loaded project's restriction, including JSON markers under
+ * an official filename; the presence of a native sibling also enables it.
  */
 class PROJECT_TREE_TRAVERSER : public wxDirTraverser
 {
@@ -40,10 +46,14 @@ public:
                            const wxString& aSrcProjectDirPath,
                            const wxString& aSrcProjectName,
                            const wxString& aNewProjectDirPath,
-                           const wxString& aNewProjectName );
+                           const wxString& aNewProjectName,
+                           bool aKemiOnly = false );
 
     virtual wxDirTraverseResult OnFile( const wxString& aSrcFilePath ) override;
     virtual wxDirTraverseResult OnDir( const wxString& aSrcDirPath ) override;
+
+    /// Execute the planned copies only after traversal has validated every destination.
+    bool CopyFiles();
 
     wxString GetErrors() const { return m_errors; }
     wxFileName GetNewProjectFile() const { return m_newProjectFile; }
@@ -58,6 +68,11 @@ private:
 
     wxFileName           m_newProjectFile;
     wxString             m_errors;
+    bool                 m_kemiOnly = false;
+    bool                 m_renameSymbolCache = false;
+    bool                 m_renameFootprintCache = false;
+    std::vector<wxString> m_targets;
+    std::vector<std::function<void()>> m_copyOperations;
 };
 
 #endif // PROJECT_TREE_TRAVERSER_H

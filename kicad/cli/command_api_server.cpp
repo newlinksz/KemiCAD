@@ -30,6 +30,9 @@
 #include <api/api_server.h>
 #include <cli/exit_codes.h>
 #include <lib_id.h>
+#include <kemi_format_profile.h>
+#include <kemi_project_paths.h>
+#include <project.h>
 #include <settings/settings_manager.h>
 #include <wildcards_and_files_ext.h>
 #include <wx/app.h>
@@ -58,7 +61,7 @@ CLI::API_SERVER_COMMAND::API_SERVER_COMMAND() :
     m_argParser.add_argument( ARG_PATH )
             .default_value( std::string() )
             .nargs( argparse::nargs_pattern::optional )
-            .help( UTF8STDSTR( _( "Optional path to a .kicad_pro, .kicad_pcb, or .kicad_sch file to pre-load" ) ) )
+            .help( UTF8STDSTR( _( "Optional path to a project, PCB, or schematic file to pre-load" ) ) )
             .metavar( "PROJECT_OR_FILE" );
 
     m_argParser.add_argument( ARG_SOCKET )
@@ -290,8 +293,11 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
             return response;
         }
 
-        wxFileName projectPath( inputPath );
-        projectPath.SetExt( FILEEXT::ProjectFileExtension );
+        const KEMI_FORMAT::DOC sourceDoc = requestType == types::DOCTYPE_PROJECT
+                ? KEMI_FORMAT::DOC::PROJECT : requestType == types::DOCTYPE_PCB
+                ? KEMI_FORMAT::DOC::PCB : KEMI_FORMAT::DOC::SCHEMATIC;
+        wxFileName projectPath( KEMI_FORMAT::RelatedDocumentPath( sourceDoc,
+                                                                KEMI_FORMAT::DOC::PROJECT, inputPath ) );
         projectPath.MakeAbsolute();
 
         if( openProjectPath && projectPath.GetFullPath() != openProjectPath->GetFullPath() )
@@ -451,8 +457,9 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
 
         wxFileName docPath( inputPath );
         docPath.MakeAbsolute();
-        docPath.SetExt( requestType == types::DOCTYPE_PCB ? FILEEXT::KiCadPcbFileExtension
-                                                          : FILEEXT::KiCadSchematicFileExtension );
+        docPath.SetExt( KEMI_FORMAT::Ext( requestType == types::DOCTYPE_PCB
+                                                 ? KEMI_FORMAT::DOC::PCB : KEMI_FORMAT::DOC::SCHEMATIC,
+                                         KEMI_FORMAT::FLAVOR::KEMI ) );
 
         KIFACE::DOCUMENT_SPEC spec;
         spec.kind = KIFACE::DOCUMENT_SPEC::KIND::CREATE_KIND;
@@ -470,8 +477,7 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
         }
 
         PROJECT& project = Pgm().GetSettingsManager().Prj();
-        openProjectPath =
-                wxFileName( project.GetProjectPath(), project.GetProjectName(), FILEEXT::ProjectFileExtension );
+        openProjectPath = wxFileName( project.GetProjectFullName() );
 
         OPEN_DOCUMENT doc;
         doc.type = requestType;
@@ -635,9 +641,18 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
 
                 if( openProjectPath )
                 {
-                    wxFileName newProject( newFile );
-                    newProject.SetExt( FILEEXT::ProjectFileExtension );
+                    wxFileName newProject( Pgm().GetSettingsManager().Prj().GetProjectFullName() );
+                    newProject.MakeAbsolute();
                     openProjectPath = newProject;
+
+                    for( OPEN_DOCUMENT& document : openDocuments )
+                    {
+                        if( document.type == types::DOCTYPE_PROJECT )
+                        {
+                            document.fileName = newProject.GetFullName();
+                            document.specPath = newProject.GetFullPath();
+                        }
+                    }
                 }
             } );
 
@@ -660,9 +675,9 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
         wxFileName preloadFile( preloadPath );
         types::DocumentType preloadType = types::DOCTYPE_PROJECT;
 
-        if( preloadFile.GetExt() == FILEEXT::KiCadSchematicFileExtension )
+        if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::SCHEMATIC, preloadFile.GetExt() ) )
             preloadType = types::DOCTYPE_SCHEMATIC;
-        else if( preloadFile.GetExt() == FILEEXT::KiCadPcbFileExtension )
+        else if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PCB, preloadFile.GetExt() ) )
             preloadType = types::DOCTYPE_PCB;
 
         commands::OpenDocument request;

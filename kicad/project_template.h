@@ -101,6 +101,7 @@
 #define PROJECT_TEMPLATE_H
 
 
+#include <functional>
 #include <vector>
 
 #include <wx/filename.h>
@@ -148,14 +149,17 @@ protected:
     wxString   m_error;
 
 public:
+    using DOCUMENT_CONVERTER = std::function<bool( const wxString&, const wxString& )>;
 
     /**
      * Create a new project instance from \a aPath. \a aPath should be a directory that
      * conforms to the project template requirements
      *
      * @param aPath Should be a directory containing the template
+     * @param aConverter optionally supplies native rule conversion for headless callers.
+     *                   By default the PCB kiface loads, saves and validates the rules.
      */
-    PROJECT_TEMPLATE( const wxString& aPath );
+    PROJECT_TEMPLATE( const wxString& aPath, DOCUMENT_CONVERTER aConverter = {} );
 
     /**
      * Non-virtual destructor (so no derived classes)
@@ -215,6 +219,9 @@ public:
      */
     size_t GetDestinationFiles( const wxFileName& aNewProjectPath,
                                 std::vector< wxFileName >& aDestFiles );
+
+private:
+    DOCUMENT_CONVERTER m_converter;
 };
 
 

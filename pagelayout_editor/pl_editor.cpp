@@ -19,6 +19,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <kemi_format_profile.h>
 #include <wx/file.h>
 
 #include <kiface_base.h>
@@ -178,7 +179,7 @@ void IFACE::SaveFileAs( const wxString& aProjectBasePath, const wxString& aSrcPr
         destFile.SetPath( destPath );
     }
 
-    if( ext == "kicad_wks" )
+    if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::DRAWING_SHEET, ext ) )
     {
         if( destFile.GetName() == aSrcProjectName )
             destFile.SetName( aNewProjectName );

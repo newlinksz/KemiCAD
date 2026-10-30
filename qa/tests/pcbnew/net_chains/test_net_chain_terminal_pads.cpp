@@ -76,7 +76,7 @@ BOOST_AUTO_TEST_CASE( SignalTerminalPadsRoundTrip )
     PCB_TRACK* t1 = new PCB_TRACK( board.get() ); t1->SetNetCode( 1 ); t1->SetStart( p1a->GetPosition() ); t1->SetEnd( p2a->GetPosition() ); board->Add( t1 );
     PCB_TRACK* t2 = new PCB_TRACK( board.get() ); t2->SetNetCode( 2 ); t2->SetStart( p1a->GetPosition() ); t2->SetEnd( p2a->GetPosition() ); board->Add( t2 );
 
-    auto tmpFile = std::filesystem::temp_directory_path() / "net_chain_terminal_pads_roundtrip.kicad_pcb";
+    auto tmpFile = std::filesystem::temp_directory_path() / "net_chain_terminal_pads_roundtrip.kemi_pcb";
     plugin.SaveBoard( tmpFile.string(), *board );
 
     std::unique_ptr<BOARD> loaded = plugin.LoadBoard( tmpFile.string() );
@@ -132,7 +132,7 @@ BOOST_AUTO_TEST_CASE( SingleNetSignalNamePersists )
     // Add trivial track so net is serialized
     PCB_TRACK* t = new PCB_TRACK( board.get() ); t->SetNetCode( 1 ); t->SetStart( VECTOR2I(0,0) ); t->SetEnd( VECTOR2I(1000000,0) ); board->Add( t );
 
-    auto tmpFile = std::filesystem::temp_directory_path() / "single_net_chain_roundtrip.kicad_pcb";
+    auto tmpFile = std::filesystem::temp_directory_path() / "single_net_chain_roundtrip.kemi_pcb";
     plugin.SaveBoard( tmpFile.string(), *board );
 
     std::unique_ptr<BOARD> loaded = plugin.LoadBoard( tmpFile.string() );
@@ -166,7 +166,7 @@ BOOST_AUTO_TEST_CASE( SignalsSurviveBuildListOfNets )
         x += 2000000;
     }
 
-    auto tmpFile = std::filesystem::temp_directory_path() / "net_chains_survive_buildlist.kicad_pcb";
+    auto tmpFile = std::filesystem::temp_directory_path() / "net_chains_survive_buildlist.kemi_pcb";
     plugin.SaveBoard( tmpFile.string(), *board );
 
     std::unique_ptr<BOARD> loaded = plugin.LoadBoard( tmpFile.string() );

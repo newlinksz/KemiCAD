@@ -94,6 +94,13 @@ SYMBOL_EDITOR_TAB_CONTEXT::~SYMBOL_EDITOR_TAB_CONTEXT()
 }
 
 
+bool SYMBOL_EDITOR_TAB_CONTEXT::MatchesLibrarySymbol( const LIB_SYMBOL& aSymbol ) const
+{
+    return m_symbol->GetReferenceField().GetText() == aSymbol.GetReferenceField().GetText()
+           && m_symbol->Compare( aSymbol ) == 0;
+}
+
+
 bool SYMBOL_EDITOR_TAB_CONTEXT::IsModified() const
 {
     return m_screen && m_screen->IsContentModified();

@@ -163,6 +163,12 @@ public:
     void PromoteToLibrary( const wxString& aLib, const wxString& aName );
 
     /**
+     * Compare the working copy with a library revision, including the default Reference text
+     * deliberately ignored by LIB_SYMBOL::Compare for schematic matching.
+     */
+    bool MatchesLibrarySymbol( const LIB_SYMBOL& aSymbol ) const;
+
+    /**
      * Observe the working symbol/screen.  Valid whether active or detached.
      */
     LIB_SYMBOL* GetSymbol() const { return m_symbol; }

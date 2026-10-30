@@ -257,6 +257,8 @@ void DIALOG_KICAD_MERGE_3WAY::OnResolutionChanged( wxCommandEvent& aEvent )
         action.kind = KICAD_DIFF::ITEM_RES::TAKE_ANCESTOR;
     else if( m_hasMergedEdit[m_currentConflict] )
         action.kind = KICAD_DIFF::ITEM_RES::MERGE_PROPS;
+    else
+        action.kind = KICAD_DIFF::ITEM_RES::KEEP; // back to undecided; Apply needs a new choice
 
     m_sdbSizerApply->Enable( KICAD_DIFF::CollectUnresolvedConflicts( m_plan, m_conflictActionIndex ).empty() );
     showConflict( m_currentConflict );

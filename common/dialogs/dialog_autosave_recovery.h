@@ -40,7 +40,8 @@ enum class AUTOSAVE_RECOVERY_CHOICE
 class DIALOG_AUTOSAVE_RECOVERY : public DIALOG_AUTOSAVE_RECOVERY_BASE
 {
 public:
-    DIALOG_AUTOSAVE_RECOVERY( wxWindow* aParent, const std::vector<std::pair<wxString, wxString>>& aStale );
+    DIALOG_AUTOSAVE_RECOVERY( wxWindow* aParent, const std::vector<std::pair<wxString, wxString>>& aStale,
+                              bool aWholeSet = false );
 
     AUTOSAVE_RECOVERY_CHOICE GetChoice() const { return m_choice; }
 
@@ -57,6 +58,7 @@ protected:
     void updateActionButtons();
 
 private:
+    bool                                     m_wholeSet;
     AUTOSAVE_RECOVERY_CHOICE                   m_choice;
     std::vector<std::pair<wxString, wxString>> m_stale;
 };

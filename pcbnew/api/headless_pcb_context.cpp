@@ -24,8 +24,12 @@
 #include <common.h>
 #include <component_classes/component_class_manager.h>
 #include <drc/drc_engine.h>
+#include <drc/rule_editor/drc_re_rule_loader.h>
+#include <drc/rule_editor/drc_re_rule_saver.h>
+#include <wx/log.h>
 #include <footprint.h>
 #include <gestfich.h>
+#include <kemi_format_profile.h>
 #include <netlist_reader/board_netlist_updater.h>
 #include <netlist_reader/netlist_reader.h>
 #include <netlist_reader/pcb_netlist_utils.h>
@@ -109,13 +113,19 @@ bool HEADLESS_PCB_CONTEXT::SaveBoard()
 
     if( success )
     {
+        m_board->SetFileName( fileName );
         m_contentModified = false;
 
         wxFileName pro = fileName;
-        pro.SetExt( FILEEXT::ProjectFileExtension );
+        pro.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) );
         pro.MakeAbsolute();
 
-        Pgm().GetSettingsManager().SaveProjectAs( pro.GetFullPath(), m_board->GetProject() );
+        if( !KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT,
+                                      wxFileName( Prj().GetProjectFullName() ).GetExt() )
+                || !wxFileExists( Prj().GetProjectFullName() ) )
+        {
+            Pgm().GetSettingsManager().SaveProjectAs( pro.GetFullPath(), m_board->GetProject() );
+        }
     }
 
     return success;
@@ -127,7 +137,18 @@ bool HEADLESS_PCB_CONTEXT::SaveBoardAs( const wxString& aFileName )
     if( !m_board || aFileName.IsEmpty() )
         return false;
 
-    wxFileName boardPath( EnsureFileExtension( aFileName, FILEEXT::KiCadPcbFileExtension ) );
+    wxFileName boardPath;
+
+    try
+    {
+        boardPath.Assign( KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::PCB, aFileName, true ) );
+    }
+    catch( const IO_ERROR& error )
+    {
+        wxLogError( wxS( "%s" ), error.What() );
+        return false;
+    }
+
     boardPath.MakeAbsolute();
 
     if( boardPath.GetName().IsEmpty() )
@@ -145,9 +166,15 @@ bool HEADLESS_PCB_CONTEXT::SaveBoardAs( const wxString& aFileName )
     m_contentModified = false;
 
     wxFileName pro( boardPath );
-    pro.SetExt( FILEEXT::ProjectFileExtension );
+    pro.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT,
+            m_board->IsKemiOnly() ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY ) );
 
-    Pgm().GetSettingsManager().SaveProjectAs( pro.GetFullPath(), m_board->GetProject() );
+    if( !KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT,
+                                  wxFileName( Prj().GetProjectFullName() ).GetExt() )
+            || !wxFileExists( Prj().GetProjectFullName() ) )
+    {
+        Pgm().GetSettingsManager().SaveProjectAs( pro.GetFullPath(), m_board->GetProject() );
+    }
 
     return true;
 }
@@ -158,32 +185,61 @@ bool HEADLESS_PCB_CONTEXT::SavePcbCopy( const wxString& aFileName, bool aCreateP
     if( !m_board || aFileName.IsEmpty() )
         return false;
 
-    wxFileName pro = aFileName;
-    pro.SetExt( FILEEXT::ProjectFileExtension );
+    wxString outPath;
+
+    try
+    {
+        outPath = KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::PCB, aFileName, true );
+    }
+    catch( const IO_ERROR& error )
+    {
+        wxLogError( wxS( "%s" ), error.What() );
+        return false;
+    }
+
+    wxFileName pro = outPath;
+    pro.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) );
     pro.MakeAbsolute();
 
     if( aCreateProject && pro.FileExists() )
         return false;
 
     wxFileName currentRules( m_board->GetDesignRulesPath() );
-    wxFileName rulesFile = aFileName;
-    rulesFile.SetExt( FILEEXT::DesignRulesFileExtension );
+    wxFileName rulesFile = outPath;
+    rulesFile.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::DESIGN_RULES, KEMI_FORMAT::FLAVOR::KEMI ) );
     rulesFile.MakeAbsolute();
 
     if( currentRules.FileExists() && rulesFile.FileExists() )
         return false;
 
-    wxString outPath = aFileName;
-
-    bool success = BOARD_LOADER::SaveBoard( outPath, *m_board );
-
-    if( success && aCreateProject )
-        Pgm().GetSettingsManager().SaveProjectCopy( pro.GetFullPath(), m_board->GetProject() );
-
-    if( currentRules.FileExists() )
+    if( aCreateProject )
     {
-        wxString msg;
-        KiCopyFile( currentRules.GetFullPath(), rulesFile.GetFullPath(), msg );
+        // A real official project requires whole-project import.  Fail before writing the board.
+        if( KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT,
+                                      wxFileName( Prj().GetProjectFullName() ).GetExt() )
+                && wxFileExists( Prj().GetProjectFullName() ) )
+        {
+            return false;
+        }
+
+        if( !Pgm().GetSettingsManager().SaveProjectCopy( pro.GetFullPath(), m_board->GetProject() ) )
+            return false;
+    }
+
+    bool success = BOARD_LOADER::SaveBoard( outPath, *m_board, PCB_IO_MGR::KICAD_SEXP,
+                                            /* aAllowOverwrite = */ true );
+
+    if( success && currentRules.FileExists() )
+    {
+        DRC_RULE_LOADER loader;
+        const auto entries = loader.LoadFile( currentRules.GetFullPath() );
+        DRC_RULE_SAVER saver;
+
+        if( !loader.GetLoadError().IsEmpty()
+                || !saver.SaveFile( rulesFile.GetFullPath(), entries, nullptr, loader.GetFileTrivia() ) )
+        {
+            return false;
+        }
     }
 
     return success;

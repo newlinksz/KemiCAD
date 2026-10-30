@@ -30,6 +30,7 @@
 #include <sch_sheet.h>
 #include <sch_sheet_path.h>
 #include <schematic.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 
 
@@ -59,7 +60,7 @@ SCH_SHEET* SCH_IO_TARGET3001::LoadSchematicFile( const wxString& aFileName, SCHE
     TARGET3001::PROJECT project = TARGET3001::ParseFile( aFileName );
 
     wxFileName newFilename( aFileName );
-    newFilename.SetExt( FILEEXT::KiCadSchematicFileExtension );
+    newFilename.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
     SCH_SHEET* rootSheet = nullptr;
 

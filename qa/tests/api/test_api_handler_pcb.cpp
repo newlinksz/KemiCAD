@@ -23,8 +23,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <wx/filename.h>
+#include <wx/ffile.h>
 
 #include <qa_utils/wx_utils/unit_test_utils.h>
+#include <qa_utils/file_utils.h>
 #include <pcbnew_utils/board_test_utils.h>
 
 #include <api/api_handler_pcb.h>
@@ -36,7 +38,11 @@
 #include <jobs/job_export_pcb_odb.h>
 
 #include <board.h>
+#include <board_loader.h>
 #include <connectivity/connectivity_data.h>
+#include <drc/drc_rule.h>
+#include <drc/drc_rule_parser.h>
+#include <drc/rule_editor/drc_re_rule_saver.h>
 #include <settings/settings_manager.h>
 #include <zone.h>
 
@@ -337,4 +343,168 @@ BOOST_AUTO_TEST_CASE( RevertDocumentWithoutCommitPassesGuard )
 }
 
 
+BOOST_AUTO_TEST_CASE( SaveCopyUsesNativeTargetsAndHonorsOverwrite )
+{
+    BOARD* board = loadBoard( wxS( "issue5830" ) );
+    const wxString source = board->GetFileName();
+    const std::string original = KI_TEST::LoadStringData( source );
+    KI_TEST::SCOPED_TEMP_DIR output( wxS( "api-pcb-native-copy" ) );
+    const wxString native = output.ChildPathStr( wxS( "copy.kemi_pcb" ) );
+    const wxString official = output.ChildPathStr( wxS( "copy.kicad_pcb" ) );
+    API_HANDLER_PCB handler( m_context );
+
+    auto saveCopy = [&]( const wxString& aPath, bool aOverwrite )
+    {
+        kiapi::common::commands::SaveCopyOfDocument command;
+        command.mutable_document()->set_type( kiapi::common::types::DOCTYPE_PCB );
+        command.mutable_document()->set_board_filename( wxFileName( source ).GetFullName().ToStdString() );
+        command.set_path( aPath.ToStdString() );
+        command.mutable_options()->set_include_project( false );
+        command.mutable_options()->set_overwrite( aOverwrite );
+        kiapi::common::ApiRequest request;
+        request.mutable_header()->set_client_name( "kicad.qa" );
+        BOOST_REQUIRE( request.mutable_message()->PackFrom( command ) );
+        return handler.Handle( request );
+    };
+
+    API_RESULT result = saveCopy( official, true );
+    BOOST_REQUIRE( !result.has_value() );
+    BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::AS_BAD_REQUEST );
+    BOOST_CHECK( !wxFileExists( official ) );
+    result = saveCopy( source, true );
+    BOOST_REQUIRE( !result.has_value() );
+    BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::AS_BAD_REQUEST );
+
+    result = saveCopy( native, false );
+    BOOST_REQUIRE( result.has_value() );
+    BOOST_REQUIRE( wxFileExists( native ) );
+    const std::string firstCopy = KI_TEST::LoadStringData( native );
+    result = saveCopy( native, false );
+    BOOST_REQUIRE( !result.has_value() );
+    BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::AS_BAD_REQUEST );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( native ), firstCopy );
+    result = saveCopy( native, true );
+    BOOST_REQUIRE( result.has_value() );
+
+    auto reopened = BOARD_LOADER::Load( native, PCB_IO_MGR::KICAD_SEXP, &m_settingsManager.Prj() );
+    BOOST_REQUIRE( reopened );
+    BOOST_CHECK( reopened->IsKemiOnly() );
+    BOOST_CHECK_EQUAL( board->GetFileName(), source );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( source ), original );
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
+
+
+// Phase-6 P1: exercise the API writer with legacy, native and renamed native rule sources.
+BOOST_AUTO_TEST_CASE( ApiCustomRulesPreservePersistentFormat )
+{
+    using namespace kiapi::board::commands;
+
+    for( const wxString& scenario : { wxS( "legacy" ), wxS( "native-board" ),
+                                     wxS( "native-rules" ), wxS( "renamed-rules" ) } )
+    {
+        BOOST_TEST_CONTEXT( scenario )
+        {
+            SETTINGS_MANAGER settings;
+            KI_TEST::SCOPED_TEMP_PROJECT project( settings, wxS( "kemi-api-rules" ), wxS( "board" ) );
+            auto board = std::make_unique<BOARD>();
+            board->SetFileName( wxFileName( project.DirStr(), wxS( "board.kicad_pcb" ) ).GetFullPath() );
+
+            if( scenario == wxS( "native-board" ) )
+                board->SetKemiOnly();
+
+            auto context = std::make_shared<HEADLESS_PCB_CONTEXT>( std::move( board ),
+                                                                  &project.Project(), nullptr );
+            const wxString legacy = wxFileName( project.DirStr(), wxS( "board.kicad_dru" ) ).GetFullPath();
+            const wxString native = wxFileName( project.DirStr(), wxS( "board.kemi_dru" ) ).GetFullPath();
+            const bool nativeRules = scenario == wxS( "native-rules" ) || scenario == wxS( "renamed-rules" );
+            DRC_RULE_SAVER saver;
+            if( nativeRules )
+            {
+                BOOST_REQUIRE( saver.SaveTextFile( native, wxS( "(version 2)\n" ) ) );
+            }
+            else
+            {
+                wxFFile input( legacy, wxS( "wb" ) );
+                BOOST_REQUIRE( input.IsOpened() );
+                BOOST_REQUIRE( input.Write( wxS( "(version 2)\n" ), wxConvUTF8 ) );
+                BOOST_REQUIRE( input.Close() );
+            }
+
+            if( scenario == wxS( "renamed-rules" ) )
+                BOOST_REQUIRE( wxRenameFile( native, legacy ) );
+
+            const bool hadLegacy = wxFileExists( legacy );
+            const std::string original = hadLegacy ? KI_TEST::LoadStringData( legacy ) : std::string();
+            SetCustomDesignRules command;
+            command.mutable_board()->set_type( kiapi::common::types::DOCTYPE_PCB );
+            command.mutable_board()->set_board_filename( "board.kicad_pcb" );
+            auto* rule = command.add_rules();
+            rule->set_name( "API clearance" );
+            auto* constraint = rule->add_constraints();
+            constraint->set_type( kiapi::board::CRCT_CLEARANCE );
+            constraint->mutable_numeric()->set_min( 200000 );
+            kiapi::common::ApiRequest request;
+            request.mutable_header()->set_client_name( "kicad.qa" );
+            BOOST_REQUIRE( request.mutable_message()->PackFrom( command ) );
+            API_HANDLER_PCB handler( context );
+            API_RESULT result = handler.Handle( request );
+            BOOST_REQUIRE( result.has_value() );
+            BOOST_REQUIRE_EQUAL( result->status().status(), kiapi::common::AS_OK );
+            CustomRulesResponse response;
+            BOOST_REQUIRE( result->message().UnpackTo( &response ) );
+            BOOST_REQUIRE_EQUAL( response.status(), CRS_VALID );
+            BOOST_REQUIRE_EQUAL( response.rules_size(), 1 );
+            BOOST_CHECK_EQUAL( response.rules( 0 ).name(), "API clearance" );
+
+            const wxString content = wxString::FromUTF8( KI_TEST::LoadStringData( native ) );
+            BOOST_CHECK( DRC_RULE_SAVER::IsKemiText( content ) );
+            DRC_RULES_PARSER parser( content, native );
+            std::vector<std::shared_ptr<DRC_RULE>> parsed;
+            BOOST_CHECK_NO_THROW( parser.Parse( parsed, nullptr ) );
+            BOOST_CHECK_EQUAL( parsed.size(), 1 );
+
+            if( hadLegacy )
+                BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( legacy ), original );
+            else
+                BOOST_CHECK( !wxFileExists( legacy ) );
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( PcbCopyRejectsOfficialProjectBeforeWritingBoard )
+{
+    KI_TEST::SCOPED_TEMP_DIR directory( wxS( "api-pcb-copy-project-failure" ) );
+    const wxString source = directory.ChildPathStr( wxS( "source.kicad_pro" ) );
+    {
+        wxFFile file( source, wxS( "wb" ) );
+        BOOST_REQUIRE( file.IsOpened() );
+        BOOST_REQUIRE( file.Write( wxS( "{}" ), wxConvUTF8 ) );
+    }
+
+    SETTINGS_MANAGER settings;
+    BOOST_REQUIRE( settings.LoadProject( source ) );
+    PROJECT* project = settings.GetProject( source );
+    BOOST_REQUIRE( project );
+    auto board = std::make_unique<BOARD>();
+    board->SetFileName( directory.ChildPathStr( wxS( "source.kicad_pcb" ) ) );
+    auto context = std::make_shared<HEADLESS_PCB_CONTEXT>( std::move( board ), project, nullptr );
+    API_HANDLER_PCB handler( context );
+    kiapi::common::commands::SaveCopyOfDocument command;
+    command.mutable_document()->set_type( kiapi::common::types::DOCTYPE_PCB );
+    command.mutable_document()->set_board_filename( "source.kicad_pcb" );
+    command.set_path( directory.ChildPathStr( wxS( "copy.kemi_pcb" ) ).ToStdString() );
+    command.mutable_options()->set_include_project( true );
+    kiapi::common::ApiRequest request;
+    request.mutable_header()->set_client_name( "kicad.qa" );
+    BOOST_REQUIRE( request.mutable_message()->PackFrom( command ) );
+    API_RESULT result = handler.Handle( request );
+    BOOST_REQUIRE( !result.has_value() );
+    BOOST_CHECK_EQUAL( result.error().status(), kiapi::common::AS_INTERNAL_ERROR );
+    BOOST_CHECK( !wxFileExists( directory.ChildPathStr( wxS( "copy.kemi_pcb" ) ) ) );
+    BOOST_CHECK( !wxFileExists( directory.ChildPathStr( wxS( "copy.kemi_pro" ) ) ) );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( source ), "{}" );
+}

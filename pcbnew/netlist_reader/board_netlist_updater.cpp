@@ -1159,7 +1159,10 @@ bool BOARD_NETLIST_UPDATER::updateComponentPadConnections( FOOTPRINT* aFootprint
 
     for( PAD* pad : pads )
     {
-        const COMPONENT_NET& net = aNewComponent->GetNet( pad->GetNumber() );
+        // NPTH pads may keep a (mechanical) number but never take a net from the netlist.
+        static const COMPONENT_NET noNet;
+        const COMPONENT_NET& net = pad->CanHaveNumber() ? aNewComponent->GetNet( pad->GetNumber() )
+                                                        : noNet;
 
         wxLogTrace( wxT( "NETLIST_UPDATE" ),
                     wxT( "Processing pad %s of component %s" ),
@@ -1223,7 +1226,7 @@ bool BOARD_NETLIST_UPDATER::updateComponentPadConnections( FOOTPRINT* aFootprint
 
                 m_reporter->Report( msg, RPT_SEVERITY_ACTION );
             }
-            else if( pad->IsOnCopperLayer() && !pad->GetNumber().IsEmpty() )
+            else if( pad->IsOnCopperLayer() && pad->CanHaveNumber() && !pad->GetNumber().IsEmpty() )
             {
                 // pad is connectable but has no net found in netlist
                 msg.Printf( _( "No net found for component %s pad %s (no pin %s in symbol)." ),

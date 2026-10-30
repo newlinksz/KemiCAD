@@ -35,6 +35,7 @@
 #include <sch_sheet_path.h>
 #include <schematic.h>
 #include <string_utils.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 
 #include <wx/filename.h>
@@ -320,7 +321,7 @@ SCH_SHEET* SCH_IO_EASYPC::LoadSchematicFile( const wxString& aFileName, SCHEMATI
     if( !aAppendToMe && aProperties && aProperties->count( "hierarchical_sheet_load" ) )
     {
         THROW_IO_ERROR( wxString::Format( _( "'%s' is a complete Easy-PC schematic and cannot be loaded as a "
-                                             "hierarchical sheet. Use File > Import > Non-KiCad Schematic... "
+                                             "hierarchical sheet. Use File > Import > Non-KemiCAD Schematic... "
                                              "instead." ),
                                           aFileName ) );
     }
@@ -377,7 +378,7 @@ SCH_SHEET* SCH_IO_EASYPC::LoadSchematicFile( const wxString& aFileName, SCHEMATI
         if( !aAppendToMe->GetScreen() )
         {
             wxFileName fn( paths.front() );
-            fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+            fn.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
             aAppendToMe->SetScreen( new SCH_SCREEN( aSchematic ) );
             aAppendToMe->GetScreen()->SetFileName( fn.GetFullPath() );
@@ -408,7 +409,7 @@ SCH_SHEET* SCH_IO_EASYPC::LoadSchematicFile( const wxString& aFileName, SCHEMATI
         if( sheet != aAppendToMe )
         {
             wxFileName fn( paths[i] );
-            fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+            fn.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
             sheet->SetScreen( new SCH_SCREEN( aSchematic ) );
             sheet->GetScreen()->SetFileName( fn.GetFullPath() );

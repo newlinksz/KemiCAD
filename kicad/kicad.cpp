@@ -43,6 +43,7 @@
 #include <file_history.h>
 #include <hotkeys_basic.h>
 #include <kiway.h>
+#include <kemi_format_profile.h>
 #include <macros.h>
 #include <paths.h>
 #include <richio.h>
@@ -149,7 +150,7 @@ bool PGM_KICAD::OnPgmInit()
     if( mergetoolMode && parser.GetParamCount() != 4 )
     {
         wxFprintf( stderr,
-                   wxT( "kicad --mergetool expects four positional arguments: "
+                   wxT( "kemicad --mergetool expects four positional arguments: "
                         "ANCESTOR OURS THEIRS MERGED\n" ) );
         return false;
     }
@@ -398,7 +399,8 @@ bool PGM_KICAD::OnPgmInit()
         {
             wxFileName tmp = parser.GetParam( 0 );
 
-            if( tmp.GetExt() != FILEEXT::ProjectFileExtension && tmp.GetExt() != FILEEXT::LegacyProjectFileExtension )
+            if( !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PROJECT, tmp.GetExt() )
+                && tmp.GetExt() != FILEEXT::LegacyProjectFileExtension )
             {
                 DisplayErrorMessage( nullptr, wxString::Format( _( "File '%s'\n"
                                                                    "does not appear to be a KemiCAD project file." ),
@@ -431,7 +433,7 @@ bool PGM_KICAD::OnPgmInit()
         {
             wxFileName fn( projToLoad );
 
-            if( fn.Exists() && (   fn.GetExt() == FILEEXT::ProjectFileExtension
+            if( fn.Exists() && (   KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PROJECT, fn.GetExt() )
                                 || fn.GetExt() == FILEEXT::LegacyProjectFileExtension ) )
             {
                 fn.MakeAbsolute();

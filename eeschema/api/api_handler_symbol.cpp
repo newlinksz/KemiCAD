@@ -26,6 +26,7 @@
 #include <magic_enum.hpp>
 #include <base_units.h>
 #include <lib_symbol.h>
+#include <kemi_format_profile.h>
 #include <project.h>
 #include <sch_bitmap.h>
 #include <sch_commit.h>
@@ -298,12 +299,14 @@ API_HANDLER_SYMBOL::handleSaveCopyOfDocument( const HANDLER_CONTEXT<commands::Sa
         return tl::unexpected( e );
     }
 
-    if( libPath.GetExt() != wxString( FILEEXT::KiCadSymbolLibFileExtension ) )
+    if( !KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SYMBOL_LIB, libPath.GetExt() ) )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_BAD_REQUEST );
         e.set_error_message(
-                fmt::format( "save path '{}' must have a kicad_sym extension", libPath.GetFullPath().ToStdString() ) );
+                fmt::format( "save path '{}' must have a kemi_sym extension; "
+                             "official KiCad files are import-only",
+                             libPath.GetFullPath().ToStdString() ) );
         return tl::unexpected( e );
     }
 

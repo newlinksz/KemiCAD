@@ -36,6 +36,7 @@
 #include <advanced_config.h>
 #include <connectivity/connectivity_data.h>
 #include <kiface_base.h>
+#include <kemi_project_paths.h>
 #include <kiway.h>
 #include <board_design_settings.h>
 #include <settings/color_settings.h>
@@ -2625,7 +2626,9 @@ int PCB_EDIT_FRAME::TestStandalone()
     if( !frame->IsShownOnScreen() )
     {
         wxEventBlocker blocker( this );
-        wxFileName fn( Prj().GetProjectPath(), Prj().GetProjectName(), FILEEXT::KiCadSchematicFileExtension );
+        wxFileName fn( KEMI_FORMAT::RelatedDocumentPath(
+                KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::DOC::SCHEMATIC,
+                Prj().GetProjectFullName() ) );
 
         // Maybe the file hasn't been converted to the new s-expression file format so
         // see if the legacy schematic file is still in play.
@@ -2640,7 +2643,8 @@ int PCB_EDIT_FRAME::TestStandalone()
             }
         }
 
-        frame->OpenProjectFiles( std::vector<wxString>( 1, fn.GetFullPath() ) );
+        if( !frame->OpenProjectFiles( std::vector<wxString>( 1, fn.GetFullPath() ) ) )
+            return -2;
 
         // we show the schematic editor frame, because do not show is seen as
         // a not yet opened schematic by Kicad manager, which is not the case
@@ -2692,6 +2696,13 @@ bool PCB_EDIT_FRAME::FetchNetlistFromSchematic( NETLIST& aNetlist, const wxStrin
                 schFrame->SetFocus();
         }
 
+        return false;
+    }
+
+    if( payload.rfind( MAIL_SCH_GET_NETLIST_FAILED, 0 ) == 0 )
+    {
+        DisplayErrorMessage( this, _( "Cannot update the PCB from the schematic." ),
+                wxString::FromUTF8( payload.substr( sizeof( MAIL_SCH_GET_NETLIST_FAILED ) - 1 ) ) );
         return false;
     }
 

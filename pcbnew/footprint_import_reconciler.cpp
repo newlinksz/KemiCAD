@@ -32,6 +32,8 @@
 #include <board.h>
 #include <footprint.h>
 #include <import_proj_properties.h>
+#include <kemi_format_profile.h>
+#include <ki_exception.h>
 #include <lib_id.h>
 #include <pad.h>
 #include <project.h>
@@ -43,6 +45,7 @@
 #include <pcb_io/pcb_io.h>
 #include <pcb_io/pcb_io_mgr.h>
 #include <footprint_library_adapter.h>
+#include <libraries/library_manager.h>
 #include <libraries/library_table.h>
 
 
@@ -512,6 +515,19 @@ void FOOTPRINT_IMPORT_RECONCILER::writeAndRegisterCache(
         const wxString& aCacheNickname, const std::map<wxString, FOOTPRINT*>& aCacheDefs,
         FOOTPRINT_IMPORT_RECONCILE_RESULT& aResult )
 {
+    // The global adapter can still belong to the active source project during a passive import.
+    // Validate before staging files or changing a row, so no cache can pollute that project.
+    const std::optional<LIBRARY_TABLE*> table = m_adapter.ProjectTable();
+
+    if( !table || !( *table ) || ( *table )->Path().IsEmpty()
+            || !wxFileName::DirName( wxFileName( ( *table )->Path() ).GetPath() ).SameAs(
+                    wxFileName::DirName( m_projectPath ) ) )
+    {
+        m_reporter.Report( _( "Cannot reconcile imported footprints: the footprint library table "
+                              "belongs to a different project." ), RPT_SEVERITY_ERROR );
+        return;
+    }
+
     wxFileName finalFn( m_projectPath, aCacheNickname, FILEEXT::KiCadFootprintLibPathExtension );
     wxString   finalPath = finalFn.GetFullPath();
     wxString   tempPath = finalPath + wxS( ".tmp" );
@@ -560,6 +576,7 @@ void FOOTPRINT_IMPORT_RECONCILER::writeAndRegisterCache(
 
         // without this every save re-parses the whole library written so far
         std::map<std::string, UTF8> properties { { "skip_cache_validation", "" } };
+        KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( finalPath );
 
         // the definitions are ours to consume and FootprintSave copies what it keeps
         for( const auto& [name, def] : aCacheDefs )
@@ -570,7 +587,19 @@ void FOOTPRINT_IMPORT_RECONCILER::writeAndRegisterCache(
             id.SetLibItemName( name );
             def->SetFPID( id );
             def->SetReference( wxS( "REF**" ) );
-            pi->FootprintSave( tempPath, def, &properties );
+            wxString fileName = name;
+            ReplaceIllegalFileNameChars( fileName, '_' );
+            wxFileName finalFile( finalPath, fileName,
+                    KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::FOOTPRINT,
+                                      KEMI_FORMAT::FLAVOR::KEMI ) );
+            wxFileName storageFile( tempPath, finalFile.GetFullName() );
+
+            policy.Write( KEMI_FORMAT::DOC::FOOTPRINT, finalFile.GetFullPath(),
+                    [&]( const wxString& aPath, const KEMI_FORMAT::OUTPUT_TARGET& aTarget )
+                    {
+                        pi->FootprintSave( aPath, def, aTarget, &properties );
+                        return true;
+                    }, storageFile.GetFullPath() );
         }
 
         wrote = true;
@@ -681,6 +710,33 @@ ReconcileImportedFootprints( std::vector<std::unique_ptr<FOOTPRINT>> aDefinition
     if( !adapter )
         return result;
 
+    // A CLI import can load its output project passively while another project remains active.
+    // Use a project-bound manager in that case; changing the global manager would invalidate the
+    // active project's library caches and resolve ${KIPRJMOD} against the wrong directory.
+    std::unique_ptr<LIBRARY_MANAGER> scopedManager;
+    const std::optional<LIBRARY_TABLE*> table = adapter->ProjectTable();
+
+    if( !table || !( *table ) || ( *table )->Path().IsEmpty()
+            || !wxFileName::DirName( wxFileName( ( *table )->Path() ).GetPath() ).SameAs(
+                    wxFileName::DirName( aProject.GetProjectPath() ) ) )
+    {
+        try
+        {
+            scopedManager = std::make_unique<LIBRARY_MANAGER>( &aProject );
+            auto scopedAdapter = std::make_unique<FOOTPRINT_LIBRARY_ADAPTER>( *scopedManager );
+            adapter = scopedAdapter.get();
+            scopedManager->RegisterAdapter( LIBRARY_TABLE_TYPE::FOOTPRINT, std::move( scopedAdapter ) );
+            scopedManager->LoadGlobalTables( { LIBRARY_TABLE_TYPE::FOOTPRINT } );
+            scopedManager->LoadProjectTables( { LIBRARY_TABLE_TYPE::FOOTPRINT } );
+        }
+        catch( const IO_ERROR& ioe )
+        {
+            aReporter.Report( wxString::Format( _( "Could not load imported footprint libraries: %s" ),
+                                               ioe.What() ), RPT_SEVERITY_ERROR );
+            return result;
+        }
+    }
+
     // manager pre-commits the cache nickname + source libs; standalone import derives from filename
     wxString              cacheNick;
     std::vector<wxString> sourceLibs;
@@ -748,4 +804,91 @@ std::map<wxString, wxString> ImportedFootprintIds( const BOARD& aBoard )
         ids.erase( ref );
 
     return ids;
+}
+
+
+IMPORT_PROJ_PROPS::FOOTPRINT_LINK_DATA CollectImportedFootprintLinks(
+        const BOARD& aBoard, PROJECT& aProject, REPORTER& aReporter )
+{
+    IMPORT_PROJ_PROPS::FOOTPRINT_LINK_DATA result;
+    result.projectFile = aProject.GetProjectFullName();
+    result.ids = ImportedFootprintIds( aBoard );
+
+    if( aBoard.GetProject() != &aProject || result.projectFile.IsEmpty() )
+        THROW_IO_ERROR( _( "The imported board does not belong to the paired destination project." ) );
+
+    // Bind lookup to the destination project. The active GUI/CLI project may differ;
+    // arbitrary global libraries are not candidates for automatic import linking.
+    LIBRARY_MANAGER manager( &aProject );
+    auto ownedAdapter = std::make_unique<FOOTPRINT_LIBRARY_ADAPTER>( manager );
+    FOOTPRINT_LIBRARY_ADAPTER* adapter = ownedAdapter.get();
+    manager.RegisterAdapter( LIBRARY_TABLE_TYPE::FOOTPRINT, std::move( ownedAdapter ) );
+    manager.LoadProjectTables( { LIBRARY_TABLE_TYPE::FOOTPRINT } );
+    LIBRARY_TABLE* table = adapter->ProjectTable().value_or( nullptr );
+    std::set<wxString> loadedNicknames;
+
+    for( const FOOTPRINT* footprint : aBoard.Footprints() )
+    {
+        const wxString ref = footprint->GetReference();
+        const auto id = result.ids.find( ref );
+
+        if( id == result.ids.end() )
+        {
+            aReporter.Report( wxString::Format(
+                    _( "IMPORT_LINK_BOARD_REF_SKIPPED: %s has an empty footprint ID or a duplicate board reference." ),
+                    ref ), RPT_SEVERITY_WARNING );
+            continue;
+        }
+
+        const LIB_ID& footprintId = footprint->GetFPID();
+        const wxString nickname = footprintId.GetUniStringLibNickname();
+        const wxString item = footprintId.GetUniStringLibItemName();
+
+        if( nickname.IsEmpty() || item.IsEmpty() || !table || !table->Row( nickname ) )
+        {
+            THROW_IO_ERROR( wxString::Format(
+                    _( "Imported footprint %s (%s) has no matching destination project library." ),
+                    ref, id->second ) );
+        }
+
+        if( loadedNicknames.insert( nickname ).second )
+        {
+            const std::optional<LIB_STATUS> status = adapter->LoadOne( nickname );
+
+            if( !status || status->load_status != LOAD_STATUS::LOADED )
+            {
+                wxString message = wxString::Format(
+                        _( "Could not load imported footprint project library '%s'." ), nickname );
+
+                if( status && status->error )
+                {
+                    message += wxS( "\n" ) + status->error->message;
+
+                    if( !status->error->details.IsEmpty() )
+                        message += wxS( "\n" ) + status->error->details;
+                }
+
+                THROW_IO_ERROR( message );
+            }
+        }
+
+        std::unique_ptr<FOOTPRINT> libraryFootprint( adapter->LoadFootprint( nickname, item, true ) );
+
+        if( !libraryFootprint || padNumbers( *libraryFootprint ) != padNumbers( *footprint ) )
+        {
+            THROW_IO_ERROR( wxString::Format(
+                    _( "Imported footprint %s (%s) does not resolve to the same physical pads in its project library." ),
+                    ref, id->second ) );
+        }
+
+        std::set<wxString>& pads = result.pads[ref];
+
+        for( const PAD* pad : footprint->Pads() )
+        {
+            if( !pad->GetNumber().IsEmpty() )
+                pads.insert( pad->GetNumber() );
+        }
+    }
+
+    return result;
 }

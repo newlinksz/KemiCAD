@@ -50,7 +50,7 @@ struct DESIGN_BLOCK_FIXTURE
     {
         wxString tempDir = wxStandardPaths::Get().GetTempDir();
         wxString projectPath = tempDir + wxFileName::GetPathSeparator()
-                               + wxT( "test_design_block.kicad_pro" );
+                               + wxS( "test_design_block.kemi_pro" );
         m_tempFiles.push_back( projectPath );
 
         m_settingsManager.LoadProject( projectPath.ToStdString() );
@@ -130,7 +130,7 @@ BOOST_AUTO_TEST_CASE( TestMultipleDesignBlocksGroupIntegrity )
     SCH_SCREEN* screen = topSheets[0]->GetScreen();
     BOOST_REQUIRE( screen != nullptr );
 
-    screen->SetFileName( "test_design_block.kicad_sch" );
+    screen->SetFileName( wxS( "test_design_block.kemi_sch" ) );
 
     // Create first "design block" instance
     SCH_GROUP* group1 = nullptr;
@@ -169,7 +169,7 @@ BOOST_AUTO_TEST_CASE( TestMultipleDesignBlocksGroupIntegrity )
 
     // Save the schematic
     wxString fileName = GetTempFileName( "test_design_block" );
-    fileName += ".kicad_sch";
+    fileName += wxS( ".kemi_sch" );
     m_tempFiles.push_back( fileName );
 
     SCH_IO_KICAD_SEXPR io;
@@ -248,7 +248,7 @@ BOOST_AUTO_TEST_CASE( TestDesignBlockDuplicateUuidHandling )
 
     SCH_SCREEN* mainScreen = topSheets[0]->GetScreen();
     BOOST_REQUIRE( mainScreen != nullptr );
-    mainScreen->SetFileName( "test_duplicate_uuid.kicad_sch" );
+    mainScreen->SetFileName( wxS( "test_duplicate_uuid.kemi_sch" ) );
 
     // To properly simulate design block placement, we simulate what happens when
     // the same design block file is loaded twice: groups are created pointing to
@@ -380,7 +380,7 @@ BOOST_AUTO_TEST_CASE( TestDesignBlockDuplicateUuidHandling )
 
     // Save and reload to test full round-trip
     wxString fileName = GetTempFileName( "test_dup_uuid" );
-    fileName += ".kicad_sch";
+    fileName += wxS( ".kemi_sch" );
     m_tempFiles.push_back( fileName );
 
     SCH_IO_KICAD_SEXPR io;

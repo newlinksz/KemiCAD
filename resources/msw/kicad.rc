@@ -5,11 +5,8 @@
 
 #include "resource.h"
 
-#if KICAD_IS_NIGHTLY
-IDI_APP_KICAD_ICON ICON "../resources/bitmaps_png/icons/icon_kicad_nightly.ico"
-#else
+// KemiCAD: always embed the brand icon (no nightly icon)
 IDI_APP_KICAD_ICON ICON "../resources/bitmaps_png/icons/icon_kicad.ico"
-#endif
 IDI_FILE_FOOTPRINT_ICON ICON "../resources/bitmaps_png/icons/fileicon_footprint.ico"
 IDI_FILE_PCB_ICON ICON "../resources/bitmaps_png/icons/fileicon_pcb.ico"
 IDI_FILE_PROJECT_ICON ICON "../resources/bitmaps_png/icons/fileicon_project.ico"
@@ -17,7 +14,17 @@ IDI_FILE_SCHEMATIC_ICON ICON "../resources/bitmaps_png/icons/fileicon_schematic.
 IDI_FILE_SYMBOL_ICON ICON "../resources/bitmaps_png/icons/fileicon_symbol.ico"
 IDI_FILE_WORKSHEET_ICON ICON "../resources/bitmaps_png/icons/fileicon_worksheet.ico"
 
-#define RC_VER_FILE_DESCRIPTION "KemiCAD " BRAND_RC_VER_STR
-#define RC_VER_INTERNALNAME "kicad"
-#define RC_VER_ORIGINALFILENAME "kicad.exe"
+// Per-exe names only; the shared template (CompanyName, copyright, ProductName, version)
+// stays in kiwin32.rc.  Each target selects its names with an RC-only define from CMake
+// (kicad/CMakeLists.txt): none = kemicad.exe, KEMI_RC_CLI = kemicad-cli.exe.
+// FileDescription: L"\x..." = UTF-16 so the Chinese text survives any rc code page.
+#ifndef KEMI_RC_CLI
+#define RC_VER_FILE_DESCRIPTION L"KemiCAD \x4E3B\x7A0B\x5E8F"
+#define RC_VER_INTERNALNAME "kemicad"
+#define RC_VER_ORIGINALFILENAME "kemicad.exe"
+#else
+#define RC_VER_FILE_DESCRIPTION L"KemiCAD \x547D\x4EE4\x884C\x5DE5\x5177"
+#define RC_VER_INTERNALNAME "kemicad-cli"
+#define RC_VER_ORIGINALFILENAME "kemicad-cli.exe"
+#endif
 #include "kiwin32.rc"

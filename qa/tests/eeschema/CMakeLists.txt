@@ -219,8 +219,8 @@ set( QA_EESCHEMA_SRCS
     test_netlist_exporter_kicad.cpp
     test_issue24330_netlist_pin_truncation.cpp
     test_ee_item.cpp
-    test_sch_downgrade.cpp
-    test_sch_downgrade_oracle.cpp
+    # Official-format export success suites are retired (sources and fixtures retained).
+    # Import-only save rejection is covered by test_kemi_persistent_output.cpp.
     test_incremental_netlister.cpp
     test_legacy_power_symbols.cpp
     test_history_autosave_legacy.cpp
@@ -287,6 +287,9 @@ set( QA_EESCHEMA_SRCS
     test_design_block_duplicate.cpp
     test_symbol_library.cpp
     test_symbol_library_parse_error.cpp
+    test_kemi_schematic_formats.cpp
+    test_kemi_sch_import.cpp
+    test_kemi_persistent_output.cpp
     test_symbol_embedded_files.cpp
     test_symbol_svg_export.cpp
     test_schematic_clipboard_export.cpp

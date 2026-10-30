@@ -42,6 +42,7 @@ enum GNL_T
     GNL_NETS        = 1 << 4,
     GNL_OPT_KICAD   = 1 << 5,
     GNL_OPT_BOM     = 1 << 6,
+    GNL_OPT_FOOTPRINT_ASSIGNMENT = 1 << 7, ///< Keep CvPcb available to repair physical assignments.
 };
 
 

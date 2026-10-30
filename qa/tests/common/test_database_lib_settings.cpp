@@ -66,8 +66,15 @@ BOOST_AUTO_TEST_CASE( UnknownKeysSurviveAnEdit )
     }
 
     {
+        bool loaded = false;
         std::unique_ptr<DATABASE_LIB_SETTINGS> settings =
-                LoadDatabaseLibSettingsReadOnly( wxString::FromUTF8( path.string() ) );
+                LoadDatabaseLibSettingsReadOnly( wxString::FromUTF8( path.string() ), &loaded );
+
+        // Check the loaded table before accessing it across the qa_common/kicommon boundary.
+        BOOST_REQUIRE( loaded );
+        BOOST_REQUIRE( settings != nullptr );
+        BOOST_REQUIRE_EQUAL( settings->m_Tables.size(), json["libraries"].size() );
+        BOOST_REQUIRE( !settings->m_Tables.empty() );
 
         settings->m_Tables[0].key_col = "MPN";
         settings->SetReadOnly( false );

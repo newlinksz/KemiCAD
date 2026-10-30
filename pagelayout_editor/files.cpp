@@ -20,6 +20,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <kemi_format_profile.h>
 #include <confirm.h>
 #include <gestfich.h>
 #include <drawing_sheet/ds_data_model.h>
@@ -179,6 +180,19 @@ void PL_EDITOR_FRAME::Files_io( wxCommandEvent& event )
     }
 
     case wxID_SAVE:
+        try
+        {
+            filename = KEMI_FORMAT::ResolveNativeSaveTarget( KEMI_FORMAT::DOC::DRAWING_SHEET, filename );
+        }
+        catch( const IO_ERROR& error )
+        {
+            DisplayErrorMessage( this, error.What() );
+            wxCommandEvent saveAsEvent;
+            saveAsEvent.SetId( wxID_SAVEAS );
+            Files_io( saveAsEvent );
+            return;
+        }
+
         if( !SaveDrawingSheetFile( filename ) )
         {
             msg.Printf( _( "Unable to write '%s'." ), filename );
@@ -186,6 +200,7 @@ void PL_EDITOR_FRAME::Files_io( wxCommandEvent& event )
         }
         else
         {
+            SetCurrentFileName( filename );
             msg.Printf( _("File '%s' saved."), filename );
             SetStatusText( msg );
         }
@@ -195,8 +210,13 @@ void PL_EDITOR_FRAME::Files_io( wxCommandEvent& event )
     case wxID_SAVEAS:
     {
         wxString dir = PATHS::GetUserTemplatesPath();
+        const bool restricted = true;
+        const wxString wildcard = restricted
+                ? _( "KemiCAD Drawing Sheet" ) + AddFileExtListToFilter(
+                        { KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::DRAWING_SHEET, KEMI_FORMAT::FLAVOR::KEMI ) } )
+                : FILEEXT::DrawingSheetFileWildcard();
         wxFileDialog openFileDialog( this, _( "Save Drawing Sheet As" ), dir, wxEmptyString,
-                                     FILEEXT::DrawingSheetFileWildcard(),
+                                     wildcard,
                                      wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
 
         KIPLATFORM::UI::AllowNetworkFileSystems( &openFileDialog );
@@ -205,13 +225,30 @@ void PL_EDITOR_FRAME::Files_io( wxCommandEvent& event )
             return;
 
         filename = openFileDialog.GetPath();
+        try
+        {
+            filename = KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::DRAWING_SHEET,
+                                                         filename, restricted );
+
+            if( KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::DRAWING_SHEET,
+                    wxFileName( GetCurrentFileName() ).GetExt() ) && wxFileExists( filename ) )
+            {
+                THROW_IO_ERROR( _( "Choose a new native file name; the save target already exists." ) );
+            }
+        }
+        catch( const IO_ERROR& error )
+        {
+            DisplayErrorMessage( this, error.What() );
+            return;
+        }
+
         // Ensure the file has the right extension:
         // because a name like name.subname.subsubname is legal,
         // add the right extension without replacing the wxFileName
         // extension
         wxFileName fn(filename);
 
-        if( fn.GetExt() != FILEEXT::DrawingSheetFileExtension )
+        if( !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::DRAWING_SHEET, fn.GetExt() ) )
             filename << wxT( "." ) << FILEEXT::DrawingSheetFileExtension;
 
         if( !SaveDrawingSheetFile( filename ) )
@@ -289,8 +326,7 @@ bool PL_EDITOR_FRAME::InsertDrawingSheetFile( const wxString& aFullFileName )
     {
         const bool append = true;
         SaveCopyInUndoList();
-        DS_DATA_MODEL::GetTheInstance().LoadDrawingSheet( aFullFileName, nullptr, append );
-        return true;
+        return DS_DATA_MODEL::GetTheInstance().LoadDrawingSheet( aFullFileName, nullptr, append );
     }
 
     return false;
@@ -301,16 +337,25 @@ bool PL_EDITOR_FRAME::SaveDrawingSheetFile( const wxString& aFullFileName )
 {
     if( !aFullFileName.IsEmpty() )
     {
-        wxString tempFile = wxFileName::CreateTempFileName( "pledit" );
+        wxString tempFile;
 
         try
         {
-            DS_DATA_MODEL::GetTheInstance().Save( tempFile );
+            KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::DRAWING_SHEET, aFullFileName,
+                    KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::DRAWING_SHEET, aFullFileName ),
+                    DS_DATA_MODEL::GetTheInstance().IsKemiOnlyOutput() );
+            tempFile = wxFileName::CreateTempFileName(
+                    wxFileName( aFullFileName ).GetPathWithSep() + wxS( "pledit" ) );
+
+            DS_DATA_MODEL::GetTheInstance().Save(
+                    tempFile, KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::DRAWING_SHEET,
+                                                        aFullFileName ) );
         }
         catch( const IO_ERROR& )
         {
             // In case we started a file but didn't fully write it, clean up
-            wxRemoveFile( tempFile);
+            if( !tempFile.IsEmpty() )
+                wxRemoveFile( tempFile );
 
             return false;
         }

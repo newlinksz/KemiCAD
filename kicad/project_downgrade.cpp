@@ -36,6 +36,8 @@
 #include <jobs/job_pcb_downgrade.h>
 #include <jobs/job_sch_downgrade.h>
 #include <kiway.h>
+#include <kemi_format_profile.h>
+#include <ki_exception.h>
 #include <libraries/library_table_parser.h>
 #include <project/project_file_downgrade.h>
 #include <wildcards_and_files_ext.h>
@@ -304,11 +306,40 @@ static wxString firstTooNewFile( const wxString& aDir, const DOWNGRADE_TARGET& a
 }
 
 
+static bool checkLegacyExportSources( const wxString& aProjectDir, wxString& aError )
+{
+    wxArrayString files;
+    wxDir::GetAllFiles( aProjectDir, &files );
+
+    for( const wxString& file : files )
+    {
+        if( IsDowngradeWorkingArtifact( file )
+            || ( !IsDowngradeDesignFile( file ) && !KEMI_FORMAT::HasKemiExt( file ) ) )
+            continue;
+
+        try
+        {
+            KEMI_FORMAT::CheckLegacyExportSource( file );
+        }
+        catch( const IO_ERROR& error )
+        {
+            aError = error.What();
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
 bool ClassifyProjectForDowngrade( KIWAY& aKiway, const wxString& aProjectDir, const wxString& aProjectName,
                                   const wxString& aTargetName, COMPATIBILITY_REPORT& aReport, wxString& aError,
                                   std::vector<wxString>* aFoundVariants, bool aDropInsteadOfApproximate,
                                   const wxString& aVariant )
 {
+    if( !checkLegacyExportSources( aProjectDir, aError ) )
+        return false;
+
     wxFileName boardFn( aProjectDir, aProjectName, FILEEXT::KiCadPcbFileExtension );
     wxFileName schFn( aProjectDir, aProjectName, FILEEXT::KiCadSchematicFileExtension );
 
@@ -428,6 +459,10 @@ bool ExportProjectForDowngrade( KIWAY& aKiway, const wxString& aProjectDir, cons
                                 const wxString& aTargetName, const wxString& aDestDir, wxString& aError,
                                 const wxString& aVariant, bool aDropInsteadOfApproximate )
 {
+    // Check again at the mutation boundary, even when classification was bypassed.
+    if( !checkLegacyExportSources( aProjectDir, aError ) )
+        return false;
+
     const DOWNGRADE_TARGET* target = FindDowngradeTarget( aTargetName );
 
     if( !target )

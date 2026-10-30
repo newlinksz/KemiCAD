@@ -47,6 +47,7 @@
 #include <sch_text.h>
 #include <schematic.h>
 #include <trigo.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 
 using TARGET3001::ELEMENT;
@@ -1702,7 +1703,7 @@ SCH_SCREEN* TARGET3001_SCH_BUILDER::screen( int aSheet )
 
         wxFileName fn( m_fileName );
         fn.SetName( fn.GetName() + wxString::Format( wxS( "_%d" ), aSheet ) );
-        fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+        fn.SetExt( KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt );
 
         newScreen->SetFileName( fn.GetFullPath() );
         sheet->SetScreen( newScreen );

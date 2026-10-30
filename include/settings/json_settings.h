@@ -32,6 +32,10 @@
 #include <json_conversions.h>
 
 #include <kicommon.h>
+namespace KEMI_FORMAT
+{
+enum class DOC;
+}
 
 class wxConfigBase;
 class NESTED_SETTINGS;
@@ -89,7 +93,11 @@ public:
 
     wxString GetFullFilename() const;
 
-    void SetFilename( const wxString& aFilename ) { m_filename = aFilename; }
+    void SetFilename( const wxString& aFilename );
+
+    /// Native provenance survives renaming, Save As, and loading a renamed native document.
+    bool IsKemiOnly() const;
+    void SetKemiOnly( bool aRestricted = true ) { m_kemiOnly |= aRestricted; }
 
     void SetLocation( SETTINGS_LOC aLocation ) { m_location = aLocation; }
     SETTINGS_LOC GetLocation() const { return m_location; }
@@ -102,8 +110,11 @@ public:
 
     void SetLegacyFilename( const wxString& aFilename ) { m_legacy_filename = aFilename; }
 
-    bool IsReadOnly() const { return !m_writeFile; }
+    bool IsReadOnly() const { return !m_writeFile || !m_loadError.IsEmpty(); }
     void SetReadOnly( bool aReadOnly ) { m_writeFile = !aReadOnly; }
+
+    /// A rejected document stays protected even if a caller clears the filesystem read-only flag.
+    const wxString& GetLoadError() const { return m_loadError; }
 
     /**
      * @return true if a param absent from the file is reset to its default on load, meaning an
@@ -149,6 +160,9 @@ public:
      * @return true if the file was saved
      */
     virtual bool SaveToFile( const wxString& aDirectory = "", bool aForce = false );
+
+    /** Save a copy without changing the source identity or its native-format restriction. */
+    bool SaveCopyToFile( const wxString& aFullPath );
 
     /**
      * @return true once the in-memory store has been synchronized with an on-disk file, either
@@ -334,7 +348,14 @@ protected:
      * Overlays the current store on the original file contents. May throw a JSON exception.
      * @return the serialized bytes in the on-disk format
      */
-    std::string formatFileContents();
+    std::string formatFileContents( const wxString& aTargetPath );
+
+    /// Opt a file-backed document into the shared format validation and serialization boundary.
+    virtual std::optional<KEMI_FORMAT::DOC> getDocumentType() const { return std::nullopt; }
+
+    bool validateDocument( const nlohmann::json& aDocument, const wxString& aSourcePath );
+    void prepareDocument( nlohmann::json& aDocument, const wxString& aTargetPath ) const;
+    wxString filePath( const wxString& aDirectory ) const;
 
     virtual wxString getFileExt() const
     {
@@ -393,6 +414,12 @@ protected:
 
     /// True if the most recent SaveToFile() had changes to write and could not write them
     bool m_lastSaveFailed;
+
+    // Use the existing flag padding to preserve member offsets across the DLL boundary.
+    bool m_kemiOnly = false;
+
+    /// Persistent error for a rejected input; only another successful load can clear it.
+    wxString m_loadError;
 
     /// Whether or not to delete legacy file after migration
     bool m_deleteLegacyAfterMigration;

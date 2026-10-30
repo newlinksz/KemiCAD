@@ -266,7 +266,7 @@ BOOST_AUTO_TEST_CASE( DeletedSymbolsAreRemovedFromFile )
     wxString tempDir = wxFileName::CreateTempFileName( wxS( "kicad_test_" ) );
     wxRemoveFile( tempDir );
     wxFileName::Mkdir( tempDir );
-    wxString libPath = wxFileName( tempDir, wxS( "test_lib.kicad_sym" ) ).GetFullPath();
+    wxString libPath = wxFileName( tempDir, wxS( "test_lib.kemi_sym" ) ).GetFullPath();
 
     // Step 1: Create a library with a parent and derived symbol using the plugin directly
     {
@@ -404,8 +404,8 @@ BOOST_AUTO_TEST_CASE( SaveLibraryAsToNewFile )
     wxRemoveFile( tempDir );
     wxFileName::Mkdir( tempDir );
 
-    wxString srcPath = wxFileName( tempDir, wxS( "source.kicad_sym" ) ).GetFullPath();
-    wxString dstPath = wxFileName( tempDir, wxS( "destination.kicad_sym" ) ).GetFullPath();
+    wxString srcPath = wxFileName( tempDir, wxS( "source.kemi_sym" ) ).GetFullPath();
+    wxString dstPath = wxFileName( tempDir, wxS( "destination.kemi_sym" ) ).GetFullPath();
 
     // Create a source library with two symbols (one parent, one derived)
     {
@@ -558,7 +558,7 @@ BOOST_AUTO_TEST_CASE( SaveCopyAsDerivedSymbolToNewLibrary )
     wxRemoveFile( tempDir );
     wxFileName::Mkdir( tempDir );
 
-    wxString dstPath = wxFileName( tempDir, wxS( "copy_target.kicad_sym" ) ).GetFullPath();
+    wxString dstPath = wxFileName( tempDir, wxS( "copy_target.kemi_sym" ) ).GetFullPath();
 
     // Build an in-memory parent/derived pair like the symbol editor holds while editing.
     auto parent = std::make_unique<LIB_SYMBOL>( wxS( "BaseSymbol" ) );

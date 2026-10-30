@@ -35,6 +35,7 @@
 #include <sch_io/sch_io_mgr.h>
 #include <settings/settings_manager.h>
 #include <string_view>
+#include <kemi_format_profile.h>
 
 #include <wx/intl.h>
 
@@ -55,7 +56,12 @@ bool validateSymbolPayload( const std::vector<uint8_t>& aPayload, const wxString
 
     std::string_view payload( reinterpret_cast<const char*>( aPayload.data() ), aPayload.size() );
 
-    if( payload.find( "(kicad_symbol_lib" ) == std::string_view::npos )
+    using namespace KEMI_FORMAT;
+    const std::string kemiRoot = "(" + RootToken( DOC::SYMBOL_LIB, FLAVOR::KEMI );
+    const std::string kicadRoot = "(" + RootToken( DOC::SYMBOL_LIB, FLAVOR::LEGACY );
+
+    if( payload.find( kemiRoot ) == std::string_view::npos
+            && payload.find( kicadRoot ) == std::string_view::npos )
     {
         aError = _( "Downloaded symbol payload was not a KemiCAD symbol library." );
         return false;

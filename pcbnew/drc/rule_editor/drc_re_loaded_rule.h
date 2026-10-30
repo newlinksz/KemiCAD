@@ -78,6 +78,8 @@ struct DRC_RE_LOADED_PANEL_ENTRY
  */
 struct DRC_RE_FILE_TRIVIA
 {
+    bool                  loadFailed = false; ///< A rejected file must never become an empty save
+    bool                  kemiOnly = false; ///< Native provenance survives text edits and Save As
     wxString              header;         ///< Everything through the version expression, empty for a new file
     std::vector<wxString> leadingTrivia;  ///< Comments and blank lines before each rule, by sourceRule
     wxString              trailer;        ///< Everything after the last rule

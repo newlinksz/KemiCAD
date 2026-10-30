@@ -25,18 +25,22 @@
 #include <pcbnew_utils/board_test_utils.h>
 #include <pcbnew_utils/board_file_utils.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
+#include <qa_utils/file_utils.h>
 
 #include <pcbnew/pcb_io/diptrace/pcb_io_diptrace.h>
 #include <pcbnew/pcb_io/diptrace/diptrace_pcb_parser.h>
+#include <pcbnew/drc/drc_rule_parser.h>
 
 #include <board.h>
 #include <board_design_settings.h>
 #include <footprint.h>
+#include <kemi_format_profile.h>
 #include <netclass.h>
 #include <project/net_settings.h>
 #include <pad.h>
 #include <pcb_track.h>
 #include <pcb_shape.h>
+#include <reporter.h>
 
 #include <wx/ffile.h>
 #include <wx/filefn.h>
@@ -208,6 +212,55 @@ BOOST_AUTO_TEST_CASE( LoadKeyboard )
 
     // keyboard.dip has ~70 nets (key matrix: col1-6, row1-8, diode nets, etc.)
     BOOST_CHECK_GT( board->GetNetCount(), 20 );
+}
+
+
+BOOST_AUTO_TEST_CASE( ImportedRulesStayInMemoryUntilKemiOutput )
+{
+    KI_TEST::SCOPED_TEMP_DIR sourceDir( wxS( "diptrace_kemi_source" ) );
+    KI_TEST::SCOPED_TEMP_DIR outputDir( wxS( "diptrace_kemi_output" ) );
+    const wxString sourcePath = sourceDir.ChildPathStr( wxS( "source.dip" ) );
+    bool foundRules = false;
+
+    // The committed corpus guarantees at least one board with per-zone custom rules.
+    for( const char* name : { "z80_board.dip", "keyboard.dip", "logic_probe.dip",
+                              "project4.dip", "156bus_narrow.dip" } )
+    {
+        BOOST_REQUIRE( wxCopyFile( GetTestDataDir() + name, sourcePath ) );
+        std::unique_ptr<BOARD> board = m_plugin.LoadBoard( sourcePath );
+        BOOST_REQUIRE( board );
+        BOOST_CHECK( !wxFileExists( sourceDir.ChildPathStr( wxS( "source.kicad_dru" ) ) ) );
+        BOOST_CHECK( !wxFileExists( sourceDir.ChildPathStr( wxS( "source.kemi_dru" ) ) ) );
+
+        if( m_plugin.GetImportedDesignRules().IsEmpty() )
+            continue;
+
+        foundRules = true;
+        KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( outputDir.PathStr() );
+        m_plugin.WriteImportedDesignRules( policy, wxS( "imported" ) );
+        const wxString rulePath = outputDir.ChildPathStr( wxS( "imported.kemi_dru" ) );
+        wxFFile rulesFile( rulePath, wxS( "r" ) );
+        wxString content;
+        BOOST_REQUIRE( rulesFile.IsOpened() );
+        BOOST_REQUIRE( rulesFile.ReadAll( &content, wxConvUTF8 ) );
+        BOOST_CHECK( content.StartsWith( wxS( "(kemi_dru (format_version 1)" ) ) );
+        BOOST_CHECK( !wxFileExists( outputDir.ChildPathStr( wxS( "imported.kicad_dru" ) ) ) );
+
+        std::vector<std::shared_ptr<DRC_RULE>> rules;
+        WX_STRING_REPORTER reporter;
+        DRC_RULES_PARSER parser( content, rulePath );
+        BOOST_REQUIRE_NO_THROW( parser.Parse( rules, &reporter ) );
+        BOOST_CHECK( !reporter.HasMessageOfSeverity( RPT_SEVERITY_ERROR | RPT_SEVERITY_WARNING ) );
+        BOOST_CHECK_GT( rules.size(), 0u );
+
+        BOARD appendTarget;
+        m_plugin.LoadAndAppendBoard( sourcePath, appendTarget );
+        BOOST_CHECK( m_plugin.GetImportedDesignRules().IsEmpty() );
+        BOOST_CHECK( !wxFileExists( sourceDir.ChildPathStr( wxS( "source.kicad_dru" ) ) ) );
+        break;
+    }
+
+    BOOST_REQUIRE_MESSAGE( foundRules, "Expected committed DipTrace data to generate custom rules" );
 }
 
 

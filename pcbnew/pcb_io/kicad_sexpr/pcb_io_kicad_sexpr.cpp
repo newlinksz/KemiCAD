@@ -18,7 +18,9 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <kemi_format_profile.h>
 #include <wx/dir.h>
+#include <set>
 #include <wx/ffile.h>
 #include <wx/log.h>
 #include <wx/msgdlg.h>
@@ -77,9 +79,21 @@
 using namespace PCB_KEYS_T;
 
 
-FP_CACHE_ENTRY::FP_CACHE_ENTRY( FOOTPRINT* aFootprint, const WX_FILENAME& aFileName ) :
+static wxString footprintFileKey( const wxString& aName )
+{
+#ifdef __WINDOWS__
+    return aName.Lower();
+#else
+    return aName;
+#endif
+}
+
+
+FP_CACHE_ENTRY::FP_CACHE_ENTRY( FOOTPRINT* aFootprint, const WX_FILENAME& aFileName,
+                              KEMI_FORMAT::FLAVOR aWriteFlavor ) :
         m_filename( aFileName ),
-        m_footprint( aFootprint )
+        m_footprint( aFootprint ),
+        m_writeFlavor( aWriteFlavor )
 { }
 
 
@@ -95,6 +109,20 @@ FP_CACHE::FP_CACHE( PCB_IO_KICAD_SEXPR* aOwner, const wxString& aLibraryPath )
 
 void FP_CACHE::Save( FOOTPRINT* aFootprintFilter )
 {
+    CheckLoadError();
+
+    // Validate the complete output set before writing even the first file.
+    for( const auto& entry : m_footprints )
+    {
+        if( !aFootprintFilter || entry.second->GetFootprint().get() == aFootprintFilter )
+        {
+            CheckSaveTarget( wxFileName( entry.second->GetFileName().GetFullPath() ) );
+            KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::FOOTPRINT,
+                    entry.second->GetFileName().GetFullPath(), entry.second->GetWriteFlavor(),
+                    entry.second->GetFootprint()->IsKemiOnly() );
+        }
+    }
+
     m_cache_timestamp = 0;
 
     if( !m_lib_path.DirExists() && !m_lib_path.Mkdir() )
@@ -130,15 +158,14 @@ void FP_CACHE::Save( FOOTPRINT* aFootprintFilter )
             PRETTIFIED_FILE_OUTPUTFORMATTER formatter( fileName );
 
             m_owner->SetOutputFormatter( &formatter );
+            m_owner->SetFootprintWriteFlavor( fpCacheEntry->GetWriteFlavor() );
             m_owner->Format( footprint.get() );
+            m_owner->SetFootprintWriteFlavor( KEMI_FORMAT::FLAVOR::LEGACY );
             formatter.Finish();
         }
-
-        m_cache_timestamp += fn.GetTimestamp();
     }
 
-    if( m_lib_path.IsFileReadable() && m_lib_path.GetModificationTime().IsValid() )
-        m_cache_timestamp += m_lib_path.GetModificationTime().GetValue().GetValue();
+    m_cache_timestamp = GetTimestamp( m_lib_raw_path );
 
     // If we've saved the full cache, we clear the dirty flag.
     if( !aFootprintFilter )
@@ -150,26 +177,56 @@ void FP_CACHE::Load()
 {
     m_cache_dirty = false;
     m_cache_timestamp = 0;
+    m_loadError.clear();
+    m_rejectedFootprints.clear();
+    m_nativeConversions.clear();
+    m_footprints.clear();
 
     wxDir dir( m_lib_raw_path );
 
     if( !dir.IsOpened() )
-        THROW_IO_ERRORF( _( "Footprint library '%s' not found." ), m_lib_raw_path );
+    {
+        m_loadError = wxString::Format( _( "Footprint library '%s' not found." ), m_lib_raw_path );
+        THROW_IO_ERROR( m_loadError );
+    }
 
     wxString fullName;
-    wxString fileSpec = wxT( "*." ) + wxString( FILEEXT::KiCadFootprintFileExtension );
 
     // wxFileName construction is egregiously slow.  Construct it once and just swap out
     // the filename thereafter.
     WX_FILENAME fn( m_lib_raw_path, wxT( "dummyName" ) );
 
-    if( dir.GetFirst( &fullName, fileSpec ) )
+    // Native members shadow their untouched official import sources, including after reopen.
+    std::vector<wxString> fpFiles;
+    std::set<wxString>    fpNames;
+
+    for( const std::string& ext : { KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::FOOTPRINT,
+                                                     KEMI_FORMAT::FLAVOR::KEMI ),
+                                    KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::FOOTPRINT,
+                                                     KEMI_FORMAT::FLAVOR::LEGACY ) } )
     {
-        wxString cacheError;
+        if( !dir.GetFirst( &fullName, wxT( "*." ) + wxString( ext ) ) )
+            continue;
 
         do
         {
-            fn.SetFullName( fullName );
+            wxString name = wxFileName( fullName ).GetName();
+
+            if( !fpNames.insert( footprintFileKey( name ) ).second )
+                continue;
+
+            fpFiles.push_back( fullName );
+        } while( dir.GetNext( &fullName ) );
+    }
+
+    if( !fpFiles.empty() || !m_loadError.IsEmpty() )
+    {
+        for( const wxString& fpFile : fpFiles )
+        {
+            fn.SetFullName( fpFile );
+
+            if( m_rejectedFootprints.contains( footprintFileKey( fn.GetName() ) ) )
+                continue;
 
             // Queue I/O errors so only files that fail to parse don't get loaded.
             try
@@ -184,7 +241,9 @@ void FP_CACHE::Load()
                     THROW_IO_ERROR( wxEmptyString );   // caught locally, just below...
 
                 footprint->SetFPID( LIB_ID( wxEmptyString, fpName ) );
-                m_footprints.insert( fpName, new FP_CACHE_ENTRY( footprint, fn ) );
+                m_footprints.insert( fpName, new FP_CACHE_ENTRY(
+                        footprint, fn,
+                        KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::FOOTPRINT, fn.GetFullPath() ) ) );
 
                 // A warning leaves the footprint usable, and libraries load on worker threads that have no one to
                 // show a message to, so it is only traced
@@ -195,25 +254,65 @@ void FP_CACHE::Load()
             }
             catch( const IO_ERROR& ioe )
             {
-                if( !cacheError.IsEmpty() )
-                    cacheError += wxT( "\n\n" );
+                m_rejectedFootprints.insert( footprintFileKey( fn.GetName() ) );
 
-                cacheError += wxString::Format( _( "Unable to read file '%s'" ) + '\n',
+                if( !m_loadError.IsEmpty() )
+                    m_loadError += wxT( "\n\n" );
+
+                m_loadError += wxString::Format( _( "Unable to read file '%s'" ) + '\n',
                                                 fn.GetFullPath() );
-                cacheError += ioe.What();
+                m_loadError += ioe.What();
             }
-        } while( dir.GetNext( &fullName ) );
-
-        m_cache_timestamp = GetTimestamp( m_lib_raw_path );
-
-        if( !cacheError.IsEmpty() )
-            THROW_IO_ERROR( cacheError );
+        }
     }
+
+    m_cache_timestamp = GetTimestamp( m_lib_raw_path );
+    CheckLoadError();
+}
+
+
+void FP_CACHE::CheckLoadError() const
+{
+    if( !m_loadError.IsEmpty() )
+        THROW_IO_ERROR( m_loadError );
+}
+
+
+void FP_CACHE::CheckFootprintError( const wxString& aFootprintName ) const
+{
+    if( m_rejectedFootprints.empty()
+            || m_rejectedFootprints.contains( footprintFileKey( aFootprintName ) ) )
+    {
+        CheckLoadError();
+    }
+}
+
+
+void FP_CACHE::CheckSaveTarget( const wxFileName& aFileName ) const
+{
+    CheckLoadError();
+
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::FOOTPRINT, aFileName.GetFullPath(),
+                                        KEMI_FORMAT::FLAVOR::KEMI, true );
+}
+
+
+bool FP_CACHE::WasConvertedToNative( const wxString& aName ) const
+{
+    return m_nativeConversions.contains( footprintFileKey( aName ) );
+}
+
+
+void FP_CACHE::MarkNativeConversion( const wxString& aName )
+{
+    m_nativeConversions.insert( footprintFileKey( aName ) );
 }
 
 
 void FP_CACHE::Remove( const wxString& aFootprintName )
 {
+    CheckLoadError();
+
     auto it = m_footprints.find( aFootprintName );
 
     if( it == m_footprints.end() )
@@ -223,10 +322,29 @@ void FP_CACHE::Remove( const wxString& aFootprintName )
                          aFootprintName );
     }
 
-    // Remove the footprint from the cache and delete the footprint file from the library.
-    wxString fullPath = it->second->GetFileName().GetFullPath();
+    // Deleting a native shadow would expose its retained official source on the next load.
+    // Refuse the delete (also used by rename) before changing either the cache or disk.
+    wxDir dir( m_lib_raw_path );
+    wxString name;
+
+    if( dir.GetFirst( &name, wxS( "*." ) + wxString( FILEEXT::KiCadFootprintFileExtension ), wxDIR_FILES ) )
+    {
+        do
+        {
+            if( footprintFileKey( wxFileName( name ).GetName() ) == footprintFileKey( aFootprintName ) )
+            {
+                THROW_IO_ERROR( _( "Cannot delete or rename a footprint while its official KiCad import "
+                                   "source is retained in this library. Copy it to a native-only library first." ) );
+            }
+        } while( dir.GetNext( &name ) );
+    }
+
+    const wxString fullPath = it->second->GetFileName().GetFullPath();
+
+    if( !wxRemoveFile( fullPath ) )
+        THROW_IO_ERRORF( _( "Cannot delete footprint file '%s'." ), fullPath );
+
     m_footprints.erase( aFootprintName );
-    wxRemoveFile( fullPath );
 }
 
 
@@ -257,9 +375,29 @@ bool FP_CACHE::IsModified()
 
 long long FP_CACHE::GetTimestamp( const wxString& aLibPath )
 {
-    wxString fileSpec = wxT( "*." ) + wxString( FILEEXT::KiCadFootprintFileExtension );
+    long long timestamp = 0;
 
-    return KIPLATFORM::IO::TimestampDir( aLibPath, fileSpec );
+    for( const std::string& ext : KEMI_FORMAT::ReadableExts( KEMI_FORMAT::DOC::FOOTPRINT ) )
+        timestamp += KIPLATFORM::IO::TimestampDir( aLibPath, wxT( "*." ) + wxString( ext ) );
+
+    // Renaming between the two formats can preserve both file size and modification time.
+    // Include filenames so that it still invalidates the cache and reruns root validation.
+    wxDir dir( aLibPath );
+    wxString name;
+
+    if( dir.IsOpened() && dir.GetFirst( &name, wxEmptyString, wxDIR_FILES ) )
+    {
+        do
+        {
+            if( KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::FOOTPRINT,
+                                           wxFileName( name ).GetExt() ) )
+            {
+                timestamp ^= static_cast<long long>( std::hash<std::wstring>{}( name.ToStdWstring() ) );
+            }
+        } while( dir.GetNext( &name ) );
+    }
+
+    return timestamp;
 }
 
 
@@ -286,6 +424,29 @@ bool PCB_IO_KICAD_SEXPR::CanReadBoard( const wxString& aFileName ) const
 void PCB_IO_KICAD_SEXPR::SaveBoard( const wxString& aFileName, BOARD& aBoard,
                                     const std::map<std::string, UTF8>* aProperties )
 {
+    saveBoard( aFileName, aBoard, aProperties, KEMI_FORMAT::FLAVOR::KEMI );
+}
+
+
+void PCB_IO_KICAD_SEXPR::SaveBoard( const wxString& aStoragePath, BOARD& aBoard,
+        const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+        const std::map<std::string, UTF8>* aProperties )
+{
+    if( aTarget.Document() != KEMI_FORMAT::DOC::PCB )
+        THROW_IO_ERROR( _( "The KemiCAD output target has the wrong document type." ) );
+
+    KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( wxFileName( aTarget.FinalPath() ).GetPath() );
+    policy.CheckWritePath( KEMI_FORMAT::DOC::PCB, aStoragePath );
+    saveBoard( aStoragePath, aBoard, aProperties, aTarget.Flavor() );
+}
+
+
+void PCB_IO_KICAD_SEXPR::saveBoard( const wxString& aFileName, BOARD& aBoard,
+        const std::map<std::string, UTF8>* aProperties, KEMI_FORMAT::FLAVOR aFlavor )
+{
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PCB, aFileName, aFlavor,
+                                        aBoard.IsKemiOnly() );
+
     wxString sanityResult = aBoard.GroupsSanityCheck();
 
     if( sanityResult != wxEmptyString && m_queryUserCallback )
@@ -301,14 +462,22 @@ void PCB_IO_KICAD_SEXPR::SaveBoard( const wxString& aFileName, BOARD& aBoard,
     }
 
     PRETTIFIED_FILE_OUTPUTFORMATTER formatter( aFileName );
-    FormatBoardToFormatter( &formatter, &aBoard, aProperties );
+
+    FormatBoardToFormatter( &formatter, &aBoard, aProperties, aFlavor );
     formatter.Finish();
+
+    if( aFlavor == KEMI_FORMAT::FLAVOR::KEMI )
+        aBoard.SetKemiOnly();
 }
 
 
 void PCB_IO_KICAD_SEXPR::FormatBoardToFormatter( OUTPUTFORMATTER* aOut, BOARD* aBoard,
-                                                  const std::map<std::string, UTF8>* aProperties )
+                                                  const std::map<std::string, UTF8>* aProperties,
+                                                  KEMI_FORMAT::FLAVOR aFlavor )
 {
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PCB, wxEmptyString, aFlavor,
+                                        aBoard->IsKemiOnly() );
+
     init( aProperties );
 
     m_board = aBoard;       // after init()
@@ -322,8 +491,13 @@ void PCB_IO_KICAD_SEXPR::FormatBoardToFormatter( OUTPUTFORMATTER* aOut, BOARD* a
 
     m_out = aOut;
 
-    m_out->Print( "(kicad_pcb (version %d) (generator \"pcbnew\") (generator_version %s)", SEXPR_BOARD_FILE_VERSION,
-                  m_out->Quotew( GetMajorMinorVersion() ).c_str() );
+    m_out->Print( "(%s", KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::PCB, aFlavor ).c_str() );
+
+    if( aFlavor == KEMI_FORMAT::FLAVOR::KEMI )
+        m_out->Print( " (format_version %d)", KEMI_FORMAT::FORMAT_VERSION );
+
+    m_out->Print( " (version %d) (generator \"pcbnew\") (generator_version %s)", SEXPR_BOARD_FILE_VERSION,
+                  m_out->Quotew( KEMI_FORMAT::GeneratorVersion() ).c_str() );
 
     Format( aBoard );
 
@@ -1428,6 +1602,12 @@ void PCB_IO_KICAD_SEXPR::format( const PCB_GRID_ITEM* aGridItem ) const
 
 void PCB_IO_KICAD_SEXPR::format( const FOOTPRINT* aFootprint ) const
 {
+    if( !( m_ctl & CTL_OMIT_FOOTPRINT_VERSION ) )
+    {
+        KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::FOOTPRINT, wxEmptyString,
+                                            m_fpWriteFlavor, aFootprint->IsKemiOnly() );
+    }
+
     if( !( m_ctl & CTL_OMIT_INITIAL_COMMENTS ) )
     {
         const wxArrayString* initial_comments = aFootprint->GetInitialComments();
@@ -1439,21 +1619,32 @@ void PCB_IO_KICAD_SEXPR::format( const FOOTPRINT* aFootprint ) const
         }
     }
 
+    // Only a standalone footprint file (which carries its own version) gets the KemiCAD
+    // root; footprints embedded in a board keep the (footprint ...) sub-block.
+    const bool kemiRoot = m_fpWriteFlavor == KEMI_FORMAT::FLAVOR::KEMI
+                          && !( m_ctl & CTL_OMIT_FOOTPRINT_VERSION );
+    const std::string fpRoot = kemiRoot
+            ? KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::FOOTPRINT, KEMI_FORMAT::FLAVOR::KEMI )
+            : KEMI_FORMAT::RootToken( KEMI_FORMAT::DOC::FOOTPRINT, KEMI_FORMAT::FLAVOR::LEGACY );
+
     if( m_ctl & CTL_OMIT_LIBNAME )
     {
-        m_out->Print( "(footprint %s",
+        m_out->Print( "(%s %s", fpRoot.c_str(),
                       m_out->Quotes( aFootprint->GetFPID().GetLibItemName() ).c_str() );
     }
     else
     {
-        m_out->Print( "(footprint %s",
+        m_out->Print( "(%s %s", fpRoot.c_str(),
                       m_out->Quotes( aFootprint->GetFPID().Format() ).c_str() );
     }
+
+    if( kemiRoot )
+        m_out->Print( "(format_version %d)", KEMI_FORMAT::FORMAT_VERSION );
 
     if( !( m_ctl & CTL_OMIT_FOOTPRINT_VERSION ) )
     {
         m_out->Print( "(version %d) (generator \"pcbnew\") (generator_version %s)", SEXPR_BOARD_FILE_VERSION,
-                      m_out->Quotew( GetMajorMinorVersion() ).c_str() );
+                      m_out->Quotew( KEMI_FORMAT::GeneratorVersion() ).c_str() );
     }
 
     if( aFootprint->IsLocked() )
@@ -3933,6 +4124,8 @@ void PCB_IO_KICAD_SEXPR::validateCache( const wxString& aLibraryPath, bool check
         m_cache = new FP_CACHE( this, aLibraryPath );
         m_cache->Load();
     }
+
+    m_cache->CheckLoadError();
 }
 
 
@@ -3981,7 +4174,8 @@ const FOOTPRINT* PCB_IO_KICAD_SEXPR::getFootprint( const wxString& aLibraryPath,
     }
     catch( const IO_ERROR& )
     {
-        // do nothing with the error
+        // A partially loaded library may still serve valid footprints, never rejected names.
+        m_cache->CheckFootprintError( aFootprintName );
     }
 
     auto it = m_cache->GetFootprints().find( aFootprintName );
@@ -4005,6 +4199,12 @@ bool PCB_IO_KICAD_SEXPR::FootprintExists( const wxString& aLibraryPath,
                                           const wxString& aFootprintName,
                                           const std::map<std::string, UTF8>* aProperties )
 {
+    // Existence must not silently choose one member of a format conflict.
+    if( !wxDir::Exists( aLibraryPath ) )
+        return false;
+
+    getFootprint( aLibraryPath, aFootprintName, aProperties, true );
+
     // Note: checking the cache sounds like a good idea, but won't catch files which differ
     // only in case.
     //
@@ -4012,9 +4212,15 @@ bool PCB_IO_KICAD_SEXPR::FootprintExists( const wxString& aLibraryPath,
     // case-insensitive filesystem) handled "for free".
     // Warning: footprint names frequently contain a point. So be careful when initializing
     // wxFileName, and use a CTOR with extension specified
-    wxFileName footprintFile( aLibraryPath, aFootprintName, FILEEXT::KiCadFootprintFileExtension );
+    for( const std::string& ext : KEMI_FORMAT::ReadableExts( KEMI_FORMAT::DOC::FOOTPRINT ) )
+    {
+        wxFileName footprintFile( aLibraryPath, aFootprintName, ext );
 
-    return footprintFile.Exists();
+        if( footprintFile.Exists() )
+            return true;
+    }
+
+    return false;
 }
 
 
@@ -4022,20 +4228,23 @@ std::unique_ptr<FOOTPRINT> PCB_IO_KICAD_SEXPR::ImportFootprint( const wxString& 
                                                                 wxString&                          aFootprintNameOut,
                                                                 const std::map<std::string, UTF8>* aProperties )
 {
-    wxString fcontents;
-    wxFFile  f( aFootprintPath );
-
     // Suppress font substitution warnings (RAII - automatically restored on scope exit)
     FONTCONFIG_REPORTER_SCOPE fontconfigScope( nullptr );
 
-    if( !f.IsOpened() )
-        return nullptr;
-
-    f.ReadAll( &fcontents );
+    FILE_LINE_READER reader( aFootprintPath );
+    PCB_IO_KICAD_SEXPR_PARSER parser( &reader, nullptr, m_queryUserCallback );
 
     aFootprintNameOut = wxFileName( aFootprintPath ).GetName();
 
-    return std::unique_ptr<FOOTPRINT>( dynamic_cast<FOOTPRINT*>( Parse( fcontents ) ) );
+    std::unique_ptr<BOARD_ITEM> item( parser.Parse() );
+
+    if( FOOTPRINT* footprint = dynamic_cast<FOOTPRINT*>( item.get() ) )
+    {
+        item.release();
+        return std::unique_ptr<FOOTPRINT>( footprint );
+    }
+
+    THROW_IO_ERRORF( _( "File '%s' does not contain a footprint." ), aFootprintPath );
 }
 
 
@@ -4068,30 +4277,57 @@ std::unique_ptr<FOOTPRINT> PCB_IO_KICAD_SEXPR::FootprintLoad( const wxString& aL
 void PCB_IO_KICAD_SEXPR::FootprintSave( const wxString& aLibraryPath, const FOOTPRINT* aFootprint,
                                         const std::map<std::string, UTF8>* aProperties )
 {
+    footprintSave( aLibraryPath, aFootprint, aProperties, nullptr );
+}
+
+
+void PCB_IO_KICAD_SEXPR::FootprintSave( const wxString& aStoragePath, const FOOTPRINT* aFootprint,
+        const KEMI_FORMAT::OUTPUT_TARGET& aTarget,
+        const std::map<std::string, UTF8>* aProperties )
+{
+    if( aTarget.Document() != KEMI_FORMAT::DOC::FOOTPRINT )
+        THROW_IO_ERROR( _( "The KemiCAD output target has the wrong document type." ) );
+
+    KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( wxFileName( aTarget.FinalPath() ).GetPath() );
+    policy.CheckWritePath( KEMI_FORMAT::DOC::FOOTPRINT, aStoragePath );
+    footprintSave( aStoragePath, aFootprint, aProperties, &aTarget );
+}
+
+
+void PCB_IO_KICAD_SEXPR::footprintSave( const wxString& aLibraryPath, const FOOTPRINT* aFootprint,
+        const std::map<std::string, UTF8>* aProperties,
+        const KEMI_FORMAT::OUTPUT_TARGET* aTarget )
+{
     init( aProperties );
 
     // In this public PLUGIN API function, we can safely assume it was
     // called for saving into a library path.
     m_ctl = CTL_FOR_LIBRARY;
 
-    // Support saving to a single-file path like "/tmp/foo.kicad_mod" by treating the directory
+    // Support saving to a single-file path like "/tmp/foo.kemi_mod" by treating the directory
     // as the library path and the file base-name as the footprint name.
     wxString  libPath = aLibraryPath;
     wxString  singleFileBaseName;    // without extension
     bool      saveSingleFile = false;
+    wxString  fpExt = KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::FOOTPRINT, KEMI_FORMAT::FLAVOR::KEMI );
 
     {
         wxFileName asFile( aLibraryPath );
 
-        if( asFile.GetExt() == FILEEXT::KiCadFootprintFileExtension )
+        if( aTarget || KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::FOOTPRINT, asFile.GetExt() ) )
         {
+            // Reject explicit official output before cache validation can create any file.
+            KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::FOOTPRINT, aLibraryPath,
+                                                KEMI_FORMAT::FLAVOR::KEMI, aFootprint->IsKemiOnly() );
             saveSingleFile = true;
+            fpExt = asFile.GetExt();
             libPath = asFile.GetPath();
             singleFileBaseName = asFile.GetName();
         }
     }
 
-    validateCache( libPath, !aProperties || !aProperties->contains( "skip_cache_validation" ) );
+    // Writes must recheck external changes even if a caller asks to skip cache validation.
+    validateCache( libPath );
 
     if( !m_cache->IsWritable() )
     {
@@ -4121,11 +4357,37 @@ void PCB_IO_KICAD_SEXPR::FootprintSave( const wxString& aLibraryPath, const FOOT
                                      : aFootprint->GetFPID().GetUniStringLibItemName();
     ReplaceIllegalFileNameChars( fpName, '_' );
 
-    // Quietly overwrite footprint and delete footprint file from path for any by same name.
-    wxFileName fn( libPath, fpName, FILEEXT::KiCadFootprintFileExtension );
+    // Official library members remain read-only import sources.
+    const wxFileName official( libPath, fpName, FILEEXT::KiCadFootprintFileExtension );
+
+    if( official.FileExists() && !aFootprint->IsKemiOnly()
+            && !m_cache->WasConvertedToNative( fpName ) )
+    {
+        const wxString target = KEMI_FORMAT::ResolveNativeSaveTarget(
+                KEMI_FORMAT::DOC::FOOTPRINT, official.GetFullPath() );
+        fpExt = wxFileName( target ).GetExt();
+    }
+
+    // Check the intended output before resolving symlinks or changing the cache.
+    wxFileName fn( libPath, fpName, fpExt );
+    m_cache->CheckSaveTarget( fn );
+    KEMI_FORMAT::FLAVOR writeFlavor = aTarget ? aTarget->Flavor()
+            : KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::FOOTPRINT, fn.GetFullPath() );
+
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::FOOTPRINT, fn.GetFullPath(),
+                                        writeFlavor, aFootprint->IsKemiOnly() );
 
     // Write through symlinks, don't replace them
     WX_FILENAME::ResolvePossibleSymlinks( fn );
+
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::FOOTPRINT, fn.GetFullPath(),
+                                        writeFlavor, aFootprint->IsKemiOnly() );
+
+    if( aTarget )
+    {
+        KEMI_FORMAT::KEMI_ONLY_OUTPUT_POLICY policy( wxFileName( aTarget->FinalPath() ).GetPath() );
+        policy.CheckWritePath( KEMI_FORMAT::DOC::FOOTPRINT, fn.GetFullPath() );
+    }
 
     if( !fn.IsOk() )
         THROW_IO_ERRORF( _( "Footprint file name '%s' is not valid." ), fn.GetFullPath() );
@@ -4175,8 +4437,12 @@ void PCB_IO_KICAD_SEXPR::FootprintSave( const wxString& aLibraryPath, const FOOT
     wxLogTrace( traceKicadPcbPlugin, wxT( "Creating s-expr footprint file '%s'." ), fullPath );
     m_cache->GetFootprints().insert( footprintName,
                                      new FP_CACHE_ENTRY( footprint,
-                                                         WX_FILENAME( fn.GetPath(), fullName ) ) );
+                                                         WX_FILENAME( fn.GetPath(), fullName ),
+                                                         writeFlavor ) );
     m_cache->Save( footprint );
+
+    if( official.FileExists() )
+        m_cache->MarkNativeConversion( fpName );
 }
 
 
@@ -4235,6 +4501,8 @@ bool PCB_IO_KICAD_SEXPR::DeleteLibrary( const wxString& aLibraryPath,
     if( !fn.DirExists() )
         return false;
 
+    validateCache( aLibraryPath );
+
     if( !fn.IsDirWritable() )
         THROW_IO_ERRORF( _( "Insufficient permissions to delete folder '%s'." ), aLibraryPath.GetData() );
 
@@ -4256,7 +4524,7 @@ bool PCB_IO_KICAD_SEXPR::DeleteLibrary( const wxString& aLibraryPath,
         {
             tmp = files[i];
 
-            if( tmp.GetExt() != FILEEXT::KiCadFootprintFileExtension )
+            if( !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::FOOTPRINT, tmp.GetExt() ) )
             {
                 THROW_IO_ERRORF( _( "Unexpected file '%s' found in library path '%s'." ),
                                  files[i].GetData(),

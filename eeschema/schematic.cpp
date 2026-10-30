@@ -57,6 +57,7 @@
 #include <sch_symbol.h>
 #include <sch_pin.h>
 #include <sch_sheet.h>
+#include <sch_save_state.h>
 #include <sch_screen.h>
 #include <sch_sheet_pin.h>
 #include <sch_selection_tool.h>
@@ -68,6 +69,7 @@
 #include <tool/tool_manager.h>
 #include <undo_redo_container.h>
 #include <local_history.h>
+#include <kemi_format_profile.h>
 #include <richio.h>
 #include <sch_io/sch_io_mgr.h>
 #include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
@@ -217,6 +219,9 @@ void SCHEMATIC::SetProject( PROJECT* aPrj )
 
     m_unresolvedErcExclusions.clear();
     m_project = aPrj;
+
+    if( m_project && KEMI_FORMAT::HasKemiExt( m_project->GetProjectFullName() ) )
+        SetKemiOnlyEmbeddedFiles();
 
     if( m_project )
     {
@@ -698,6 +703,31 @@ bool SCHEMATIC::ResolveTextVar( const SCH_SHEET_PATH* aSheetPath, wxString* toke
 
     if( m_project->TextVarResolver( token ) )
         return true;
+
+    return false;
+}
+
+
+bool SCHEMATIC::IsKemiOnly() const
+{
+    if( m_project && ( KEMI_FORMAT::HasKemiExt( m_project->GetProjectFullName() )
+                      || m_project->GetProjectFile().IsKemiOnly() ) )
+        return true;
+
+    for( const SCH_SHEET_PATH& path : Hierarchy() )
+    {
+        if( SCH_SCREEN* screen = path.LastScreen() )
+        {
+            if( screen->IsKemiOnly() || KEMI_FORMAT::HasKemiExt( screen->GetFileName() ) )
+                return true;
+
+            for( const auto& [name, symbol] : screen->GetLibSymbols() )
+            {
+                if( symbol && symbol->IsKemiOnly() )
+                    return true;
+            }
+        }
+    }
 
     return false;
 }
@@ -2108,6 +2138,8 @@ void SCHEMATIC::ResolveERCExclusionsPostUpdate()
 
 EMBEDDED_FILES* SCHEMATIC::GetEmbeddedFiles()
 {
+    if( IsKemiOnly() )
+        SetKemiOnlyEmbeddedFiles();
     return static_cast<EMBEDDED_FILES*>( this );
 }
 
@@ -3259,39 +3291,117 @@ void SCHEMATIC::SaveToHistory( const wxString& aProjectPath, std::vector<HISTORY
     if( ADVANCED_CFG::GetCfg().m_CompactSave )
         mode = KICAD_FORMAT::FORMAT_MODE::COMPACT_TEXT_PROPERTIES;
 
-    // In ZIP mode the only caller is the autosave timer, so skipping clean sheets
-    // avoids spurious _autosave-* files.  In INCREMENTAL mode the manual-save flow
-    // clears dirty flags before calling here, so filtering would skip the whole
-    // snapshot.  Git's diff-against-HEAD check rejects no-op commits there anyway.
-    bool filterClean = !Pgm().GetCommonSettings()->AutosaveUsesLocalHistory();
+    SCH_SAVE_STATE saveState( *this );
+    SCH_SCREENS screens( Root() );
+    bool anyModified = false;
+
+    for( size_t i = 0; i < screens.GetCount(); ++i )
+        anyModified |= screens.GetScreen( i )->IsContentModified();
+
+    if( !Pgm().GetCommonSettings()->AutosaveUsesLocalHistory() && !anyModified )
+        return;
+
+    // Capture the whole graph when any sheet changes. Clean ancestors and dependencies
+    // are required to reopen an autosave without following stale official references.
+    std::map<SCH_SCREEN*, wxString> targets;
+    std::set<wxString> usedPaths;
+
+    for( const SCH_SHEET_PATH& path : sheetList )
+    {
+        SCH_SCREEN* screen = path.LastScreen();
+
+        if( !screen || screen->HasLoadError() )
+            return; // Never offer a partial hierarchy for recovery.
+
+        if( targets.contains( screen ) )
+            continue;
+
+        wxFileName target( m_project->AbsolutePath( screen->GetFileName() ) );
+        target.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC, KEMI_FORMAT::FLAVOR::KEMI ) );
+        wxString key = target.GetFullPath();
+
+        if( !wxFileName::IsCaseSensitive() )
+            key.MakeLower();
+
+        wxFileName relative( target );
+        const bool inside = relative.MakeRelativeTo( projPath )
+                && ( relative.GetDirs().IsEmpty() || relative.GetDirs().front() != wxS( ".." ) );
+
+        if( !inside || usedPaths.contains( key ) )
+        {
+            target.Assign( projPath + wxS( "recovery-sheets" ) + wxFILE_SEP_PATH
+                           + screen->GetUuid().AsString(), target.GetFullName() );
+        }
+
+        key = target.GetFullPath();
+
+        if( !wxFileName::IsCaseSensitive() )
+            key.MakeLower();
+
+        usedPaths.insert( key );
+        targets.emplace( screen, target.GetFullPath() );
+    }
+
+    for( const auto& [screen, target] : targets )
+        screen->SetFileName( target );
+
+    std::set<SCH_SHEET*> rewritten;
+
+    for( const SCH_SHEET_PATH& path : sheetList )
+    {
+        SCH_SHEET* sheet = path.Last();
+
+        if( !sheet || sheet->IsVirtualRootSheet() || !rewritten.insert( sheet ).second )
+            continue;
+
+        wxFileName target( targets.at( sheet->GetScreen() ) );
+        const wxString parentPath = sheet->IsTopLevelSheet()
+                ? wxFileName( targets.at( RootScreen() ) ).GetPath()
+                : wxFileName( targets.at( path.at( path.size() - 2 )->GetScreen() ) ).GetPath();
+        target.MakeRelativeTo( parentPath );
+        sheet->SetFileName( target.GetFullPath() );
+    }
+
+    const size_t firstEntry = aFileData.size();
+    std::set<SCH_SCREEN*> serialized;
 
     for( const SCH_SHEET_PATH& path : sheetList )
     {
         SCH_SHEET*  sheet = path.Last();
         SCH_SCREEN* screen = path.LastScreen();
 
-        if( !sheet || !screen )
+        if( !sheet || !screen || screen->HasLoadError() )
             continue;
 
-        if( filterClean && !screen->IsContentModified() )
+        if( !serialized.insert( screen ).second )
             continue;
 
         wxFileName abs = m_project->AbsolutePath( screen->GetFileName() );
+
+        abs.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC, KEMI_FORMAT::FLAVOR::KEMI ) );
 
         if( !abs.IsOk() )
             continue;
 
         wxString absPath = abs.GetFullPath();
 
-        if( absPath.IsEmpty() || !absPath.StartsWith( projPath ) )
-            continue;
+        wxFileName relative( abs );
 
-        wxString rel = absPath.Mid( projPath.length() );
+        if( absPath.IsEmpty() || !relative.MakeRelativeTo( projPath )
+                || ( !relative.GetDirs().IsEmpty() && relative.GetDirs().front() == wxS( ".." ) ) )
+        {
+            aFileData.resize( firstEntry );
+            return;
+        }
+
+        wxString rel = relative.GetFullPath();
 
         try
         {
             STRING_FORMATTER formatter;
-            pi.FormatSchematicToFormatter( &formatter, sheet, this );
+            pi.FormatSchematicToFormatter(
+                    &formatter, sheet, this, nullptr,
+                    KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::SCHEMATIC, absPath ) );
 
             HISTORY_FILE_DATA entry;
             entry.relativePath = rel;
@@ -3308,6 +3418,8 @@ void SCHEMATIC::SaveToHistory( const wxString& aProjectPath, std::vector<HISTORY
         {
             wxLogTrace( traceAutoSave, wxS( "[history] sch saver serialize failed for '%s': %s" ),
                         absPath, wxString::FromUTF8( ioe.What() ) );
+            aFileData.resize( firstEntry );
+            return;
         }
     }
 }

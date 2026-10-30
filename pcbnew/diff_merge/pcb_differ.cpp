@@ -25,6 +25,7 @@
 #include <hashtables.h>
 
 #include <board.h>
+#include <kemi_format_profile.h>
 #include <board_design_settings.h>
 #include <project.h>
 #include <project/project_file.h>
@@ -973,7 +974,11 @@ DOCUMENT_DIFF PCB_DIFFER::Diff()
             return wxEmptyString;
 
         wxFileName fn( boardPath );
-        fn.SetExt( FILEEXT::DesignRulesFileExtension );
+        fn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::DESIGN_RULES,
+                KEMI_FORMAT::HasKemiExt( boardPath ) ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY ) );
+
+        if( !fn.FileExists() )
+            fn.SetExt( FILEEXT::DesignRulesFileExtension );
 
         if( !fn.FileExists() )
             return wxEmptyString;

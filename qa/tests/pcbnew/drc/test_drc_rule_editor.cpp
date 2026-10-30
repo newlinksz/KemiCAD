@@ -452,13 +452,15 @@ BOOST_AUTO_TEST_CASE( EditedRulesKeepTheirLayers )
 
     DRC_RULE_SAVER saver;
 
-    BOOST_CHECK( layersByRule( saver.GenerateRulesText( entries, board.get() ) ) == layersByRule( original ) );
+    const wxString native = saver.GenerateRulesText( entries, board.get(), {}, KEMI_FORMAT::FLAVOR::KEMI );
+    BOOST_CHECK( layersByRule( native ) == layersByRule( original ) );
 
     // A layer set without source text, as a caller other than the loader builds it
     entries.resize( 1 );
     entries[0].layerCondition = LSET( { F_Cu } );
 
-    std::map<wxString, LSET> single = layersByRule( saver.GenerateRulesText( entries, board.get() ) );
+    const wxString singleRule = saver.GenerateRulesText( entries, board.get(), {}, KEMI_FORMAT::FLAVOR::KEMI );
+    std::map<wxString, LSET> single = layersByRule( singleRule );
 
     BOOST_CHECK( single[entries[0].ruleName] == LSET( { F_Cu } ) );
 }

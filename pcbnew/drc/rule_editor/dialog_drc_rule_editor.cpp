@@ -27,6 +27,7 @@
 #include <confirm.h>
 #include <pcb_edit_frame.h>
 #include <kiface_base.h>
+#include <kemi_format_profile.h>
 #include <drc/drc_rule_parser.h>
 
 #include "dialog_drc_rule_editor.h"
@@ -212,6 +213,13 @@ void DIALOG_DRC_RULE_EDITOR::LoadExistingRules()
 
     // Kept even without rules so comments in the file survive the save
     m_rulesFileTrivia = loader.GetFileTrivia();
+
+    if( m_rulesFileTrivia.loadFailed )
+    {
+        wxLogError( _( "Design rules were not loaded; saving is disabled: %s" ),
+                    loader.GetLoadError() );
+        return;
+    }
 
     if( entries.empty() )
         return;
@@ -1341,6 +1349,9 @@ void DIALOG_DRC_RULE_EDITOR::UpdateData()
 
 void DIALOG_DRC_RULE_EDITOR::SaveRulesToFile()
 {
+    if( m_rulesFileTrivia.loadFailed )
+        return;
+
     std::vector<DRC_RE_LOADED_PANEL_ENTRY> entries;
 
     for( const RULE_TREE_NODE& node : m_ruleTreeNodeDatas )
@@ -1378,11 +1389,20 @@ void DIALOG_DRC_RULE_EDITOR::SaveRulesToFile()
     }
 
     DRC_RULE_SAVER saver;
-    saver.SaveFile( m_frame->GetBoard()->GetDesignRulesPath(), entries, m_currentBoard, m_rulesFileTrivia );
+    const wxString rulesFilepath = m_frame->GetBoard()->GetDesignRulesWritePath( m_rulesFileTrivia.kemiOnly );
+
+    if( !saver.SaveFile( rulesFilepath, entries, m_currentBoard,
+                         m_rulesFileTrivia ) )
+    {
+        wxLogError( _( "Failed to save design rules." ) );
+        return;
+    }
+
+    m_rulesFileTrivia.kemiOnly |= KEMI_FORMAT::HasKemiExt( rulesFilepath );
 
     try
     {
-        m_frame->GetBoard()->GetDesignSettings().m_DRCEngine->InitEngine( m_frame->GetBoard()->GetDesignRulesPath() );
+        m_frame->GetBoard()->GetDesignSettings().m_DRCEngine->InitEngine( rulesFilepath );
     }
     catch( PARSE_ERROR& pe )
     {

@@ -26,6 +26,8 @@
 
 #include <json_common.h>
 #include <kiplatform/io.h>
+#include <kemi_format_profile.h>
+#include <richio.h>
 
 #include <wx/filefn.h>
 #include <wx/log.h>
@@ -139,6 +141,16 @@ bool ApplyProjectFilePatches( const wxString&           aOutputProPath,
     if( aDocProps.empty() )
         return true;
 
+    try
+    {
+        KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::PROJECT, aOutputProPath,
+                KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PROJECT, aOutputProPath ), true );
+    }
+    catch( const IO_ERROR& )
+    {
+        return false;
+    }
+
     nlohmann::json target;
 
     if( wxFileExists( aOutputProPath ) )
@@ -187,8 +199,10 @@ bool ApplyProjectFilePatches( const wxString&           aOutputProPath,
             return false;
     }
 
+    KEMI_FORMAT::StampJsonMarker( target, KEMI_FORMAT::DOC::PROJECT );
+
     // Write atomically so a crash or power loss mid-write can't corrupt the
-    // .kicad_pro (matches JSON_SETTINGS::SaveToFile).  dump( 2 ) emits UTF-8;
+    // native project (matches JSON_SETTINGS::SaveToFile).  dump( 2 ) emits UTF-8;
     // write its bytes verbatim so the on-disk content is byte-identical.
     std::string payload = target.dump( 2 );
 

@@ -24,11 +24,6 @@
 #include <cmath>
 #include <limits>
 
-#include <wx/file.h>
-#include <wx/filefn.h>
-#include <wx/filename.h>
-#include <wx/log.h>
-
 #include <advanced_config.h>
 #include <board.h>
 #include <board_design_settings.h>
@@ -217,7 +212,7 @@ void PADS_PCB_CONVERTER::SetupLayers( const std::vector<PADS_IO::LAYER_INFO>& aP
     {
         // mapInnerCopperLayer collapses everything past the cap onto the last inner layer rather
         // than discarding it, so say that rather than claiming the layers were dropped
-        m_reporter->Report( wxString::Format( _( "The PADS file declares %d copper layers; KiCad supports "
+        m_reporter->Report( wxString::Format( _( "The PADS file declares %d copper layers; KemiCAD supports "
                                                  "%d, so the layers past that share the last inner layer." ),
                                               aPadsLayerCount, MAX_CU_LAYERS ),
                             RPT_SEVERITY_WARNING );
@@ -705,11 +700,11 @@ void PADS_PCB_CONVERTER::ApplyPourSettings( ZONE* aZone, const PADS_IO::POUR& aP
 }
 
 
-void PADS_PCB_CONVERTER::WriteDiffPairRules( const wxString& aFileName,
-                                             const std::vector<PADS_IO::DIFF_PAIR_DEF>& aDiffPairs )
+wxString PADS_PCB_CONVERTER::GenerateDiffPairRules(
+        const std::vector<PADS_IO::DIFF_PAIR_DEF>& aDiffPairs ) const
 {
     if( aDiffPairs.empty() )
-        return;
+        return wxEmptyString;
 
     // The expression tokenizer reads \ before the closing quote as an escaped quote and has no
     // rule that yields a trailing backslash, so only that one shape has no faithful encoding
@@ -785,55 +780,8 @@ void PADS_PCB_CONVERTER::WriteDiffPairRules( const wxString& aFileName,
         hasAnyRule = true;
     }
 
-    // A file holding only the version header is clutter, so write nothing unless a rule was emitted
-    if( !hasAnyRule )
-        return;
-
-    wxFileName fn( aFileName );
-    fn.SetExt( wxT( "kicad_dru" ) );
-
-    // An import must not destroy rules the user already has. Creating exclusively both refuses an
-    // existing file and closes the race a FileExists test would leave open
-    wxFile rulesFile;
-
-    {
-        // Refusal is expected and reported below, so keep wx from raising its own error
-        wxLogNull noLog;
-        rulesFile.Open( fn.GetFullPath(), wxFile::write_excl );
-    }
-
-    if( !rulesFile.IsOpened() )
-    {
-        if( m_reporter )
-        {
-            wxString msg = fn.FileExists() ? _( "Design rules for the imported differential pairs were not "
-                                                "written; '%s' already exists." )
-                                           : _( "Could not write design rules to '%s'." );
-
-            m_reporter->Report( wxString::Format( msg, fn.GetFullPath() ), RPT_SEVERITY_WARNING );
-        }
-
-        return;
-    }
-
-    bool written = rulesFile.Write( customRules );
-
-    if( !rulesFile.Close() )
-        written = false;
-
-    // A partial sidecar will not parse, and because the file is created exclusively it would also
-    // block the next import from writing a good one
-    if( !written )
-    {
-        wxRemoveFile( fn.GetFullPath() );
-
-        if( m_reporter )
-        {
-            m_reporter->Report( wxString::Format( _( "Could not write design rules to '%s'." ),
-                                                  fn.GetFullPath() ),
-                                RPT_SEVERITY_WARNING );
-        }
-    }
+    // A version header alone would create a useless sidecar when the caller saves the import.
+    return hasAnyRule ? customRules : wxString();
 }
 
 

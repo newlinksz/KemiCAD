@@ -112,6 +112,9 @@ void PCB_IO_PADS_BINARY::loadBoard( const wxString& aFileName, BOARD& aBoard, bo
 {
     LOCALE_IO setlocale;
 
+    m_importedDesignRules.clear();
+    m_importedFootprints.clear();
+
     if( m_reporter )
         m_reporter->Report( _( "Starting PADS binary PCB import" ), RPT_SEVERITY_INFO );
 
@@ -160,20 +163,45 @@ void PCB_IO_PADS_BINARY::loadBoard( const wxString& aFileName, BOARD& aBoard, bo
         m_converter->LoadKeepouts( m_parser->GetKeepouts() );
         m_converter->LoadDimensions( m_parser->GetDimensions() );
 
-        // Appending merges into a board that already has its own rule file, so nothing would
-        // ever load rules written beside the PADS source
-        if( aIsNewLoad )
-            m_converter->WriteDiffPairRules( aFileName, m_parser->GetDiffPairs() );
-
         m_converter->ReportStatistics();
+
+        // Appending must not replace the destination board's own design rules.
+        if( aIsNewLoad )
+        {
+            m_importedDesignRules = m_converter->GenerateDiffPairRules( m_parser->GetDiffPairs() );
+
+            // Retain independent definitions after the parser and converter are released.
+            for( FOOTPRINT* footprint : aBoard.Footprints() )
+            {
+                std::unique_ptr<FOOTPRINT> definition( static_cast<FOOTPRINT*>( footprint->Clone() ) );
+                definition->SetParent( nullptr );
+                definition->SetParentGroup( nullptr );
+                definition->ClearAllNets();
+                m_importedFootprints.push_back( std::move( definition ) );
+            }
+        }
     }
     catch( ... )
     {
+        m_importedDesignRules.clear();
+        m_importedFootprints.clear();
         clearLoadingState();
         throw;
     }
 
     clearLoadingState();
+}
+
+
+std::vector<FOOTPRINT*> PCB_IO_PADS_BINARY::GetImportedCachedLibraryFootprints()
+{
+    std::vector<FOOTPRINT*> result;
+    result.reserve( m_importedFootprints.size() );
+
+    for( const std::unique_ptr<FOOTPRINT>& footprint : m_importedFootprints )
+        result.push_back( static_cast<FOOTPRINT*>( footprint->Clone() ) );
+
+    return result;
 }
 
 

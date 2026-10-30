@@ -34,6 +34,8 @@
 #include <schematic.h>
 #include <settings/settings_manager.h>
 #include <scoped_set_reset.h>
+#include <sch_label.h>
+#include "../pin_pad_query_test_utils.h"
 
 BOOST_AUTO_TEST_CASE( ERCUnmappedPinsBindSharedInstancePaths )
 {
@@ -55,7 +57,15 @@ BOOST_AUTO_TEST_CASE( ERCUnmappedPinsBindSharedInstancePaths )
 
         void* IfaceOrAddress( int aId ) override
         {
-            BOOST_REQUIRE_EQUAL( aId, KIFACE_FOOTPRINT_PAD_NUMBERS );
+            // ERC first asks the legacy pad-number entry point and asks KIFACE_FOOTPRINT_PAD_QUERY
+            // only when that legacy answer is empty.  This face models a kiface built before the
+            // query API existed: it must not be asked anything else, and it does not provide the
+            // query, so an empty legacy answer stays "pad information unavailable".
+            BOOST_REQUIRE( aId == KIFACE_FOOTPRINT_PAD_NUMBERS || aId == KIFACE_FOOTPRINT_PAD_QUERY );
+
+            if( aId == KIFACE_FOOTPRINT_PAD_QUERY )
+                return nullptr;
+
             return reinterpret_cast<void*>( &Pads );
         }
     } face;
@@ -171,6 +181,108 @@ BOOST_AUTO_TEST_CASE( ERCUnmappedPinsBindSharedInstancePaths )
 
             for( SCH_MARKER* marker : markers )
                 screen.DeleteItem( marker );
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( ERCUnmappedFootprintOnlyPinsPreserveDiagnostics )
+{
+    using namespace PIN_PAD_QUERY_TEST;
+    auto& enabled = const_cast<ADVANCED_CFG&>( ADVANCED_CFG::GetCfg() ).m_ConnectivityEngine;
+    SCOPED_SET_RESET restore( enabled, enabled );
+
+    for( bool backend : { false, true } )
+    {
+        enabled = backend;
+
+        for( const wxString& footprint : { wxString( "Acceptance:Empty" ), wxString( "Acceptance:Missing" ) } )
+        {
+            BOOST_TEST_CONTEXT( "backend=" << backend << "; footprint=" << footprint )
+            {
+                DESIGN design;
+                FOOTPRINT_FACE face;
+                SCH_SYMBOL* symbol = design.Add( wxS( "U1" ), footprint, VECTOR2I( 0, 0 ) );
+                SCH_PIN* pin = symbol->GetPin( wxS( "1" ) );
+                BOOST_REQUIRE( symbol->GetLibSymbolRef()->GetEffectiveAssociatedFootprints().empty() );
+                design.schematic->RootScreen()->Append( new SCH_LABEL( pin->GetPosition(), wxS( "SOURCE_NET" ) ) );
+                design.schematic->ErcSettings().SetSeverity( ERCE_PIN_MAP_UNMAPPED_PIN, RPT_SEVERITY_WARNING );
+                design.schematic->RebuildConnectivity();
+                ERC_TESTER tester( design.schematic.get() );
+                tester.TestPinMap( &face, &design.schematic->Project() );
+                int matching = 0;
+
+                for( SCH_ITEM* item : design.schematic->RootScreen()->Items().OfType( SCH_MARKER_T ) )
+                {
+                    auto* marker = static_cast<SCH_MARKER*>( item );
+                    const auto error = std::static_pointer_cast<ERC_ITEM>( marker->GetRCItem() );
+
+                    if( error->GetErrorCode() == ERCE_PIN_MAP_UNMAPPED_PIN
+                            && error->GetMainItemID() == pin->m_Uuid )
+                    {
+                        ++matching;
+                        BOOST_CHECK( error->IsSheetSpecific() );
+                        BOOST_CHECK( error->MainItemHasSheetPath() );
+                    }
+                }
+
+                BOOST_CHECK_EQUAL( matching, 1 );
+            }
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( ERCUnmappedAssociatedNoConnectPinsKeepExistingMarkers )
+{
+    using namespace PIN_PAD_QUERY_TEST;
+    auto& enabled = const_cast<ADVANCED_CFG&>( ADVANCED_CFG::GetCfg() ).m_ConnectivityEngine;
+    SCOPED_SET_RESET restore( enabled, enabled );
+
+    for( bool backend : { false, true } )
+    {
+        enabled = backend;
+
+        for( ELECTRICAL_PINTYPE type : { ELECTRICAL_PINTYPE::PT_NC, ELECTRICAL_PINTYPE::PT_NIC } )
+        {
+            BOOST_TEST_CONTEXT( "backend=" << backend << "; pin type=" << static_cast<int>( type ) )
+            {
+                DESIGN design;
+                FOOTPRINT_FACE face;
+                SCH_SYMBOL* symbol = design.Add( wxS( "U1" ), wxS( "Acceptance:Missing" ), VECTOR2I( 0, 0 ) );
+                LIB_ID footprint;
+                BOOST_REQUIRE_LT( footprint.Parse( wxS( "Acceptance:Missing" ), true ), 0 );
+                symbol->GetLibSymbolRef()->SetAssociatedFootprints( { { footprint, wxString() } } );
+                symbol->UpdatePins();
+                SCH_PIN* pin = symbol->GetPin( wxS( "1" ) );
+                pin->SetType( type );
+                BOOST_REQUIRE( !pin->IsDangling() );
+                design.schematic->ErcSettings().SetSeverity( ERCE_PIN_MAP_UNMAPPED_PIN, RPT_SEVERITY_WARNING );
+                design.schematic->RebuildConnectivity();
+                ERC_TESTER tester( design.schematic.get() );
+                tester.TestPinMap( &face, &design.schematic->Project() );
+                int matching = 0;
+
+                for( SCH_ITEM* item : design.schematic->RootScreen()->Items().OfType( SCH_MARKER_T ) )
+                {
+                    const auto error = std::static_pointer_cast<ERC_ITEM>(
+                            static_cast<SCH_MARKER*>( item )->GetRCItem() );
+
+                    if( error->GetErrorCode() == ERCE_PIN_MAP_UNMAPPED_PIN
+                        && error->GetMainItemID() == pin->m_Uuid )
+                    {
+                        ++matching;
+                        BOOST_CHECK( error->IsSheetSpecific() );
+                        const wxString message = error->GetErrorMessage( false ).Lower();
+                        BOOST_CHECK( message.Contains( type == ELECTRICAL_PINTYPE::PT_NC
+                                                              ? wxS( "no-connect" ) : wxS( "unconnected" ) ) );
+                        BOOST_CHECK( !message.Contains( wxS( "is connected" ) ) );
+                    }
+                }
+
+                BOOST_CHECK_EQUAL( matching, 1 );
+                BOOST_CHECK( pin->GetType() == type );
+            }
         }
     }
 }

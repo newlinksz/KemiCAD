@@ -21,6 +21,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <kemi_format_profile.h>
 #include <iterator>
 #include <algorithm>
 #include <unordered_map>
@@ -386,9 +387,15 @@ void BOARD::SetProject( PROJECT* aProject, bool aReferenceOnly )
 
     m_project = aProject;
 
+    if( aProject && KEMI_FORMAT::HasKemiExt( aProject->GetProjectFullName() ) )
+        SetKemiOnly();
+
     if( aProject && !aReferenceOnly )
     {
         PROJECT_FILE& project = aProject->GetProjectFile();
+
+        if( project.IsKemiOnly() )
+            SetKemiOnly();
 
         // Link the design settings object to the project file
         project.m_BoardSettings = m_designSettings;
@@ -417,6 +424,32 @@ void BOARD::SetProject( PROJECT* aProject, bool aReferenceOnly )
 }
 
 
+void BOARD::SetFileName( const wxString& aFileName )
+{
+    m_fileName = aFileName;
+
+    if( KEMI_FORMAT::HasKemiExt( aFileName ) )
+        SetKemiOnly();
+}
+
+
+bool BOARD::IsKemiOnly() const
+{
+    return m_kemiOnly || KEMI_FORMAT::IsRestrictedOutput( m_fileName,
+            m_project ? m_project->GetProjectFullName() : wxString() );
+}
+
+
+void BOARD::SetKemiOnly()
+{
+    m_kemiOnly = true;
+    GetEmbeddedFiles()->SetKemiOnlyEmbeddedFiles();
+
+    for( FOOTPRINT* footprint : Footprints() )
+        footprint->SetKemiOnly();
+}
+
+
 void BOARD::ClearProject()
 {
     if( !m_project )
@@ -440,8 +473,36 @@ wxString BOARD::GetDesignRulesPath() const
         return wxEmptyString;
 
     wxFileName fn( m_fileName );
+
+    // Rules belong to the board, including boards outside the project directory.
+    if( !fn.MakeAbsolute( m_project->GetProjectPath() ) )
+        return wxEmptyString;
+
+    fn.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::DESIGN_RULES, KEMI_FORMAT::FLAVOR::KEMI ) );
+    const wxString kemiPath = fn.GetFullPath();
+
+    if( wxFileExists( kemiPath ) )
+        return kemiPath;
+
     fn.SetExt( FILEEXT::DesignRulesFileExtension );
-    return m_project->AbsolutePath( fn.GetFullName() );
+    const wxString legacyPath = fn.GetFullPath();
+
+    if( wxFileExists( legacyPath ) )
+        return legacyPath;
+
+    return KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::PCB,
+                                   wxFileName( m_fileName ).GetExt() ) ? kemiPath : legacyPath;
+}
+
+
+wxString BOARD::GetDesignRulesWritePath( bool aNativeRules ) const
+{
+    wxFileName path( GetDesignRulesPath() );
+
+    if( path.IsOk() && ( IsKemiOnly() || aNativeRules ) )
+        path.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::DESIGN_RULES, KEMI_FORMAT::FLAVOR::KEMI ) );
+
+    return path.GetFullPath();
 }
 
 
@@ -1579,6 +1640,12 @@ void BOARD::Add( BOARD_ITEM* aBoardItem, ADD_MODE aMode, bool aSkipConnectivity 
     case PCB_FOOTPRINT_T:
     {
         FOOTPRINT* footprint = static_cast<FOOTPRINT*>( aBoardItem );
+
+        if( !m_kemiOnly && footprint->IsKemiOnly() )
+            SetKemiOnly();
+
+        if( IsKemiOnly() )
+            footprint->SetKemiOnly();
 
         if( aMode == ADD_MODE::APPEND || aMode == ADD_MODE::BULK_APPEND )
             m_footprints.push_back( footprint );
@@ -4380,7 +4447,15 @@ void BOARD::SaveToHistory( const wxString& aProjectPath, std::vector<HISTORY_FIL
         PCB_IO_KICAD_SEXPR pi;
         STRING_FORMATTER   formatter;
 
-        pi.FormatBoardToFormatter( &formatter, this, nullptr );
+        wxFileName nativePath( boardPath );
+        nativePath.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PCB, KEMI_FORMAT::FLAVOR::KEMI ) );
+        boardPath = nativePath.GetFullPath();
+
+        rel = boardPath.Mid( projPath.length() );
+        pi.FormatBoardToFormatter( &formatter, this, nullptr,
+                                   IsKemiOnly() ? KEMI_FORMAT::FLAVOR::KEMI
+                                                : KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PCB,
+                                                                              boardPath ) );
 
         HISTORY_FILE_DATA entry;
         entry.relativePath = rel;

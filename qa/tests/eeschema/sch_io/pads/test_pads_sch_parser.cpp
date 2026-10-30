@@ -2249,11 +2249,9 @@ BOOST_AUTO_TEST_CASE( CreateHierarchicalSheet_SetsFilename )
     SCH_SHEET* sheet = builder.CreateHierarchicalSheet( 2, 3, rootSheet, wxT( "my_design.asc" ) );
     BOOST_REQUIRE( sheet != nullptr );
 
-    // Verify sheet filename was set
+    // Verify sheet filename was set (NN-stem.kemi_sch)
     wxString filename = sheet->GetField( FIELD_T::SHEET_FILENAME )->GetText();
-    BOOST_CHECK( filename.Contains( wxT( "my_design" ) ) );
-    BOOST_CHECK( filename.Contains( wxT( "sheet2" ) ) );
-    BOOST_CHECK( filename.EndsWith( wxT( ".kicad_sch" ) ) );
+    BOOST_CHECK_EQUAL( filename, wxT( "02-my_design.kemi_sch" ) );
 
     delete rootSheet;
 }
@@ -2276,9 +2274,9 @@ BOOST_AUTO_TEST_CASE( CreateHierarchicalSheet_SetsSheetName )
     SCH_SHEET* sheet = builder.CreateHierarchicalSheet( 3, 5, rootSheet, wxT( "design.txt" ) );
     BOOST_REQUIRE( sheet != nullptr );
 
-    // Verify sheet name was set
+    // Verify sheet name matches the file stem
     wxString name = sheet->GetField( FIELD_T::SHEET_NAME )->GetText();
-    BOOST_CHECK( name.Contains( wxT( "3" ) ) );
+    BOOST_CHECK_EQUAL( name, wxT( "03-design" ) );
 
     delete rootSheet;
 }

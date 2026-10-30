@@ -36,6 +36,7 @@
 #include <optional>
 #include <set>
 #include <project_pcb.h>
+#include <richio.h>
 
 namespace CV {
 
@@ -66,45 +67,78 @@ int testFootprintLink( const wxString& aFootprint, PROJECT* aProject )
 }
 
 
-void getFootprintPadNumbers( const wxString& aFootprint, PROJECT* aProject, std::set<wxString>& aPadNumbers )
+bool queryFootprintPadNumbers( const wxString& aFootprint, PROJECT* aProject,
+                               std::set<wxString>& aPadNumbers, wxString& aError )
 {
+    aPadNumbers.clear();
+    aError.clear();
     LIB_ID fpID;
 
     if( fpID.Parse( aFootprint ) >= 0 )
-        return;
-
-    if( std::optional<LIBRARY_MANAGER_ADAPTER*> mgr =
-                Pgm().GetLibraryManager().Adapter( LIBRARY_TABLE_TYPE::FOOTPRINT ) )
     {
-        ( *mgr )->BlockUntilLoaded();
+        aError = _( "Invalid footprint identifier." );
+        return false;
     }
 
-    FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( aProject );
-
-    if( !adapter )
-        return;
-
-    adapter->LoadOne( fpID.GetLibNickname() );
-
-    std::unique_ptr<FOOTPRINT> footprint;
-
-    // This runs across the kiface boundary, so let nothing escape into the caller's ERC loop.
+    // This runs across the kiface boundary.  Preserve load failures as a separate state
+    // from a successfully loaded mechanical footprint with no numbered pads.
     try
     {
-        footprint.reset( adapter->LoadFootprint( fpID, false ) );
+        if( std::optional<LIBRARY_MANAGER_ADAPTER*> mgr =
+                    Pgm().GetLibraryManager().Adapter( LIBRARY_TABLE_TYPE::FOOTPRINT ) )
+        {
+            ( *mgr )->BlockUntilLoaded();
+        }
+
+        FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( aProject );
+
+        if( !adapter )
+        {
+            aError = _( "Footprint library adapter is unavailable." );
+            return false;
+        }
+
+        adapter->LoadOne( fpID.GetLibNickname() );
+        std::unique_ptr<FOOTPRINT> footprint( adapter->LoadFootprint( fpID, false ) );
+
+        if( !footprint )
+        {
+            aError = _( "Footprint could not be loaded." );
+            return false;
+        }
+
+        for( const PAD* pad : footprint->Pads() )
+        {
+            // Numbered NPTH pads are mechanical; they do not give a pin a pad.
+            if( pad->CanHaveNumber() && !pad->GetNumber().IsEmpty() )
+                aPadNumbers.insert( pad->GetNumber() );
+        }
+
+        return true;
+    }
+    catch( const IO_ERROR& error )
+    {
+        aError = error.What();
+    }
+    catch( const std::exception& error )
+    {
+        aError = wxString::FromUTF8( error.what() );
     }
     catch( ... )
     {
+        aError = _( "Unexpected error loading footprint pad information." );
     }
 
-    if( !footprint )
-        return;
+    aPadNumbers.clear();
+    return false;
+}
 
-    for( const PAD* pad : footprint->Pads() )
-    {
-        if( !pad->GetNumber().IsEmpty() )
-            aPadNumbers.insert( pad->GetNumber() );
-    }
+
+void getFootprintPadNumbers( const wxString& aFootprint, PROJECT* aProject,
+                             std::set<wxString>& aPadNumbers )
+{
+    wxString error;
+    queryFootprintPadNumbers( aFootprint, aProject, aPadNumbers, error );
 }
 
 
@@ -149,6 +183,7 @@ static struct IFACE : public KIFACE_BASE
             return (void*) testFootprintLink;
 
         case KIFACE_FOOTPRINT_PAD_NUMBERS: return (void*) getFootprintPadNumbers;
+        case KIFACE_FOOTPRINT_PAD_QUERY: return (void*) queryFootprintPadNumbers;
 
         default:
             return nullptr;

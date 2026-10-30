@@ -83,7 +83,14 @@ int CLI::JOBSET_RUN_COMMAND::doPerform( KIWAY& aKiway )
 
     JOBSET jobFile( jobsFilePath.ToStdString() );
 
-    jobFile.LoadFromFile();
+    if( !jobFile.LoadFromFile() )
+    {
+        CLI_REPORTER::GetInstance().Report(
+                jobFile.GetLoadError().IsEmpty() ? _( "Could not load jobs file." )
+                                               : jobFile.GetLoadError(),
+                RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
+    }
 
     JOBS_RUNNER jobsRunner( &aKiway, &jobFile, project, CLI_REPORTER::GetInstance(), nullptr );
 

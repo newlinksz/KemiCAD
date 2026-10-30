@@ -23,6 +23,7 @@
 #include <kiplatform/environment.h>
 #include <kiplatform/ui.h>
 #include <pgm_base.h>
+#include <kemi_format_profile.h>
 #include <settings/kicad_settings.h>
 #include <settings/settings_manager.h>
 #include <widgets/std_bitmap_button.h>
@@ -327,7 +328,14 @@ void TEMPLATE_WIDGET::onEditTemplate( wxCommandEvent& event )
     }
 
     wxString filename;
-    bool found = dir.GetFirst( &filename, "*.kicad_pro", wxDIR_FILES );
+    bool found = dir.GetFirst( &filename, wxS( "*." ) + wxString::FromUTF8( KEMI_FORMAT::Ext(
+            KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ) ), wxDIR_FILES );
+
+    if( !found )
+    {
+        found = dir.GetFirst( &filename, wxS( "*." ) + wxString::FromUTF8( KEMI_FORMAT::Ext(
+                KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::LEGACY ) ), wxDIR_FILES );
+    }
 
     if( !found )
     {
@@ -416,7 +424,7 @@ void TEMPLATE_WIDGET::onDuplicateTemplate( wxCommandEvent& event )
 
     sourceDir.Traverse( traverser );
 
-    if( !traverser.GetErrors().empty() )
+    if( !traverser.CopyFiles() )
     {
         DisplayErrorMessage( m_dialog, traverser.GetErrors() );
         return;

@@ -28,6 +28,7 @@
 #include <sch_sheet_pin.h>
 #include <sch_symbol.h>
 #include <schematic.h>
+#include <kemi_format_profile.h>
 #include <wildcards_and_files_ext.h>
 #include <layer_ids.h>
 #include <template_fieldnames.h>
@@ -784,19 +785,22 @@ SCH_SHEET* PADS_SCH_SCHEMATIC_BUILDER::CreateHierarchicalSheet( int aSheetNumber
     SCH_SCREEN* screen = new SCH_SCREEN( m_schematic );
     sheet->SetScreen( screen );
 
-    // Generate sheet filename based on base filename and sheet number
+    // Match OrCAD import naming: "02-BaseName.kemi_sch" / sheet title "02-BaseName".
     wxFileName fn( aBaseFilename );
-    wxString sheetFilename = wxString::Format( wxT( "%s_sheet%d.%s" ),
-                                               fn.GetName(),
-                                               aSheetNumber,
-                                               FILEEXT::KiCadSchematicFileExtension );
+    wxString   stem = fn.GetName();
+    stem.Replace( wxT( "." ), wxT( "" ) );
+    stem.Replace( wxT( " " ), wxT( "" ) );
+    stem.Trim( true ).Trim( false );
 
-    // Set the sheet filename field
+    if( stem.IsEmpty() )
+        stem = wxT( "Sheet" );
+
+    wxString sheetStem = wxString::Format( wxT( "%02d-%s" ), aSheetNumber, stem );
+    wxString sheetFilename = sheetStem + wxT( "." )
+                             + KEMI_FORMAT::Profile( KEMI_FORMAT::DOC::SCHEMATIC ).kemiExt;
+
     sheet->GetField( FIELD_T::SHEET_FILENAME )->SetText( sheetFilename );
-
-    // Set sheet name
-    wxString sheetName = wxString::Format( wxT( "Sheet %d" ), aSheetNumber );
-    sheet->GetField( FIELD_T::SHEET_NAME )->SetText( sheetName );
+    sheet->GetField( FIELD_T::SHEET_NAME )->SetText( sheetStem );
 
     // Set full path for the screen if project is available
     if( m_schematic->IsValid() )

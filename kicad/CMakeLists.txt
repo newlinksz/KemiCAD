@@ -145,21 +145,32 @@ add_executable( kicad WIN32 MACOSX_BUNDLE
     ${KICAD_RESOURCES}
     )
 
-add_executable( kicad-cli WIN32
+if( WIN32 )
+    # KemiCAD 1.0.1: the main program ships as kemicad.exe. The CMake target stays "kicad" so
+    # internal deps, install rules and kiface lookups are unchanged.
+    set_target_properties( kicad PROPERTIES OUTPUT_NAME kemicad )
+endif()
+
+add_executable( kemicad-cli WIN32
     kicad_cli.cpp
     ${KICAD_CLI_SRCS}
     ${KICAD_EXTRA_SRCS}
     ${KICAD_RESOURCES}
     )
 
+if( WIN32 )
+    # Same rc template as kemicad.exe; only the per-exe names differ (resources/msw/kicad.rc).
+    target_compile_definitions( kemicad-cli PRIVATE $<$<COMPILE_LANGUAGE:RC>:KEMI_RC_CLI> )
+endif()
+
 if( MSVC )
    # The cli needs subsystem:console or else we can't link wmain/main
-   set_target_properties(kicad-cli PROPERTIES COMPILE_DEFINITIONS_DEBUG "_CONSOLE")
-   set_target_properties(kicad-cli PROPERTIES COMPILE_DEFINITIONS_RELWITHDEBINFO "_CONSOLE")
-   set_target_properties(kicad-cli PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
-   set_target_properties(kicad-cli PROPERTIES LINK_FLAGS_RELWITHDEBINFO "/SUBSYSTEM:CONSOLE")
-   set_target_properties(kicad-cli PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:CONSOLE")
-   set_target_properties(kicad-cli PROPERTIES LINK_FLAGS_MINSIZEREL "/SUBSYSTEM:CONSOLE")
+   set_target_properties(kemicad-cli PROPERTIES COMPILE_DEFINITIONS_DEBUG "_CONSOLE")
+   set_target_properties(kemicad-cli PROPERTIES COMPILE_DEFINITIONS_RELWITHDEBINFO "_CONSOLE")
+   set_target_properties(kemicad-cli PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+   set_target_properties(kemicad-cli PROPERTIES LINK_FLAGS_RELWITHDEBINFO "/SUBSYSTEM:CONSOLE")
+   set_target_properties(kemicad-cli PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:CONSOLE")
+   set_target_properties(kemicad-cli PROPERTIES LINK_FLAGS_MINSIZEREL "/SUBSYSTEM:CONSOLE")
 
    # Allow running from build dir
    add_custom_command( TARGET kicad POST_BUILD
@@ -191,11 +202,11 @@ if( APPLE )
         ${wxWidgets_LIBRARIES}
         )
 
-    set_target_properties( kicad-cli PROPERTIES
+    set_target_properties( kemicad-cli PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${OSX_BUNDLE_BUILD_BIN_DIR}
         )
 
-    target_link_libraries( kicad-cli
+    target_link_libraries( kemicad-cli
         nlohmann_json
         common
         pads_common
@@ -214,7 +225,7 @@ else()
         ${wxWidgets_LIBRARIES}
         )
 
-    target_link_libraries( kicad-cli
+    target_link_libraries( kemicad-cli
         nlohmann_json
         common
         gal
@@ -227,7 +238,7 @@ else()
 endif()
 
 target_link_libraries( kicad pcm )
-target_link_libraries( kicad-cli pcm )
+target_link_libraries( kemicad-cli pcm )
 
 install( TARGETS kicad
     DESTINATION ${KICAD_BIN}
@@ -235,7 +246,7 @@ install( TARGETS kicad
     )
 
 if( NOT APPLE )
-    install( TARGETS kicad-cli
+    install( TARGETS kemicad-cli
         DESTINATION ${KICAD_BIN}
         COMPONENT binary
         )
@@ -255,7 +266,7 @@ if( APPLE )
 
     set_target_properties( kicad PROPERTIES INSTALL_RPATH
             "@executable_path/../Frameworks" )
-    set_target_properties( kicad-cli PROPERTIES INSTALL_RPATH
+    set_target_properties( kemicad-cli PROPERTIES INSTALL_RPATH
             "@executable_path/../Frameworks" )
 
     install( CODE "

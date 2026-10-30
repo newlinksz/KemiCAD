@@ -24,6 +24,7 @@
 #include <dialogs/dialog_schematic_setup.h>
 #include <dialogs/dialog_erc.h>
 #include <kiway.h>
+#include <ki_exception.h>
 #include <symbol_edit_frame.h>
 #include <dialogs/panel_base_display_options.h>
 #include <filename_resolver.h>
@@ -190,11 +191,10 @@ void SCH_EDIT_FRAME::ShowSchematicSetupDialog( const wxString& aInitialPage )
 
 void SCH_EDIT_FRAME::saveProjectSettings()
 {
-    wxFileName fn = Schematic().RootScreen()->GetFileName();  //ConfigFileName
+    // Save the loaded project, including its native extension and any independent project name.
+    wxFileName fn( Prj().GetProjectFullName() );
 
-    fn.SetExt( FILEEXT::ProjectFileExtension );
-
-    if( !fn.HasName() || !IsWritable( fn, false ) )
+    if( Prj().IsNullProject() || Prj().IsReadOnly() || !fn.HasName() || !IsWritable( fn, false ) )
         return;
 
     Schematic().RecordERCExclusions();
@@ -281,7 +281,8 @@ void SCH_EDIT_FRAME::saveProjectSettings()
         }
     }
 
-    GetSettingsManager()->SaveProject( fn.GetFullPath() );
+    if( !GetSettingsManager()->SaveProject( fn.GetFullPath() ) )
+        THROW_IO_ERROR( _( "Could not save the schematic's project settings." ) );
 }
 
 

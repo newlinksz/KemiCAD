@@ -28,6 +28,7 @@
 #include <deque>
 #include <set>
 #include <memory>
+#include <string>
 #include <wx/arrstr.h>
 #include <sch_io/sch_io_mgr.h>
 #include <sch_screen.h>
@@ -39,6 +40,7 @@ class PROGRESS_REPORTER;
 class SCH_IO;
 class SCH_BASE_FRAME;
 class LIB_LOGGER;
+class PROJECT;
 
 
 enum class SYMBOL_NAME_FILTER
@@ -125,8 +127,19 @@ public:
 
     /// Save stored modifications using a plugin. aBuffer decides whether the changes
     /// should be cached or stored directly to the disk (for #SCH_IO_KICAD_LEGACY).
+    /// Set aUpdateOriginal false when the caller commits originals after the complete save.
     bool SaveBuffer( SYMBOL_BUFFER& aSymbolBuf, const wxString& aFileName, SCH_IO* aPlugin,
-                     bool aBuffer );
+                     bool aBuffer, bool aUpdateOriginal = true );
+
+    /// Load a native library and retain the disk revision belonging to these edit buffers.
+    void Load( const wxString& aFileName );
+
+    /// Reload changed native libraries only when no local edits would be discarded.
+    void ReloadIfChanged();
+
+    /// Save the complete edit buffer, rejecting external changes before preparing any writes.
+    /// Native source identity is checked from the paths; aIsOriginal applies to other plugins.
+    bool SaveLibrary( const wxString& aFileName, SCH_IO* aPlugin, bool aIsOriginal = true );
 
     /// Return a symbol buffer with #LIB_SYMBOL holding a symbolic alias.
     std::shared_ptr<SYMBOL_BUFFER> GetBuffer( const wxString& aAlias ) const;
@@ -172,12 +185,18 @@ private:
      */
     int removeChildSymbols( const SYMBOL_BUFFER& aSymbolBuf );
 
+    bool sourceChanged() const;
+
 private:
     std::deque<std::shared_ptr<SYMBOL_BUFFER>> m_symbols;
     std::deque<std::shared_ptr<SYMBOL_BUFFER>> m_added;     ///< Buffer for added synbols until lib is saved
     std::deque<std::shared_ptr<SYMBOL_BUFFER>> m_deleted;   ///< Buffer for deleted symbols until lib is saved
     const wxString                             m_libName;   ///< Buffered library name
     int                                        m_hash;
+    wxString                                   m_sourceFileName;
+    std::map<wxString, std::string>              m_sourceRevision; ///< Loaded file names and content digests.
+    bool                                       m_sourceLoadError = false;
+    bool                                       m_kemiOnly = false;
 };
 
 
@@ -189,6 +208,9 @@ class SYMBOL_LIBRARY_MANAGER
 {
 public:
     SYMBOL_LIBRARY_MANAGER( SCH_BASE_FRAME& aFrame );
+
+    /// Manage libraries without an editor window, for non-interactive callers.
+    explicit SYMBOL_LIBRARY_MANAGER( PROJECT& aProject );
     virtual ~SYMBOL_LIBRARY_MANAGER();
 
     int GetHash() const;
@@ -198,9 +220,9 @@ public:
     /**
      * Return a library hash value to determine if it has changed.
      *
-     * For buffered libraries, it returns a number corresponding to the number of modifications.
-     * For original libraries, hash is computed basing on the library URI. Returns -1 when the
-     * requested library does not exist.
+     * Mix the library URI and disk stamp with the edit count of buffered libraries, so external
+     * changes in either native or legacy symbol files also invalidate the library tree.
+     * Returns -1 when the requested library does not exist.
      */
     int GetLibraryHash( const wxString& aLibrary ) const;
 
@@ -209,7 +231,9 @@ public:
      */
     wxArrayString GetLibraryNames() const;
 
-    std::list<LIB_SYMBOL*> EnumerateSymbols( const wxString& aLibrary ) const;
+    /// Refresh clean edit buffers before enumeration unless the active editor owns a stale clone.
+    std::list<LIB_SYMBOL*> EnumerateSymbols( const wxString& aLibrary,
+                                           bool aReloadCleanBuffer = true );
 
     /**
      * Create an empty library and adds it to the library table.
@@ -284,8 +308,10 @@ public:
      * Return the working buffer holding the symbol/screen pair, or nullptr when none exists.
      *
      * The manager retains ownership.
+     * Reload a clean native buffer only when the caller also refreshes its private working copy.
      */
-    SYMBOL_BUFFER* GetBuffer( const wxString& aSymbolName, const wxString& aLibrary );
+    SYMBOL_BUFFER* GetBuffer( const wxString& aSymbolName, const wxString& aLibrary,
+                              bool aReloadCleanBuffer = false );
 
     /**
      * Return true if symbol with a specific alias exists in library (either original one or
@@ -398,6 +424,8 @@ public:
 protected:
     virtual void OnDataChanged() const {}
 
+    PROJECT& project() const;
+
     /// Extract library name basing on the file name.
     static wxString getLibraryName( const wxString& aFilePath );
 
@@ -416,8 +444,9 @@ protected:
     LIB_BUFFER& getLibraryBuffer( const wxString& aLibrary );
 
 protected:
-    std::map<wxString, LIB_BUFFER> m_libs;       ///< The library buffers
-    SCH_BASE_FRAME&                m_frame;      ///< Parent frame
+    std::map<wxString, LIB_BUFFER> m_libs;             ///< The library buffers
+    SCH_BASE_FRAME*                m_frame = nullptr; ///< Optional parent for error dialogs.
+    PROJECT*                       m_project = nullptr; ///< Used without a parent frame.
     LIB_LOGGER*                    m_logger;
 };
 

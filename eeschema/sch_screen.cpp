@@ -33,6 +33,7 @@
 #include <plotters/plotter.h>
 #include <sch_plotter.h>
 #include <project.h>
+#include <kemi_format_profile.h>
 #include <project_sch.h>
 #include <reporter.h>
 #include <trace_helpers.h>
@@ -138,6 +139,8 @@ void SCH_SCREEN::SetFileName( const wxString& aFileName )
     // wxASSERT( aFileName.IsEmpty() || wxIsAbsolutePath( aFileName ) );
 
     m_fileName = aFileName;
+    if( KEMI_FORMAT::HasKemiExt( aFileName ) )
+        SetKemiOnly();
 }
 
 

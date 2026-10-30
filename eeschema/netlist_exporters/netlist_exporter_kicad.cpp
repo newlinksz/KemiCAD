@@ -34,8 +34,15 @@ bool NETLIST_EXPORTER_KICAD::writeNetlist( const wxString& aOutFileName, unsigne
 {
     try
     {
+        m_exportVariant.clear();
+
+        if( !ValidateFootprintPadMappings( GNL_ALL | GNL_OPT_KICAD, aReporter ) )
+            return false;
+
         PRETTIFIED_FILE_OUTPUTFORMATTER formatter( aOutFileName );
-        Format( &formatter, GNL_ALL | GNL_OPT_KICAD );
+
+        if( !Format( &formatter, GNL_ALL | GNL_OPT_KICAD, &aReporter ) )
+            return false;
         formatter.Finish();
     }
 
@@ -49,13 +56,19 @@ bool NETLIST_EXPORTER_KICAD::writeNetlist( const wxString& aOutFileName, unsigne
 }
 
 
-void NETLIST_EXPORTER_KICAD::Format( OUTPUTFORMATTER* aOut, int aCtl )
+bool NETLIST_EXPORTER_KICAD::Format( OUTPUTFORMATTER* aOut, int aCtl, REPORTER* aReporter )
 {
     // pcbnew resolves variants itself from the base design.
     m_exportVariant = ( aCtl & GNL_OPT_KICAD ) ? wxString() : m_schematic->GetCurrentVariant();
 
     CONNECTIVITY_SCOPE connectivity( *this );
+    REPORTER& reporter = aReporter ? *aReporter : WXLOG_REPORTER::GetInstance();
+
+    if( !ValidateFootprintPadMappings( aCtl, reporter ) )
+        return false;
+
     std::unique_ptr<XNODE> xroot( makeRoot( aCtl ) );
 
     xroot->Format( aOut );
+    return true;
 }

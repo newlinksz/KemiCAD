@@ -5,7 +5,7 @@
 # files, stroke font files,
 
 find_program(KICAD_CLI
-    NAMES kicad-cli
+    NAMES kemicad-cli kicad-cli
 )
 
 if (KICAD_CLI)

@@ -179,6 +179,7 @@ fillet
 filter_ratio
 font
 format
+format_version
 footprint
 footprints
 fp_arc
@@ -243,6 +244,8 @@ keepout
 keep_end_layers
 keep_text_aligned
 keep_upright
+kemi_footprint
+kemi_pcb
 kicad_pcb
 knockout
 last_trace_width

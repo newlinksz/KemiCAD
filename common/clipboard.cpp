@@ -29,11 +29,69 @@
 
 #include <io/csv.h>
 
+#include <wx/utils.h>
+
+#ifdef __WINDOWS__
+#include <wx/msw/wrapwin.h>
+#endif
+
+namespace
+{
+// Another process (a remote-desktop clipboard sync, a clipboard manager) can hold the Windows
+// clipboard for a moment after every change, and OpenClipboard/OleGetClipboard fail meanwhile.
+// One attempt would silently lose the copy or paste, so retry briefly there.
+#ifdef __WINDOWS__
+constexpr int CLIPBOARD_ATTEMPTS = 20;
+#else
+constexpr int CLIPBOARD_ATTEMPTS = 1;
+#endif
+
+bool openClipboard()
+{
+    for( int attempt = 0; attempt < CLIPBOARD_ATTEMPTS; ++attempt )
+    {
+        if( attempt )
+            wxMilliSleep( 10 );
+
+        if( wxTheClipboard->Open() )
+            return true;
+    }
+
+    return false;
+}
+
+
+bool getClipboardData( wxDataObject& aData )
+{
+    for( int attempt = 0; attempt < CLIPBOARD_ATTEMPTS; ++attempt )
+    {
+        if( attempt )
+        {
+            wxMilliSleep( 10 );
+
+#ifdef __WINDOWS__
+            // After OleSetClipboard() + OleFlushClipboard() the first OleGetClipboard() in the
+            // process can fail with CLIPBRD_E_CANT_OPEN although nobody holds the clipboard
+            // (seen when a clipboard listener such as a remote-desktop sync rewrites it).
+            // A plain Win32 open/close resets that state so the next GetData() succeeds.
+            if( ::OpenClipboard( nullptr ) )
+                ::CloseClipboard();
+#endif
+        }
+
+        if( wxTheClipboard->GetData( aData ) )
+            return true;
+    }
+
+    return false;
+}
+} // namespace
+
 bool SaveClipboard( const std::string& aTextUTF8 )
 {
     wxLogNull doNotLog; // disable logging of failed clipboard actions
 
-    if( wxTheClipboard->Open() )
+    if( openClipboard() )
     {
         // Store the UTF8 string as Unicode string in clipboard:
         bool saved = wxTheClipboard->SetData(
@@ -57,7 +115,7 @@ bool SaveClipboard( const std::string& aTextUTF8, const std::vector<CLIPBOARD_MI
 
     wxLogNull doNotLog; // disable logging of failed clipboard actions
 
-    if( wxTheClipboard->Open() )
+    if( openClipboard() )
     {
         wxDataObjectComposite* data = new wxDataObjectComposite();
         data->Add( new wxTextDataObject( wxString( aTextUTF8.c_str(), wxConvUTF8 ) ), true );
@@ -114,7 +172,7 @@ std::string GetClipboardUTF8()
     // wxTextEntry::CanPaste() called during UPDATE_UI processing) opened the clipboard and
     // didn't close it. We handle this by reusing the existing session.
     bool wasAlreadyOpen = wxTheClipboard->IsOpened();
-    bool isOpen = wasAlreadyOpen || wxTheClipboard->Open();
+    bool isOpen = wasAlreadyOpen || openClipboard();
 
     if( isOpen )
     {
@@ -122,7 +180,7 @@ std::string GetClipboardUTF8()
         {
             wxCustomDataObject data( wxDataFormat( wxS( "application/kicad" ) ) );
 
-            if( wxTheClipboard->GetData( data ) )
+            if( getClipboardData( data ) )
             {
                 result.assign( static_cast<const char*>( data.GetData() ), data.GetSize() );
 
@@ -137,7 +195,7 @@ std::string GetClipboardUTF8()
             || wxTheClipboard->IsSupported( wxDF_UNICODETEXT ) )
         {
             wxTextDataObject data;
-            wxTheClipboard->GetData( data );
+            getClipboardData( data );
 
             // The clipboard is expected containing a Unicode string, so return it
             // as UTF8 string
@@ -159,7 +217,7 @@ std::unique_ptr<wxBitmap> GetImageFromClipboard()
 
     // Check if clipboard is already open (same handling as GetClipboardUTF8)
     bool wasAlreadyOpen = wxTheClipboard->IsOpened();
-    bool isOpen = wasAlreadyOpen || wxTheClipboard->Open();
+    bool isOpen = wasAlreadyOpen || openClipboard();
 
     if( isOpen )
     {
@@ -167,7 +225,7 @@ std::unique_ptr<wxBitmap> GetImageFromClipboard()
         {
             wxBitmapDataObject data;
 
-            if( wxTheClipboard->GetData( data ) )
+            if( getClipboardData( data ) )
             {
                 bitmap = std::make_unique<wxBitmap>( data.GetBitmap() );
             }
@@ -178,7 +236,7 @@ std::unique_ptr<wxBitmap> GetImageFromClipboard()
         {
             wxCustomDataObject pngData( pngFormat );
 
-            if( wxTheClipboard->GetData( pngData ) && pngData.GetSize() > 0 )
+            if( getClipboardData( pngData ) && pngData.GetSize() > 0 )
             {
                 wxMemoryInputStream stream( pngData.GetData(), pngData.GetSize() );
                 wxImage             img( stream, wxBITMAP_TYPE_PNG );
@@ -192,7 +250,7 @@ std::unique_ptr<wxBitmap> GetImageFromClipboard()
         {
             wxFileDataObject data;
 
-            if( wxTheClipboard->GetData( data ) && data.GetFilenames().size() == 1 )
+            if( getClipboardData( data ) && data.GetFilenames().size() == 1 )
             {
                 wxImage img( data.GetFilenames()[0] );
                 bitmap = std::make_unique<wxBitmap>( img );
@@ -214,7 +272,7 @@ bool SaveTabularDataToClipboard( const std::vector<std::vector<wxString>>& aData
 {
     wxLogNull doNotLog; // disable logging of failed clipboard actions
 
-    if( wxTheClipboard->Open() )
+    if( openClipboard() )
     {
         wxDataObjectComposite* data = new wxDataObjectComposite();
 
@@ -255,7 +313,7 @@ bool GetTabularDataFromClipboard( std::vector<std::vector<wxString>>& aData )
 
     // Check if clipboard is already open (same handling as GetClipboardUTF8)
     bool wasAlreadyOpen = wxTheClipboard->IsOpened();
-    bool isOpen = wasAlreadyOpen || wxTheClipboard->Open();
+    bool isOpen = wasAlreadyOpen || openClipboard();
 
     if( isOpen )
     {
@@ -263,7 +321,7 @@ bool GetTabularDataFromClipboard( std::vector<std::vector<wxString>>& aData )
         {
             wxTextDataObject data;
 
-            if( wxTheClipboard->GetData( data ) )
+            if( getClipboardData( data ) )
                 ok = AutoDecodeCSV( data.GetText(), aData );
         }
 

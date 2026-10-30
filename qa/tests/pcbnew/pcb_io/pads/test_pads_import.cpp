@@ -20,9 +20,11 @@
 #include <pcbnew_utils/board_test_utils.h>
 #include <pcbnew_utils/board_file_utils.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
+#include <qa_utils/file_utils.h>
 
 #include <pcb_io/pads/pcb_io_pads.h>
 #include <pcb_io/pads/pads_parser.h>
+#include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
 #include <base_units.h>
 #include <layer_ids.h>
 #include <padstack.h>
@@ -38,6 +40,8 @@
 #include <pcb_dimension.h>
 #include <project/net_settings.h>
 #include <board_stackup_manager/board_stackup.h>
+#include <connectivity/connectivity_data.h>
+#include <algorithm>
 #include <map>
 #include <set>
 
@@ -658,6 +662,380 @@ BOOST_AUTO_TEST_CASE( ImportFilledCopperSingleOutline )
 
 
 /**
+ * VOIDOUT holes must survive the native writer, which serializes filled outlines rather than
+ * separate hole contours. Losing a hole changes both copper geometry and an isolated via's net
+ * when the fresh board builds connectivity after reopening.
+ */
+BOOST_AUTO_TEST_CASE( FilledZoneHolesAndViaNetsSurviveNativeRoundTrip )
+{
+    const wxString input = KI_TEST::GetPcbnewTestDataDir()
+                           + "plugins/pads/synthetic_zone_holes.asc";
+    PCB_IO_PADS importer;
+    std::unique_ptr<BOARD> board = importer.LoadBoard( input, nullptr, nullptr );
+    BOOST_REQUIRE( board );
+    BOOST_REQUIRE_EQUAL( board->Tracks().size(), 2u );
+
+    std::map<wxString, std::pair<VECTOR2I, wxString>> expectedVias;
+    VECTOR2I holePosition;
+    VECTOR2I copperPosition;
+    int powerCount = 0;
+    int groundCount = 0;
+
+    for( PCB_TRACK* track : board->Tracks() )
+    {
+        PCB_VIA* via = dynamic_cast<PCB_VIA*>( track );
+        BOOST_REQUIRE( via );
+        expectedVias.emplace( via->m_Uuid.AsString(),
+                              std::make_pair( via->GetPosition(), via->GetNetname() ) );
+
+        if( via->GetNetname() == "VCC" )
+        {
+            holePosition = via->GetPosition();
+            ++powerCount;
+        }
+        else if( via->GetNetname() == "AGND" )
+        {
+            copperPosition = via->GetPosition();
+            ++groundCount;
+        }
+    }
+
+    BOOST_REQUIRE_EQUAL( powerCount, 1 );
+    BOOST_REQUIRE_EQUAL( groundCount, 1 );
+
+    auto checkGeometryAndNets = [&]( BOARD& aBoard )
+    {
+        BOOST_REQUIRE_EQUAL( aBoard.Zones().size(), 1u );
+        ZONE* zone = aBoard.Zones().front();
+        BOOST_CHECK_EQUAL( zone->GetNetname(), "AGND" );
+        const std::shared_ptr<SHAPE_POLY_SET>& fill = zone->GetFilledPolysList( F_Cu );
+        BOOST_REQUIRE( fill );
+        BOOST_CHECK( fill->Contains( copperPosition ) );
+        BOOST_CHECK_MESSAGE( !fill->Contains( holePosition ), "VOIDOUT hole became filled copper" );
+        const double squareMm = static_cast<double>( pcbIUScale.mmToIU( 1.0 ) )
+                                * pcbIUScale.mmToIU( 1.0 );
+        BOOST_CHECK_CLOSE( fill->Area() / squareMm, 96.0, 0.000001 );
+        BOOST_REQUIRE_EQUAL( aBoard.Tracks().size(), expectedVias.size() );
+
+        for( PCB_TRACK* track : aBoard.Tracks() )
+        {
+            PCB_VIA* via = dynamic_cast<PCB_VIA*>( track );
+            BOOST_REQUIRE( via );
+            auto expected = expectedVias.find( via->m_Uuid.AsString() );
+            BOOST_REQUIRE( expected != expectedVias.end() );
+            BOOST_CHECK( via->GetPosition() == expected->second.first );
+            BOOST_CHECK_EQUAL( via->GetNetname(), expected->second.second );
+        }
+    };
+
+    checkGeometryAndNets( *board );
+    BOOST_REQUIRE( board->BuildConnectivity() );
+    checkGeometryAndNets( *board );
+
+    KI_TEST::SCOPED_TEMP_DIR output( wxS( "pads-zone-hole-roundtrip" ) );
+    PCB_IO_KICAD_SEXPR native;
+
+    for( int round = 1; round <= 2; ++round )
+    {
+        BOOST_TEST_CONTEXT( "native round trip " << round )
+        {
+            const wxString filename = output.ChildPathStr(
+                    wxString::Format( wxS( "round-%d.kemi_pcb" ), round ) );
+            board->SetFileName( filename );
+            native.SaveBoard( filename, *board );
+            board = native.LoadBoard( filename, nullptr, nullptr );
+            BOOST_REQUIRE( board );
+            checkGeometryAndNets( *board );
+            BOOST_REQUIRE( board->BuildConnectivity() );
+            checkGeometryAndNets( *board );
+        }
+    }
+}
+
+
+// A pin-pair endpoint can recover a logical name when no alphanumeric mapping is declared.
+BOOST_AUTO_TEST_CASE( NamedPinsUseUniqueRouteEndpointsAndSurviveNativeRoundTrip )
+{
+    PCB_IO_PADS importer;
+    const wxString input = KI_TEST::GetPcbnewTestDataDir()
+                           + "plugins/pads/synthetic_named_route_pins.asc";
+    std::unique_ptr<BOARD> board = importer.LoadBoard( input, nullptr, nullptr );
+    BOOST_REQUIRE( board );
+
+    using PAD_NETS = std::map<wxString, wxString>;
+    const std::map<wxString, PAD_NETS> expected = {
+        { "QTOP", { { "", "" }, { "G", "GATE" }, { "S", "SOURCE" }, { "D", "DRAIN" } } },
+        { "QBOT", { { "", "" }, { "G", "GATE" }, { "S", "SOURCE" }, { "D", "DRAIN" } } },
+        { "QNUM", { { "", "" }, { "1", "NUMERIC" }, { "2", "NUMERIC" }, { "3", "NUMERIC" } } },
+        { "QALT", { { "", "" }, { "A", "ALTERNATE" }, { "B", "ALTERNATE" }, { "C", "ALTERNATE" } } },
+        { "QCONFLICT", { { "", "" }, { "1", "" }, { "2", "" }, { "3", "" } } },
+        { "QAMBIG", { { "1", "" }, { "2", "" } } },
+        { "QBOUNDIN", { { "", "" }, { "A", "TOLERANCE" }, { "2", "" }, { "3", "" } } },
+        { "QBOUNDOUT", { { "", "" }, { "1", "" }, { "2", "" }, { "3", "" } } }
+    };
+    const std::map<wxString, std::map<wxString, VECTOR2I>> namedPositions = {
+        { "QTOP", { { "G", { 11000000, -9000000 } }, { "S", { 11000000, -11000000 } },
+                    { "D", { 9000000, -10000000 } } } },
+        { "QBOT", { { "G", { 29000000, -9000000 } }, { "S", { 29000000, -11000000 } },
+                    { "D", { 31000000, -10000000 } } } }
+    };
+
+    auto check = [&]( const BOARD& aBoard )
+    {
+        BOOST_REQUIRE_EQUAL( aBoard.Footprints().size(), expected.size() );
+
+        for( const FOOTPRINT* footprint : aBoard.Footprints() )
+        {
+            BOOST_TEST_CONTEXT( footprint->GetReference() )
+            {
+                const auto found = expected.find( footprint->GetReference() );
+                BOOST_REQUIRE( found != expected.end() );
+                PAD_NETS actual;
+
+                for( const PAD* pad : footprint->Pads() )
+                {
+                    BOOST_CHECK( actual.emplace( pad->GetNumber(), pad->GetNetname() ).second );
+
+                    if( pad->GetAttribute() == PAD_ATTRIB::NPTH )
+                    {
+                        BOOST_CHECK( pad->GetNumber().IsEmpty() );
+                        BOOST_CHECK( pad->GetNetname().IsEmpty() );
+                    }
+
+                    auto positions = namedPositions.find( footprint->GetReference() );
+
+                    if( positions != namedPositions.end() )
+                    {
+                        auto position = positions->second.find( pad->GetNumber() );
+
+                        if( position != positions->second.end() )
+                            BOOST_CHECK( pad->GetPosition() == position->second );
+                    }
+                }
+
+                BOOST_CHECK( actual == found->second );
+                BOOST_CHECK_EQUAL( footprint->IsFlipped(), footprint->GetReference() == "QBOT" );
+            }
+        }
+    };
+
+    check( *board );
+    KI_TEST::SCOPED_TEMP_DIR output( wxS( "pads-named-pins-roundtrip" ) );
+    PCB_IO_KICAD_SEXPR native;
+
+    for( int round = 1; round <= 2; ++round )
+    {
+        BOOST_TEST_CONTEXT( "native round trip " << round )
+        {
+            const wxString path = output.ChildPathStr( wxString::Format( "round-%d.kemi_pcb", round ) );
+            board->SetFileName( path );
+            native.SaveBoard( path, *board );
+            board = native.LoadBoard( path, nullptr, nullptr );
+            BOOST_REQUIRE( board );
+            BOOST_REQUIRE( board->BuildConnectivity() );
+            check( *board );
+        }
+    }
+}
+
+
+// GI-PADS-PIN-MAP01: Alphanumeric declarations include unconnected pins in numeric slot order.
+BOOST_AUTO_TEST_CASE( AlphanumericPinMapsRequireCompleteConsistentDeclarations )
+{
+    PCB_IO_PADS importer;
+    const wxString input = KI_TEST::GetPcbnewTestDataDir()
+                           + "plugins/pads/synthetic_alphanumeric_pin_map.asc";
+    std::unique_ptr<BOARD> board = importer.LoadBoard( input, nullptr, nullptr );
+    BOOST_REQUIRE( board );
+
+    using PAD_NETS = std::map<wxString, wxString>;
+    const PAD_NETS numeric = { { "", "" }, { "1", "" }, { "2", "" }, { "3", "" } };
+    const std::map<wxString, PAD_NETS> expected = {
+        { "QFULL", { { "", "" }, { "G", "GATE" }, { "S", "" }, { "D", "" } } },
+        { "QFLIP", { { "", "" }, { "G", "GATE" }, { "S", "" }, { "D", "" } } },
+        { "QALT", { { "", "" }, { "A", "" }, { "B", "" }, { "C", "" } } },
+        { "QNUM", numeric }, { "QCOUNT", numeric }, { "QDUP", numeric },
+        { "QGAP", { { "1", "" }, { "2", "" }, { "3", "" }, { "5", "" } } },
+        { "QCLASH", numeric },
+        { "QNETNUM", { { "", "" }, { "1", "ORIGINAL" }, { "2", "" }, { "3", "" } } },
+        { "QAMBIG", { { "1", "" }, { "2", "" }, { "3", "" }, { "4", "" } } },
+        { "QTRUNC", numeric }, { "QLONG", numeric }, { "QEXTRA", numeric }
+    };
+    const std::map<wxString, std::map<wxString, VECTOR2I>> namedPositions = {
+        { "QFULL", { { "G", { 11000000, -9000000 } }, { "S", { 11000000, -11000000 } },
+                     { "D", { 9000000, -10000000 } } } },
+        { "QFLIP", { { "G", { 29000000, -9000000 } }, { "S", { 29000000, -11000000 } },
+                     { "D", { 31000000, -10000000 } } } },
+        { "QALT", { { "A", { 9000000, -29000000 } }, { "B", { 11000000, -29000000 } },
+                    { "C", { 10000000, -31000000 } } } }
+    };
+
+    auto check = [&]( const BOARD& aBoard )
+    {
+        BOOST_REQUIRE_EQUAL( aBoard.Footprints().size(), expected.size() );
+
+        for( const FOOTPRINT* footprint : aBoard.Footprints() )
+        {
+            BOOST_TEST_CONTEXT( footprint->GetReference() )
+            {
+                const auto found = expected.find( footprint->GetReference() );
+                BOOST_REQUIRE( found != expected.end() );
+                PAD_NETS actual;
+
+                for( const PAD* pad : footprint->Pads() )
+                {
+                    BOOST_CHECK( actual.emplace( pad->GetNumber(), pad->GetNetname() ).second );
+
+                    if( pad->GetAttribute() == PAD_ATTRIB::NPTH )
+                    {
+                        BOOST_CHECK( pad->GetNumber().IsEmpty() );
+                        BOOST_CHECK( pad->GetNetname().IsEmpty() );
+                    }
+
+                    const auto positions = namedPositions.find( footprint->GetReference() );
+
+                    if( positions != namedPositions.end() && pad->GetAttribute() != PAD_ATTRIB::NPTH )
+                    {
+                        const auto position = positions->second.find( pad->GetNumber() );
+                        BOOST_CHECK( position != positions->second.end() );
+
+                        if( position != positions->second.end() )
+                            BOOST_CHECK( pad->GetPosition() == position->second );
+                    }
+                }
+
+                BOOST_CHECK( actual == found->second );
+                BOOST_CHECK_EQUAL( footprint->IsFlipped(), footprint->GetReference() == "QFLIP" );
+            }
+        }
+    };
+
+    check( *board );
+    KI_TEST::SCOPED_TEMP_DIR output( wxS( "pads-alphanumeric-pins-roundtrip" ) );
+    PCB_IO_KICAD_SEXPR native;
+
+    for( int round = 1; round <= 2; ++round )
+    {
+        BOOST_TEST_CONTEXT( "native round trip " << round )
+        {
+            const wxString path = output.ChildPathStr( wxString::Format( "round-%d.kemi_pcb", round ) );
+            board->SetFileName( path );
+            native.SaveBoard( path, *board );
+            board = native.LoadBoard( path, nullptr, nullptr );
+            BOOST_REQUIRE( board );
+            BOOST_REQUIRE( board->BuildConnectivity() );
+            check( *board );
+        }
+    }
+}
+
+
+// GI-PADS-PIN-MAP01: A complete numeric permutation assigns nets by the final pin name.
+BOOST_AUTO_TEST_CASE( AlphanumericNumericPermutationReassignsNets )
+{
+    PCB_IO_PADS importer;
+    std::unique_ptr<BOARD> board = importer.LoadBoard( KI_TEST::GetPcbnewTestDataDir()
+            + "plugins/pads/synthetic_alphanumeric_pin_map_edges.asc", nullptr, nullptr );
+    BOOST_REQUIRE( board );
+    KI_TEST::SCOPED_TEMP_DIR output( wxS( "pads-numeric-pin-map" ) );
+    PCB_IO_KICAD_SEXPR native;
+
+    for( int round = 0; round <= 2; ++round )
+    {
+        BOOST_TEST_CONTEXT( "native round trip " << round )
+        {
+            if( round > 0 )
+            {
+                const wxString path = output.ChildPathStr( wxString::Format( "round-%d.kemi_pcb", round ) );
+                board->SetFileName( path );
+                native.SaveBoard( path, *board );
+                board = native.LoadBoard( path, nullptr, nullptr );
+                BOOST_REQUIRE( board );
+                BOOST_REQUIRE( board->BuildConnectivity() );
+            }
+
+            const FOOTPRINT* footprint = board->FindFootprintByReference( "QSWAP" );
+            BOOST_REQUIRE( footprint );
+            BOOST_REQUIRE_EQUAL( footprint->Pads().size(), 3 );
+            const std::map<int, std::pair<wxString, wxString>> expected = {
+                { 9000000, { "2", "" } }, { 11000000, { "1", "PIN_ONE" } },
+                { 10000000, { "3", "" } }
+            };
+
+            for( const PAD* pad : footprint->Pads() )
+            {
+                const auto found = expected.find( pad->GetPosition().x );
+                BOOST_REQUIRE( found != expected.end() );
+                BOOST_CHECK_EQUAL( pad->GetNumber(), found->second.first );
+                BOOST_CHECK_EQUAL( pad->GetNetname(), found->second.second );
+            }
+        }
+    }
+}
+
+
+// GI-PADS-PIN-MAP01: A new complete header must not complete the preceding truncated pin list.
+BOOST_AUTO_TEST_CASE( TruncatedAlphanumericMapDoesNotConsumeNextPartType )
+{
+    const wxString input = KI_TEST::GetPcbnewTestDataDir()
+                           + "plugins/pads/synthetic_alphanumeric_pin_map_edges.asc";
+    PADS_IO::PARSER parser;
+    parser.Parse( input );
+    const auto& types = parser.GetPartTypes();
+    const auto broken = types.find( "BROKEN" );
+    BOOST_REQUIRE( broken != types.end() );
+    BOOST_CHECK_EQUAL( broken->second.alphanumeric_pin_count, 10 );
+    const std::vector<std::string> partial = { "A", "B", "C" };
+    BOOST_CHECK( broken->second.alphanumeric_pins == partial );
+    BOOST_CHECK( types.find( "NEXT" ) != types.end() );
+
+    PCB_IO_PADS importer;
+    std::unique_ptr<BOARD> board = importer.LoadBoard( input, nullptr, nullptr );
+    BOOST_REQUIRE( board );
+    KI_TEST::SCOPED_TEMP_DIR output( wxS( "pads-truncated-pin-map" ) );
+    PCB_IO_KICAD_SEXPR native;
+
+    for( int round = 0; round <= 2; ++round )
+    {
+        BOOST_TEST_CONTEXT( "native round trip " << round )
+        {
+            if( round > 0 )
+            {
+                const wxString path = output.ChildPathStr( wxString::Format( "round-%d.kemi_pcb", round ) );
+                board->SetFileName( path );
+                native.SaveBoard( path, *board );
+                board = native.LoadBoard( path, nullptr, nullptr );
+                BOOST_REQUIRE( board );
+                BOOST_REQUIRE( board->BuildConnectivity() );
+            }
+
+            const FOOTPRINT* bad = board->FindFootprintByReference( "QBAD" );
+            const FOOTPRINT* next = board->FindFootprintByReference( "QNEXT" );
+            BOOST_REQUIRE( bad );
+            BOOST_REQUIRE( next );
+            BOOST_REQUIRE_EQUAL( bad->Pads().size(), 10 );
+
+            for( const PAD* pad : bad->Pads() )
+            {
+                const int terminal = ( pad->GetPosition().x - 60000000 ) / 1000000 + 1;
+                BOOST_CHECK_EQUAL( pad->GetNumber(), wxString::Format( "%d", terminal ) );
+                BOOST_CHECK( pad->GetNetname().IsEmpty() );
+            }
+
+            BOOST_REQUIRE_EQUAL( next->Pads().size(), 4 );
+            std::set<wxString> numbers;
+
+            for( const PAD* pad : next->Pads() )
+                numbers.insert( pad->GetNumber() );
+
+            const std::set<wxString> expected = { "A", "B", "C", "D" };
+            BOOST_CHECK( numbers == expected );
+        }
+    }
+}
+
+
+/**
  * Verify Importer.asc (V10.0 BASIC, 6-layer) imports correctly.
  *
  * This board exercises four specific import scenarios:
@@ -768,6 +1146,162 @@ BOOST_AUTO_TEST_CASE( Importer_SpecificFixes )
     }
 
     BOOST_CHECK_MESSAGE( dimCount > 0, "should have at least one dimension" );
+}
+
+
+/**
+ * RA/SA rows retain clearance metadata but cannot enlarge a via or extend its copper span.
+ */
+BOOST_AUTO_TEST_CASE( ViaAntiPadsDoNotDefineCopperDiameterOrLayerSpan )
+{
+    const wxString filename = KI_TEST::GetPcbnewTestDataDir()
+                              + "plugins/pads/synthetic_via_antipads.asc";
+    PADS_IO::PARSER parser;
+    parser.Parse( filename );
+
+    BOOST_REQUIRE_EQUAL( parser.GetViaDefs().size(), 4u );
+
+    for( const std::string shape : { "RA", "SA" } )
+    {
+        for( bool buried : { false, true } )
+        {
+            const std::string name = ( buried ? "BURIED_" : "THROUGH_" ) + shape;
+            BOOST_TEST_CONTEXT( name )
+            {
+                const auto it = parser.GetViaDefs().find( name );
+                BOOST_REQUIRE( it != parser.GetViaDefs().end() );
+                const PADS_IO::VIA_DEF& def = it->second;
+
+                BOOST_CHECK_EQUAL( def.size, 0.50 );
+                BOOST_CHECK_EQUAL( def.drill, 0.30 );
+                BOOST_CHECK_EQUAL( def.start_layer, buried ? 2 : 1 );
+                BOOST_CHECK_EQUAL( def.end_layer, buried ? 3 : 4 );
+                BOOST_CHECK( def.via_type == ( buried ? PADS_IO::VIA_TYPE::BURIED
+                                                    : PADS_IO::VIA_TYPE::THROUGH ) );
+
+                // Keep clearance metadata even though it must not become via copper.
+                BOOST_REQUIRE_EQUAL( def.stack.size(), buried ? 4u : 3u );
+                BOOST_CHECK_EQUAL( def.stack[0].sizeA, 0.50 );
+                BOOST_CHECK_EQUAL( def.stack[1].sizeA, 0.50 );
+
+                for( size_t i = 2; i < def.stack.size(); ++i )
+                {
+                    BOOST_CHECK_EQUAL( def.stack[i].shape, shape );
+                    BOOST_CHECK_EQUAL( def.stack[i].sizeA, 0.75 );
+                    BOOST_CHECK_EQUAL( def.stack[i].layer, buried && i == 2 ? -2 : -1 );
+                }
+            }
+        }
+    }
+
+    PCB_IO_PADS plugin;
+    std::unique_ptr<BOARD> board = plugin.LoadBoard( filename, nullptr, nullptr );
+    BOOST_REQUIRE( board );
+    BOOST_REQUIRE_EQUAL( board->Tracks().size(), 4u );
+
+    int throughCount = 0;
+    int buriedCount = 0;
+
+    for( PCB_TRACK* track : board->Tracks() )
+    {
+        PCB_VIA* via = dynamic_cast<PCB_VIA*>( track );
+        BOOST_REQUIRE( via );
+        BOOST_CHECK_EQUAL( via->GetWidth( PADSTACK::ALL_LAYERS ), pcbIUScale.mmToIU( 0.50 ) );
+        BOOST_CHECK_EQUAL( via->GetDrillValue(), pcbIUScale.mmToIU( 0.30 ) );
+
+        if( via->GetViaType() == VIATYPE::THROUGH )
+        {
+            ++throughCount;
+            BOOST_CHECK_EQUAL( via->TopLayer(), F_Cu );
+            BOOST_CHECK_EQUAL( via->BottomLayer(), B_Cu );
+        }
+        else
+        {
+            ++buriedCount;
+            BOOST_CHECK( via->GetViaType() == VIATYPE::BURIED );
+            BOOST_CHECK_EQUAL( via->TopLayer(), In1_Cu );
+            BOOST_CHECK_EQUAL( via->BottomLayer(), In2_Cu );
+        }
+    }
+
+    BOOST_CHECK_EQUAL( throughCount, 2 );
+    BOOST_CHECK_EQUAL( buriedCount, 2 );
+}
+
+
+BOOST_AUTO_TEST_CASE( ViaAntiPadsDoNotChangeNetsOnConnectivityRebuild )
+{
+    PCB_IO_PADS plugin;
+    std::unique_ptr<BOARD> board = plugin.LoadBoard(
+            KI_TEST::GetPcbnewTestDataDir() + "plugins/pads/synthetic_via_antipads.asc",
+            nullptr, nullptr );
+    BOOST_REQUIRE( board );
+    BOOST_REQUIRE( board->FindNet( "AGND" ) );
+
+    NETINFO_ITEM* signal = new NETINFO_ITEM( board.get(), "SIGNAL" );
+    board->Add( signal );
+    std::vector<PCB_VIA*> throughVias;
+
+    for( PCB_TRACK* track : board->Tracks() )
+    {
+        PCB_VIA* via = dynamic_cast<PCB_VIA*>( track );
+        BOOST_REQUIRE( via );
+        throughVias.push_back( via );
+    }
+
+    BOOST_REQUIRE_EQUAL( throughVias.size(), 4u );
+
+    // The two leftmost fixture vias are THROUGH_RA and THROUGH_SA. Select by position so
+    // a separate span regression on the two buried vias cannot hide this connectivity check.
+    std::sort( throughVias.begin(), throughVias.end(),
+               []( PCB_VIA* a, PCB_VIA* b ) { return a->GetPosition().x < b->GetPosition().x; } );
+    throughVias.resize( 2 );
+
+    for( PCB_VIA* via : throughVias )
+    {
+        BOOST_CHECK( via->GetViaType() == VIATYPE::THROUGH );
+        BOOST_CHECK_EQUAL( via->GetNetname(), "AGND" );
+        BOOST_CHECK_EQUAL( via->GetWidth( F_Cu ), pcbIUScale.mmToIU( 0.50 ) );
+
+        FOOTPRINT* footprint = new FOOTPRINT( board.get() );
+        PAD* pad = new PAD( footprint );
+        pad->SetNumber( "1" );
+        pad->SetAttribute( PAD_ATTRIB::SMD );
+        pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CIRCLE );
+        pad->SetLayerSet( LSET( { F_Cu } ) );
+        pad->SetSize( PADSTACK::ALL_LAYERS,
+                      VECTOR2I( pcbIUScale.mmToIU( 0.10 ), pcbIUScale.mmToIU( 0.10 ) ) );
+        pad->SetPosition( via->GetPosition() + VECTOR2I( pcbIUScale.mmToIU( 0.40 ), 0 ) );
+        pad->SetNet( signal );
+        footprint->Add( pad );
+        board->Add( footprint );
+    }
+
+    BOOST_REQUIRE_EQUAL( throughVias.size(), 2u );
+
+    for( int rebuild = 0; rebuild < 2; ++rebuild )
+    {
+        BOOST_REQUIRE( board->BuildConnectivity() );
+
+        for( PCB_VIA* via : throughVias )
+        {
+            BOOST_CHECK_EQUAL( via->GetNetname(), "AGND" );
+            BOOST_CHECK( board->GetConnectivity()->GetConnectedPads( via ).empty() );
+        }
+    }
+
+    // A pad's near edge is 0.35 mm from the via centre.  Reintroducing the old 0.75 mm
+    // diameter must touch it and reproduce the net change, proving the fixture is sensitive.
+    for( PCB_VIA* via : throughVias )
+        via->SetWidth( PADSTACK::ALL_LAYERS, pcbIUScale.mmToIU( 0.75 ) );
+
+    BOOST_REQUIRE( board->BuildConnectivity() );
+
+    for( PCB_VIA* via : throughVias )
+    {
+        BOOST_CHECK_EQUAL( via->GetNetname(), "SIGNAL" );
+        BOOST_CHECK_EQUAL( board->GetConnectivity()->GetConnectedPads( via ).size(), 1u );
+    }
 }
 
 

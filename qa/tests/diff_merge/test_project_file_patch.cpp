@@ -24,6 +24,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <diff_merge/project_file_patch.h>
+#include <kemi_format_profile.h>
+#include <qa_utils/file_utils.h>
 #include <diff_merge/diff_doc_kind.h>
 #include <diff_merge/kicad_diff_types.h>
 
@@ -214,7 +216,7 @@ BOOST_AUTO_TEST_CASE( ApplyPatchesNoExistingFileWritesSource )
     wxString tmpDir = patchTempDir();
     BOOST_REQUIRE( wxFileName::Mkdir( tmpDir, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
 
-    const wxString outputPath = tmpDir + wxFILE_SEP_PATH + wxS( "test.kicad_pro" );
+    const wxString outputPath = tmpDir + wxFILE_SEP_PATH + wxS( "test.kemi_pro" );
     BOOST_REQUIRE( !wxFileExists( outputPath ) );
 
     json source = { { "board", { { "design_settings", { { "rule_severities", { { "k", "error" } } } } } } } };
@@ -229,6 +231,7 @@ BOOST_AUTO_TEST_CASE( ApplyPatchesNoExistingFileWritesSource )
     in.ReadAll( &content );
     json parsed = json::parse( content.ToStdString() );
     BOOST_CHECK_EQUAL( parsed["board"]["design_settings"]["rule_severities"]["k"], "error" );
+    BOOST_CHECK( KEMI_FORMAT::ValidateJsonMarker( parsed, KEMI_FORMAT::DOC::PROJECT, outputPath ).IsEmpty() );
 
     in.Close();
     wxRemoveFile( outputPath );
@@ -241,7 +244,7 @@ BOOST_AUTO_TEST_CASE( ApplyPatchesEmptyPropertySetDoesNotCreateOutput )
     wxString tmpDir = patchTempDir();
     BOOST_REQUIRE( wxFileName::Mkdir( tmpDir, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
 
-    const wxString outputPath = tmpDir + wxFILE_SEP_PATH + wxS( "test.kicad_pro" );
+    const wxString outputPath = tmpDir + wxFILE_SEP_PATH + wxS( "test.kemi_pro" );
     BOOST_REQUIRE( !wxFileExists( outputPath ) );
 
     json source = { { "text_variables", { { "USER_VAR", "source value" } } } };
@@ -264,7 +267,7 @@ BOOST_AUTO_TEST_CASE( ApplyPatchesPreservesExistingNonTargetFields )
     wxString tmpDir = patchTempDir();
     BOOST_REQUIRE( wxFileName::Mkdir( tmpDir, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
 
-    const wxString outputPath = tmpDir + wxFILE_SEP_PATH + wxS( "test.kicad_pro" );
+    const wxString outputPath = tmpDir + wxFILE_SEP_PATH + wxS( "test.kemi_pro" );
 
     json existing = {
         { "text_variables", { { "USER_VAR", "user value" } } },
@@ -302,7 +305,7 @@ BOOST_AUTO_TEST_CASE( ApplyPatchesMissingRequestedSourceFieldFails )
     wxString tmpDir = patchTempDir();
     BOOST_REQUIRE( wxFileName::Mkdir( tmpDir, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
 
-    const wxString outputPath = tmpDir + wxFILE_SEP_PATH + wxS( "test.kicad_pro" );
+    const wxString outputPath = tmpDir + wxFILE_SEP_PATH + wxS( "test.kemi_pro" );
 
     json existing = { { "text_variables", { { "USER_VAR", "user value" } } } };
 
@@ -368,6 +371,28 @@ BOOST_AUTO_TEST_CASE( ApplyPatchRealisticProjectShapeIsSurgical )
     BOOST_CHECK_EQUAL( existing["board"]["design_settings"]["track_widths"].dump(),
                        json::array( { 0.2, 0.25 } ).dump() );
     BOOST_CHECK_EQUAL( existing["meta"]["filename"], "board.kicad_pro" );
+}
+
+
+BOOST_AUTO_TEST_CASE( ApplyPatchesRejectsOfficialProjectAndPreservesSource )
+{
+    KI_TEST::SCOPED_TEMP_DIR directory( wxS( "merge-project-source" ) );
+    const wxString official = directory.ChildPathStr( "source.kicad_pro" );
+    const wxString native = directory.ChildPathStr( "source.kemi_pro" );
+    const json source = { { "erc", { { "pin_not_connected", "warning" } } } };
+    {
+        wxFile file;
+        BOOST_REQUIRE( file.Open( official, wxFile::write ) );
+        BOOST_REQUIRE( file.Write( wxString::FromUTF8( source.dump() ) ) );
+    }
+
+    const std::string before = KI_TEST::LoadStringData( official );
+    BOOST_CHECK( !ApplyProjectFilePatches( official, source, { DOC_PROP_ERC_SEVERITIES }, DOC_KIND::SCH ) );
+    BOOST_REQUIRE( ApplyProjectFilePatches( native, source, { DOC_PROP_ERC_SEVERITIES }, DOC_KIND::SCH ) );
+    const json saved = json::parse( KI_TEST::LoadStringData( native ) );
+    BOOST_CHECK( KEMI_FORMAT::ValidateJsonMarker( saved, KEMI_FORMAT::DOC::PROJECT, native ).IsEmpty() );
+    BOOST_CHECK_EQUAL( saved["erc"]["pin_not_connected"], "warning" );
+    BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( official ), before );
 }
 
 

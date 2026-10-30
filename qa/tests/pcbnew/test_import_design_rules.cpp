@@ -17,6 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <qa_utils/file_utils.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 #include <reporter.h>
@@ -45,5 +46,27 @@ BOOST_AUTO_TEST_CASE( NamelessBoardWritesNothing )
     BOOST_CHECK( !hidden.FileExists() );
 }
 
+
+// Rules land beside the board as a Kemi container; no official sidecar and no overwrite
+BOOST_AUTO_TEST_CASE( WritesKemiRulesOnly )
+{
+    KI_TEST::SCOPED_TEMP_DIR dir( wxS( "import_design_rules-kemi" ) );
+
+    wxFileName board( dir.ChildPathStr( wxS( "imported.kicad_pcb" ) ) );
+    wxFileName kemi( dir.ChildPathStr( wxS( "imported.kemi_dru" ) ) );
+    wxFileName legacy( dir.ChildPathStr( wxS( "imported.kicad_dru" ) ) );
+
+    BOOST_CHECK( SaveImportedDesignRules( wxS( "(version 1)" ), board, NULL_REPORTER::GetInstance() ) );
+    BOOST_CHECK( kemi.FileExists() );
+    BOOST_CHECK( !legacy.FileExists() );
+
+    const wxString first = KI_TEST::LoadStringData( kemi.GetFullPath() );
+    BOOST_CHECK( first.Contains( wxS( "(version 1)" ) ) );
+    BOOST_CHECK( !first.StartsWith( wxS( "(version" ) ) );
+
+    // A second import must keep the user's existing file
+    BOOST_CHECK( !SaveImportedDesignRules( wxS( "(version 2)" ), board, NULL_REPORTER::GetInstance() ) );
+    BOOST_CHECK( KI_TEST::LoadStringData( kemi.GetFullPath() ) == first );
+}
 
 BOOST_AUTO_TEST_SUITE_END()

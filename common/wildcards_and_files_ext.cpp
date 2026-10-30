@@ -25,6 +25,7 @@
  */
 #include <regex>
 #include <wildcards_and_files_ext.h>
+#include <kemi_format_profile.h>
 #include <wx/filedlg.h>
 #include <wx/regex.h>
 #include <wx/translation.h>
@@ -235,16 +236,27 @@ wxString FILEEXT::AllFilesWildcard()
 }
 
 
+namespace
+{
+/// Legacy extension first, then the KemiCAD one.  While the default extensions are still
+/// kicad_* (phase P1) a save dialog must not silently pick .kemi_* as its default.
+std::vector<std::string> dualExts( KEMI_FORMAT::DOC aDoc )
+{
+    return KEMI_FORMAT::WildcardExts( aDoc );
+}
+}
+
+
 wxString FILEEXT::KiCadSymbolLibFileWildcard()
 {
     return _( "KemiCAD symbol library files" )
-            + AddFileExtListToFilter( { KiCadSymbolLibFileExtension } );
+            + AddFileExtListToFilter( dualExts( KEMI_FORMAT::DOC::SYMBOL_LIB ) );
 }
 
 
 wxString FILEEXT::ProjectFileWildcard()
 {
-    return _( "KemiCAD project files" ) + AddFileExtListToFilter( { ProjectFileExtension } );
+    return _( "KemiCAD project files" ) + AddFileExtListToFilter( dualExts( KEMI_FORMAT::DOC::PROJECT ) );
 }
 
 
@@ -258,14 +270,14 @@ wxString FILEEXT::LegacyProjectFileWildcard()
 wxString FILEEXT::AllProjectFilesWildcard()
 {
     return _( "All KemiCAD project files" )
-            + AddFileExtListToFilter( { ProjectFileExtension, LegacyProjectFileExtension } );
+            + AddFileExtListToFilter( { ProjectFileExtension, KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT, KEMI_FORMAT::FLAVOR::KEMI ), LegacyProjectFileExtension } );
 }
 
 
 wxString FILEEXT::AllSchematicFilesWildcard()
 {
     return _( "All KemiCAD schematic files" )
-            + AddFileExtListToFilter( { KiCadSchematicFileExtension, LegacySchematicFileExtension } );
+            + AddFileExtListToFilter( { KiCadSchematicFileExtension, KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::SCHEMATIC, KEMI_FORMAT::FLAVOR::KEMI ), LegacySchematicFileExtension } );
 }
 
 
@@ -279,7 +291,7 @@ wxString FILEEXT::LegacySchematicFileWildcard()
 wxString FILEEXT::KiCadSchematicFileWildcard()
 {
     return _( "KemiCAD s-expression schematic files" )
-            + AddFileExtListToFilter( { KiCadSchematicFileExtension } );
+            + AddFileExtListToFilter( dualExts( KEMI_FORMAT::DOC::SCHEMATIC ) );
 }
 
 
@@ -390,13 +402,13 @@ wxString FILEEXT::AllegroPcbFilesWildcard()
 wxString FILEEXT::PcbFileWildcard()
 {
     return _( "KemiCAD printed circuit board files" )
-           + AddFileExtListToFilter( { KiCadPcbFileExtension } );
+           + AddFileExtListToFilter( dualExts( KEMI_FORMAT::DOC::PCB ) );
 }
 
 
 wxString FILEEXT::KiCadFootprintLibFileWildcard()
 {
-    return _( "KemiCAD footprint files" ) + AddFileExtListToFilter( { KiCadFootprintFileExtension } );
+    return _( "KemiCAD footprint files" ) + AddFileExtListToFilter( dualExts( KEMI_FORMAT::DOC::FOOTPRINT ) );
 }
 
 
@@ -424,7 +436,7 @@ wxString FILEEXT::KiCadDesignBlockLibPathWildcard()
 wxString FILEEXT::DrawingSheetFileWildcard()
 {
     return _( "Drawing sheet files" )
-            + AddFileExtListToFilter( { DrawingSheetFileExtension } );
+            + AddFileExtListToFilter( dualExts( KEMI_FORMAT::DOC::DRAWING_SHEET ) );
 }
 
 
@@ -636,5 +648,5 @@ wxString FILEEXT::HotkeyFileWildcard()
 
 wxString FILEEXT::JobsetFileWildcard()
 {
-    return _( "KemiCAD jobset files" ) + AddFileExtListToFilter( { KiCadJobSetFileExtension } );
+    return _( "KemiCAD jobset files" ) + AddFileExtListToFilter( dualExts( KEMI_FORMAT::DOC::JOBSET ) );
 }

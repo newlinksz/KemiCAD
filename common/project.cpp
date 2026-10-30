@@ -37,6 +37,7 @@
 #include <git/project_git_utils.h>
 #include <git2.h>
 #include <project.h>
+#include <kemi_format_profile.h>
 #include <project/project_local_settings.h>
 
 #include <footprint_library_adapter.h>
@@ -261,7 +262,7 @@ void PROJECT::setProjectFullName( const wxString& aFullPathAndName )
         wxASSERT( m_project_name.IsAbsolute() );
         wxString ext = m_project_name.GetExt();
 
-        if( !ext.IsEmpty() && ext != FILEEXT::ProjectFileExtension )
+        if( !ext.IsEmpty() && !KEMI_FORMAT::IsReadableExt( KEMI_FORMAT::DOC::PROJECT, ext ) )
             m_project_name.SetExt( FILEEXT::ProjectFileExtension );
     }
 }
@@ -561,8 +562,12 @@ void PROJECT::SaveToHistory( const wxString& aProjectPath, std::vector<HISTORY_F
 {
     wxString projectFile = GetProjectFullName();
 
-    if( projectFile.IsEmpty() )
+    if( projectFile.IsEmpty()
+            || KEMI_FORMAT::IsLegacyExt( KEMI_FORMAT::DOC::PROJECT, wxFileName( projectFile ).GetExt() ) )
+    {
+        // Official projects are imported as a whole; do not autosave their JSON siblings in place.
         return;
+    }
 
     wxFileName projectFn( projectFile );
     wxFileName requestedFn( aProjectPath );
@@ -590,7 +595,15 @@ void PROJECT::SaveToHistory( const wxString& aProjectPath, std::vector<HISTORY_F
     aFileData.push_back( std::move( proEntry ) );
 
     wxFileName prlFile( projectFn.GetPath(), projectFn.GetName(),
-                        FILEEXT::ProjectLocalSettingsFileExtension );
+                        KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::PROJECT_LOCAL,
+                                KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::PROJECT,
+                                                           projectFile ) ) );
+
+    if( m_localSettings )
+    {
+        prlFile.Assign( m_localSettings->GetFullFilename() );
+        prlFile.MakeAbsolute( projectFn.GetPath() );
+    }
 
     if( prlFile.FileExists() )
     {

@@ -20,6 +20,7 @@
 #include "drc_re_rule_loader.h"
 
 #include <base_units.h>
+#include <kemi_format_profile.h>
 #include <reporter.h>
 #include <component_classes/component_class_assignment_rule.h>
 #include <drc/drc_rule_parser.h>
@@ -184,7 +185,8 @@ static std::pair<size_t, size_t> findNextExpression( const wxString& aContent, s
 }
 
 
-static bool isVersionExpression( const wxString& aContent, size_t aOpen )
+static bool isExpression( const wxString& aContent, size_t aOpen, const wxString& aKeyword,
+                          size_t* aAfterKeyword = nullptr )
 {
     size_t keyword = aOpen + 1;
 
@@ -198,7 +200,21 @@ static bool isVersionExpression( const wxString& aContent, size_t aOpen )
             break;
     }
 
-    return keyword != wxString::npos && aContent.compare( keyword, 7, wxS( "version" ) ) == 0;
+    if( keyword == wxString::npos || aContent.compare( keyword, aKeyword.length(), aKeyword ) != 0 )
+        return false;
+
+    size_t after = keyword + aKeyword.length();
+
+    if( aAfterKeyword )
+        *aAfterKeyword = after;
+
+    return after < aContent.length() && ( wxIsspace( aContent[after] ) || aContent[after] == '(' );
+}
+
+
+static bool isVersionExpression( const wxString& aContent, size_t aOpen )
+{
+    return isExpression( aContent, aOpen, wxS( "version" ) );
 }
 
 
@@ -860,17 +876,27 @@ std::vector<DRC_RE_LOADED_PANEL_ENTRY> DRC_RULE_LOADER::LoadRule( const DRC_RULE
 }
 
 
-std::vector<DRC_RE_LOADED_PANEL_ENTRY> DRC_RULE_LOADER::LoadFromString( const wxString& aRulesText )
+std::vector<DRC_RE_LOADED_PANEL_ENTRY> DRC_RULE_LOADER::LoadFromString(
+        const wxString& aRulesText, const wxString& aSource )
 {
     std::vector<DRC_RE_LOADED_PANEL_ENTRY> allEntries;
     std::vector<std::shared_ptr<DRC_RULE>> parsedRules;
 
     m_fileTrivia = DRC_RE_FILE_TRIVIA();
+    m_fileTrivia.loadFailed = true;
+    m_loadError.clear();
 
     wxString rulesText = aRulesText;
     auto [start, end] = findNextExpression( rulesText, 0 );
 
-    if( start == wxString::npos || !isVersionExpression( rulesText, start ) )
+    size_t wrapperKeywordEnd = 0;
+    bool wrapped = start != wxString::npos
+                   && isExpression( rulesText, start, wxS( "kemi_dru" ), &wrapperKeywordEnd );
+    m_fileTrivia.kemiOnly = wrapped || KEMI_FORMAT::HasKemiExt( aSource );
+
+    // Only pathless rule fragments may omit the version. Files are validated verbatim.
+    if( aSource.IsEmpty() && !wrapped
+        && ( start == wxString::npos || !isVersionExpression( rulesText, start ) ) )
     {
         rulesText.Prepend( "(version 2)\n" );
         std::tie( start, end ) = findNextExpression( rulesText, 0 );
@@ -878,12 +904,40 @@ std::vector<DRC_RE_LOADED_PANEL_ENTRY> DRC_RULE_LOADER::LoadFromString( const wx
 
     try
     {
-        DRC_RULES_PARSER parser( rulesText, "Rule Loader" );
+        DRC_RULES_PARSER parser( rulesText, aSource.IsEmpty() ? wxString( wxS( "Rule Loader" ) ) : aSource );
         parser.Parse( parsedRules, nullptr );
     }
-    catch( const IO_ERROR& )
+    catch( const IO_ERROR& error )
     {
+        m_loadError = error.What();
         return allEntries;
+    }
+
+    if( wrapped )
+    {
+        // Keep the version, rules and comments as ordinary rule text. The file saver owns
+        // the outer container; native provenance remains in the file trivia.
+        auto [formatStart, formatEnd] = findNextExpression( rulesText, start + 1 );
+
+        if( formatStart == wxString::npos )
+        {
+            m_loadError = _( "Invalid KemiCAD rules container." );
+            return allEntries;
+        }
+
+        rulesText = rulesText.Left( start )
+                    + rulesText.Mid( wrapperKeywordEnd, formatStart - wrapperKeywordEnd )
+                    + rulesText.Mid( formatEnd, end - 1 - formatEnd )
+                    + rulesText.Mid( end );
+        std::tie( start, end ) = findNextExpression( rulesText, 0 );
+    }
+
+    if( start == wxString::npos )
+    {
+        // Legacy empty/comment-only files are valid. Give their next save a version
+        // without using npos as a substring offset or dropping the original comments.
+        rulesText += wxS( "\n(version 2)" );
+        std::tie( start, end ) = findNextExpression( rulesText, 0 );
     }
 
     // The parser accepted the text, so its non-version expressions are the rules in parse order
@@ -921,6 +975,7 @@ std::vector<DRC_RE_LOADED_PANEL_ENTRY> DRC_RULE_LOADER::LoadFromString( const wx
     }
 
     m_fileTrivia.trailer = rulesText.Mid( pos );
+    m_fileTrivia.loadFailed = false;
 
     return allEntries;
 }
@@ -977,6 +1032,8 @@ std::vector<DRC_RE_LOADED_PANEL_ENTRY> DRC_RULE_LOADER::LoadFile( const wxString
     std::vector<DRC_RE_LOADED_PANEL_ENTRY> allEntries;
 
     m_fileTrivia = DRC_RE_FILE_TRIVIA();
+    m_fileTrivia.loadFailed = true;
+    m_loadError = _( "Unable to read design rules file." );
 
     wxFFile file( aPath, "r" );
 
@@ -984,8 +1041,9 @@ std::vector<DRC_RE_LOADED_PANEL_ENTRY> DRC_RULE_LOADER::LoadFile( const wxString
         return allEntries;
 
     wxString content;
-    file.ReadAll( &content );
+    if( !file.ReadAll( &content, wxConvUTF8 ) )
+        return allEntries;
     file.Close();
 
-    return LoadFromString( content );
+    return LoadFromString( content, aPath );
 }

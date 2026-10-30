@@ -295,7 +295,7 @@ public:
                REPORTER* aReporter );
 
     /**
-     * Return "amp.kicad_sch" for "foo/amp" when both keys are one .asc, else "foo_amp.kicad_sch".
+     * Return "amp.kemi_sch" for "foo/amp" when both keys are one .asc, else "foo_amp.kemi_sch".
      */
     wxString GetSchematicFileName( const wxString& aAscKey ) const;
 

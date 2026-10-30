@@ -43,6 +43,8 @@
 #include <dialogs/dialog_export_step.h>
 #include <board.h>
 #include <footprint.h>
+#include <json_common.h>
+#include <kemi_format_profile.h>
 
 #include <wx/filefn.h>
 #include <wx/filename.h>
@@ -54,72 +56,86 @@ BOOST_AUTO_TEST_SUITE( StepExportModifiedBoard )
 
 BOOST_AUTO_TEST_CASE( ModifiedBoardStagesCurrentState )
 {
-    const std::string sourceBoard = KI_TEST::GetPcbnewTestDataDir() + "issue23704/issue23704.kicad_pcb";
-
-    BOOST_REQUIRE_MESSAGE( std::filesystem::exists( sourceBoard ), "Missing test board " << sourceBoard );
-
-    std::unique_ptr<BOARD> board = KI_TEST::RequireBoardFromPcbnewQAData( "issue23704/issue23704.kicad_pcb" );
-
-    const size_t originalCount = board->Footprints().size();
-    BOOST_REQUIRE_MESSAGE( originalCount > 1, "Panel board needs multiple footprints to delete" );
-
-    // Stage the board's "saved" copy in an isolated temp directory so the helper writes its
-    // temporary export file alongside it rather than into the shared test data tree.
-    const KI_TEST::SCOPED_TEMP_DIR workDir( wxS( "kicad_step_export_23704_" ) );
-    const std::filesystem::path& onDisk = workDir.Path() / "panel.kicad_pcb";
-    KI_TEST::DumpBoardToFile( *board, onDisk );
-    const wxString onDiskPath = wxString::FromUTF8( onDisk.string() );
-
-    // A sibling project file must be staged too, so project-relative model and library paths
-    // resolve identically during export.
-    std::filesystem::path projectFile = onDisk;
-    projectFile.replace_extension( ".kicad_pro" );
-
+    for( const std::string& projectExtension : { ".kemi_pro", ".kicad_pro" } )
     {
-        std::ofstream project( projectFile );
-        BOOST_REQUIRE( project );
-        project << "{ \"meta\": { \"version\": 1 } }\n";
-    }
+        const std::string sourceBoard = KI_TEST::GetPcbnewTestDataDir() + "issue23704/issue23704.kicad_pcb";
 
-    // The user deletes every panel section but one, never saving the file.
-    while( board->Footprints().size() > 1 )
-        board->Remove( board->Footprints().back() );
+        BOOST_REQUIRE_MESSAGE( std::filesystem::exists( sourceBoard ), "Missing test board " << sourceBoard );
 
-    const size_t remainingCount = board->Footprints().size();
-    BOOST_REQUIRE_EQUAL( remainingCount, 1u );
+        std::unique_ptr<BOARD> board = KI_TEST::RequireBoardFromPcbnewQAData( "issue23704/issue23704.kicad_pcb" );
 
-    // Drive the production helper exactly as the export dialog does for a modified board.
-    wxString              inputPath;
-    std::vector<wxString> tempFiles;
-    wxString              errorDetail;
-    const wxString        error =
-            DIALOG_EXPORT_STEP::StageBoardForExport( onDiskPath, true, board.get(), inputPath, tempFiles, errorDetail );
+        const size_t originalCount = board->Footprints().size();
+        BOOST_REQUIRE_MESSAGE( originalCount > 1, "Panel board needs multiple footprints to delete" );
 
-    BOOST_REQUIRE_MESSAGE( error.IsEmpty(), "StageBoardForExport failed: " << error.ToStdString() );
-    BOOST_REQUIRE( wxFileExists( inputPath ) );
-    BOOST_CHECK_MESSAGE( inputPath != onDiskPath, "Modified board must stage a temporary copy, not the on-disk file" );
+        // Stage the board's "saved" copy in an isolated temp directory so the helper writes its
+        // temporary export file alongside it rather than into the shared test data tree.
+        const KI_TEST::SCOPED_TEMP_DIR workDir( wxS( "kicad_step_export_23704_" ) );
+        const std::filesystem::path& onDisk = workDir.Path() / "panel.kemi_pcb";
+        KI_TEST::DumpBoardToFile( *board, onDisk );
+        const wxString onDiskPath = wxString::FromUTF8( onDisk.string() );
 
-    std::unique_ptr<BOARD> staged = KI_TEST::ReadBoardFromFileOrStream( std::string( inputPath.utf8_str() ) );
-    BOOST_REQUIRE( staged );
+        // A sibling project file must be staged too, so project-relative model and library paths
+        // resolve identically during export.
+        std::filesystem::path projectFile = onDisk;
+        projectFile.replace_extension( projectExtension );
 
-    // The staged file reflects the in-memory deletions, not the full on-disk panel.
-    BOOST_CHECK_EQUAL( staged->Footprints().size(), remainingCount );
+        {
+            std::ofstream project( projectFile );
+            BOOST_REQUIRE( project );
+            nlohmann::json document = { { "meta", { { "version", 1 } } } };
 
-    // The sibling project file is staged next to the temporary board.
-    std::filesystem::path stagedProject = std::filesystem::path( std::string( inputPath.utf8_str() ) );
-    stagedProject.replace_extension( ".kicad_pro" );
-    BOOST_CHECK( std::filesystem::exists( stagedProject ) );
-    BOOST_CHECK_EQUAL( std::filesystem::file_size( stagedProject ), std::filesystem::file_size( projectFile ) );
+            if( projectExtension == ".kemi_pro" )
+                KEMI_FORMAT::StampJsonMarker( document, KEMI_FORMAT::DOC::PROJECT );
 
-    // The original on-disk file is never mutated by staging.
-    std::unique_ptr<BOARD> onDiskReloaded = KI_TEST::ReadBoardFromFileOrStream( onDisk.string() );
-    BOOST_REQUIRE( onDiskReloaded );
-    BOOST_CHECK_EQUAL( onDiskReloaded->Footprints().size(), originalCount );
+            project << document.dump( 2 );
+        }
 
-    for( const wxString& f : tempFiles )
-    {
-        if( wxFileExists( f ) )
-            wxRemoveFile( f );
+        const std::string projectBefore = KI_TEST::LoadStringData( projectFile.string() );
+
+        // The user deletes every panel section but one, never saving the file.
+        while( board->Footprints().size() > 1 )
+            board->Remove( board->Footprints().back() );
+
+        const size_t remainingCount = board->Footprints().size();
+        BOOST_REQUIRE_EQUAL( remainingCount, 1u );
+
+        // Drive the production helper exactly as the export dialog does for a modified board.
+        wxString              inputPath;
+        std::vector<wxString> tempFiles;
+        wxString              errorDetail;
+        const wxString        error =
+                DIALOG_EXPORT_STEP::StageBoardForExport( onDiskPath, true, board.get(), inputPath, tempFiles, errorDetail );
+
+        BOOST_REQUIRE_MESSAGE( error.IsEmpty(), "StageBoardForExport failed: " << error.ToStdString() );
+        BOOST_REQUIRE( wxFileExists( inputPath ) );
+        BOOST_CHECK_EQUAL( wxFileName( inputPath ).GetExt(), wxS( "kemi_pcb" ) );
+        BOOST_CHECK_MESSAGE( inputPath != onDiskPath, "Modified board must stage a temporary copy, not the on-disk file" );
+
+        std::unique_ptr<BOARD> staged = KI_TEST::ReadBoardFromFileOrStream( std::string( inputPath.utf8_str() ) );
+        BOOST_REQUIRE( staged );
+
+        // The staged file reflects the in-memory deletions, not the full on-disk panel.
+        BOOST_CHECK_EQUAL( staged->Footprints().size(), remainingCount );
+
+        // The sibling project file is staged next to the temporary board.
+        std::filesystem::path stagedProject = std::filesystem::path( std::string( inputPath.utf8_str() ) );
+        stagedProject.replace_extension( ".kemi_pro" );
+        BOOST_CHECK( std::filesystem::exists( stagedProject ) );
+        const nlohmann::json stagedJson = nlohmann::json::parse(
+                KI_TEST::LoadStringData( stagedProject.string() ) );
+        BOOST_CHECK( stagedJson.contains( KEMI_FORMAT::JSON_MARKER_KEY ) );
+        BOOST_CHECK_EQUAL( KI_TEST::LoadStringData( projectFile.string() ), projectBefore );
+
+        // The original on-disk file is never mutated by staging.
+        std::unique_ptr<BOARD> onDiskReloaded = KI_TEST::ReadBoardFromFileOrStream( onDisk.string() );
+        BOOST_REQUIRE( onDiskReloaded );
+        BOOST_CHECK_EQUAL( onDiskReloaded->Footprints().size(), originalCount );
+
+        for( const wxString& f : tempFiles )
+        {
+            if( wxFileExists( f ) )
+                wxRemoveFile( f );
+        }
     }
 }
 

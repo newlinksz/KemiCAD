@@ -21,7 +21,9 @@
 
 #include <board.h>
 #include <kiplatform/io.h>
+#include <kemi_format_profile.h>
 #include <lset.h>
+#include <richio.h>
 #include <string_utils.h>
 
 #include <drc_rules_lexer.h>
@@ -45,6 +47,19 @@ wxString formatLayerClause( const wxString& aLayerSource )
     return wxString::Format( wxS( "(layer \"%s\")" ), EscapeString( aLayerSource, CTX_QUOTED_STR ) );
 }
 
+
+wxString nativeRulesText( const wxString& aText )
+{
+    if( DRC_RULE_SAVER::IsKemiText( aText ) )
+        return aText;
+
+    return wxString::Format( wxS( "(%s (format_version %d)\n" ),
+                             wxString::FromUTF8( KEMI_FORMAT::RootToken(
+                                     KEMI_FORMAT::DOC::DESIGN_RULES, KEMI_FORMAT::FLAVOR::KEMI ) ),
+                             KEMI_FORMAT::FORMAT_VERSION )
+           + aText + wxS( "\n)\n" );
+}
+
 }
 
 
@@ -58,17 +73,78 @@ bool DRC_RULE_SAVER::SaveFile( const wxString&                               aPa
                                 const BOARD*                                  aBoard,
                                 const DRC_RE_FILE_TRIVIA&                     aTrivia )
 {
-    wxString    content = GenerateRulesText( aEntries, aBoard, aTrivia );
-    std::string utf8 = std::string( content.mb_str( wxConvUTF8 ) );
+    if( aTrivia.loadFailed )
+        return false;
 
-    return KIPLATFORM::IO::AtomicWriteFile( aPath, utf8.data(), utf8.size() );
+    try
+    {
+        const auto flavor = KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::DESIGN_RULES, aPath );
+        return SaveTextFile( aPath, GenerateRulesText( aEntries, aBoard, aTrivia, flavor ),
+                             aBoard, aTrivia );
+    }
+    catch( const IO_ERROR& )
+    {
+        return false;
+    }
+}
+
+
+bool DRC_RULE_SAVER::IsKemiText( const wxString& aText )
+{
+    try
+    {
+        DRC_RULES_LEXER lexer( aText.ToStdString( wxConvUTF8 ), wxS( "Design rules" ) );
+        return lexer.NextTok() == DRCRULE_T::T_LEFT && lexer.NextTok() == DRCRULE_T::T_kemi_dru;
+    }
+    catch( const IO_ERROR& )
+    {
+        // The text editor permits saving incomplete rules.  File, board and loaded-rule
+        // provenance still enforce the output profile when the leading expression is invalid.
+        return false;
+    }
+}
+
+
+bool DRC_RULE_SAVER::SaveTextFile( const wxString& aPath, const wxString& aText,
+                                   const BOARD* aBoard, const DRC_RE_FILE_TRIVIA& aTrivia,
+                                   wxString* aError )
+{
+    try
+    {
+        if( aTrivia.loadFailed )
+            THROW_IO_ERROR( _( "Cannot save design rules that failed to load." ) );
+
+        const auto flavor = KEMI_FORMAT::FlavorForPath( KEMI_FORMAT::DOC::DESIGN_RULES, aPath );
+        const bool restricted = aTrivia.kemiOnly || ( aBoard && aBoard->IsKemiOnly() )
+                                || IsKemiText( aText );
+        KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::DESIGN_RULES, aPath,
+                                            flavor, restricted );
+        const wxString content = flavor == KEMI_FORMAT::FLAVOR::KEMI
+                ? nativeRulesText( aText ) : aText;
+        const std::string utf8 = content.ToStdString( wxConvUTF8 );
+        return KIPLATFORM::IO::AtomicWriteFile( aPath, utf8.data(), utf8.size(), aError );
+    }
+    catch( const IO_ERROR& error )
+    {
+        if( aError )
+            *aError = error.What();
+
+        return false;
+    }
 }
 
 
 wxString DRC_RULE_SAVER::GenerateRulesText( const std::vector<DRC_RE_LOADED_PANEL_ENTRY>& aEntries,
                                              const BOARD*                                  aBoard,
-                                             const DRC_RE_FILE_TRIVIA&                     aTrivia )
+                                             const DRC_RE_FILE_TRIVIA&                     aTrivia,
+                                             KEMI_FORMAT::FLAVOR aFlavor )
 {
+    if( aTrivia.loadFailed )
+        THROW_IO_ERROR( _( "Cannot save design rules that failed to load." ) );
+
+    KEMI_FORMAT::CheckPersistentOutput( KEMI_FORMAT::DOC::DESIGN_RULES, wxEmptyString,
+            aFlavor, aTrivia.kemiOnly || ( aBoard && aBoard->IsKemiOnly() ) );
+
     wxString result = aTrivia.header;
 
     if( result.IsEmpty() )
@@ -145,7 +221,7 @@ wxString DRC_RULE_SAVER::GenerateRulesText( const std::vector<DRC_RE_LOADED_PANE
     else
         result += aTrivia.trailer;
 
-    return result;
+    return aFlavor == KEMI_FORMAT::FLAVOR::KEMI ? nativeRulesText( result ) : result;
 }
 
 

@@ -449,16 +449,25 @@ public:
         return UNDEFINED_LAYER;
     }
 
-    void SetFileName( const wxString& aFileName ) { m_fileName = aFileName; }
+    void SetFileName( const wxString& aFileName );
+
+    /// Once native KemiCAD data is loaded, renaming it cannot permit official-format output.
+    bool IsKemiOnly() const;
+    void SetKemiOnly();
 
     const wxString &GetFileName() const { return m_fileName; }
 
     /**
      * Return the absolute path to the design rules file for this board.
      *
+     * Look beside the board (relative board paths use the project directory). Prefer
+     * existing Kemi rules, then legacy rules; otherwise use the board's format.
      * @note There is no guarantee that this file actually exists and can be opened.
      */
     wxString GetDesignRulesPath() const;
+
+    /// Select a persistent destination separately from the legacy-compatible read fallback.
+    wxString GetDesignRulesWritePath( bool aNativeRules = false ) const;
 
     const TRACKS& Tracks() const { return m_tracks; }
 
@@ -1851,6 +1860,7 @@ private:
     std::atomic<int>    m_timeStamp;                // actually a modification counter
 
     wxString            m_fileName;
+    bool                m_kemiOnly = false;
 
     std::map<wxString, KIGFX::COLOR4D> m_netChainColors;
 

@@ -21,6 +21,7 @@
 
 #include <lib_id.h>
 #include <lib_symbol.h>
+#include <kemi_format_profile.h>
 #include <pgm_base.h>
 #include <project.h>
 #include <project_sch.h>
@@ -134,14 +135,22 @@ std::shared_ptr<SYMBOL_EDITOR_CONTEXT> CreateSymbolEditorFrameContext( SYMBOL_ED
 
 bool SaveSymbolCopyToFile( const LIB_SYMBOL& aSymbol, const wxString& aFileName, bool aOverwrite )
 {
-    wxFileName fn( aFileName );
+    wxFileName fn;
+
+    try
+    {
+        fn.Assign( KEMI_FORMAT::PersistentOutputPath( KEMI_FORMAT::DOC::SYMBOL_LIB,
+                                                     aFileName, true ) );
+    }
+    catch( const IO_ERROR& )
+    {
+        return false;
+    }
+
     fn.MakeAbsolute();
 
     if( !fn.IsOk() || !fn.IsDirWritable() )
         return false;
-
-    if( fn.GetExt().IsEmpty() )
-        fn.SetExt( wxString( FILEEXT::KiCadSymbolLibFileExtension ) );
 
     if( fn.FileExists() && ( !fn.IsFileWritable() || !aOverwrite ) )
         return false;

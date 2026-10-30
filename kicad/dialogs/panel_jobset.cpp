@@ -24,6 +24,8 @@
 #include "dialog_copyfiles_job_settings.h"
 #include <wx/aui/auibook.h>
 #include <jobs/jobset.h>
+#include <kemi_format_profile.h>
+#include <project/project_file.h>
 #include <jobs/job_registry.h>
 #include <eda_list_dialog.h>
 #include <wx/checkbox.h>
@@ -44,6 +46,7 @@
 #include <confirm.h>
 #include <launch_ext.h>
 #include <wx/filename.h>
+#include <wx/filedlg.h>
 
 #include <jobs/job_special_execute.h>
 #include <jobs/job_special_copyfiles.h>
@@ -524,6 +527,8 @@ PANEL_JOBSET::PANEL_JOBSET( wxAuiNotebook* aParent, KICAD_MANAGER_FRAME* aFrame,
         m_jobsFile( std::move( aJobsFile ) )
 {
     m_jobsGrid->PushEventHandler( new JOBS_GRID_TRICKS( this, m_jobsGrid ) );
+    if( !m_frame->Kiway().Prj().IsNullProject() )
+        m_jobsFile->SetKemiOnly( m_frame->Kiway().Prj().GetProjectFile().IsKemiOnly() );
 
     m_jobsGrid->OverrideMinSize( 0.6, 0.3 );
     m_jobsGrid->SetSelectionMode( wxGrid::wxGridSelectRows );
@@ -737,8 +742,38 @@ void PANEL_JOBSET::OnSaveButtonClick( wxCommandEvent& aEvent )
     if( !m_jobsGrid->CommitPendingChanges() )
         return;
 
-    m_jobsFile->SaveToFile( wxEmptyString, true );
+    saveJobset();
     UpdateTitle();
+}
+
+
+bool PANEL_JOBSET::saveJobset()
+{
+    wxFileName target( m_jobsFile->GetFullFilename() );
+    bool saved;
+
+    if( m_jobsFile->IsKemiOnly()
+        && !KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::JOBSET, target.GetExt() ) )
+    {
+        target.SetExt( KEMI_FORMAT::Ext( KEMI_FORMAT::DOC::JOBSET, KEMI_FORMAT::FLAVOR::KEMI ) );
+        wxFileDialog dialog( this, _( "Save KemiCAD Jobset As" ), target.GetPath(),
+                             target.GetFullName(), FILEEXT::JobsetFileWildcard(),
+                             wxFD_SAVE | wxFD_OVERWRITE_PROMPT );
+
+        if( dialog.ShowModal() != wxID_OK )
+            return false;
+
+        saved = m_jobsFile->SaveAs( dialog.GetPath() );
+    }
+    else
+    {
+        saved = m_jobsFile->SaveToFile( wxEmptyString, true );
+    }
+
+    if( !saved )
+        DisplayErrorMessage( m_frame, _( "Could not save jobset. Choose a writable KemiCAD jobset target." ) );
+
+    return saved;
 }
 
 
@@ -881,7 +916,7 @@ bool PANEL_JOBSET::GetCanClose()
         if( !HandleUnsavedChanges( this, wxString::Format( msg, fileName.GetFullName() ),
                                    [&]() -> bool
                                    {
-                                       return m_jobsFile->SaveToFile( wxEmptyString, true );
+                                       return saveJobset();
                                    } ) )
         {
             return false;

@@ -55,7 +55,7 @@ struct DIRECTIVE_LABEL_I18N_FIXTURE
     {
         wxString tempDir = wxStandardPaths::Get().GetTempDir();
         wxString projectPath =
-                tempDir + wxFileName::GetPathSeparator() + wxT( "issue24403_project.kicad_pro" );
+                tempDir + wxFileName::GetPathSeparator() + wxS( "issue24403_project.kemi_pro" );
         m_tempFiles.push_back( projectPath );
 
         m_settingsManager.LoadProject( projectPath.ToStdString() );
@@ -83,7 +83,7 @@ struct DIRECTIVE_LABEL_I18N_FIXTURE
                 tempDir + wxFileName::GetPathSeparator() + aPrefix );
         m_tempFiles.push_back( baseName );
 
-        wxString fileName = baseName + wxT( ".kicad_sch" );
+        wxString fileName = baseName + wxS( ".kemi_sch" );
         m_tempFiles.push_back( fileName );
         return fileName;
     }

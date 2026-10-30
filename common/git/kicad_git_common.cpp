@@ -696,7 +696,7 @@ std::vector<wxString> KIGIT_COMMON::GetProjectDirs()
                 root_fn.SetPath( root );
 
                 if( git_tree_entry_type( entry ) == GIT_OBJECT_BLOB
-                    && ( ( root_fn.GetExt() == "kicad_pro" ) || ( root_fn.GetExt() == "pro" ) ) )
+                    && ( ( root_fn.GetExt() == "kemi_pro" ) || ( root_fn.GetExt() == "kicad_pro" ) || ( root_fn.GetExt() == "pro" ) ) )
                 {
                     prjs->push_back( root_fn.GetFullPath() );
                 }

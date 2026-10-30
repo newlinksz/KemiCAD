@@ -373,7 +373,7 @@ SCH_SHEET* SCH_IO_PADS::LoadSchematicFile( const wxString& aFileName, SCHEMATIC*
     {
         THROW_IO_ERROR( wxString::Format( _( "'%s' contains a complete PADS Logic schematic and "
                                              "cannot be loaded as a hierarchical sheet. Use File > Import > "
-                                             "Non-KiCad Schematic... instead." ),
+                                             "Non-KemiCAD Schematic... instead." ),
                                           aFileName ) );
     }
 

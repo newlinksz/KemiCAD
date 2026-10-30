@@ -44,7 +44,7 @@ struct PIN_MAP_OVERRIDE_FIXTURE
     {
         wxString tempDir = wxStandardPaths::Get().GetTempDir();
         wxString projectPath = tempDir + wxFileName::GetPathSeparator()
-                               + wxT( "test_pinmap_ovr.kicad_pro" );
+                               + wxS( "test_pinmap_ovr.kemi_pro" );
         m_tempFiles.push_back( projectPath );
 
         m_settingsManager.LoadProject( projectPath.ToStdString() );
@@ -68,7 +68,7 @@ struct PIN_MAP_OVERRIDE_FIXTURE
         wxString dir = wxStandardPaths::Get().GetTempDir();
         wxString name = wxFileName::CreateTempFileName( dir + wxFileName::GetPathSeparator()
                                                         + "pin_map_override" );
-        name += ".kicad_sch";
+        name += wxS( ".kemi_sch" );
         m_tempFiles.push_back( name );
         return name;
     }
@@ -80,7 +80,7 @@ struct PIN_MAP_OVERRIDE_FIXTURE
 
         SCH_SHEET*  sheet = m_schematic->GetTopLevelSheets()[0];
         SCH_SCREEN* screen = sheet->GetScreen();
-        screen->SetFileName( "pin_map_override.kicad_sch" );
+        screen->SetFileName( wxS( "pin_map_override.kemi_sch" ) );
 
         SCH_SHEET_PATH path;
         path.push_back( sheet );

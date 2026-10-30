@@ -19,6 +19,7 @@
  */
 
 #include <api/api_handler_sch.h>
+#include <kemi_format_profile.h>
 #include <api/api_enums.h>
 #include <api/api_sch_utils.h>
 #include <api/api_utils.h>
@@ -343,12 +344,27 @@ HANDLER_RESULT<google::protobuf::Empty> API_HANDLER_SCH::handleSaveDocument( con
         return tl::unexpected( e );
     }
 
+    wxFileName oldSchematicFile( context()->GetCurrentFileName() );
+    oldSchematicFile.MakeAbsolute();
+
     if( !context()->SaveSchematic() )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_BAD_REQUEST );
         e.set_error_message( "failed to save schematic" );
         return tl::unexpected( e );
+    }
+
+    wxFileName newSchematicFile( context()->GetCurrentFileName() );
+    newSchematicFile.MakeAbsolute();
+
+    if( oldSchematicFile.GetFullPath() != newSchematicFile.GetFullPath() )
+    {
+        if( KICAD_API_SERVER* server = apiServer() )
+        {
+            server->NotifyDocumentRenamed( thisDocumentType(), oldSchematicFile.GetFullPath(),
+                                           newSchematicFile.GetFullPath() );
+        }
     }
 
     return google::protobuf::Empty();
@@ -398,8 +414,8 @@ API_HANDLER_SCH::handleSaveDocumentAs( const HANDLER_CONTEXT<SaveDocumentAs>& aC
 
     if( KICAD_API_SERVER* server = apiServer() )
     {
-        wxFileName newSchematicFile( pathStr );
-        newSchematicFile.SetExt( FILEEXT::KiCadSchematicFileExtension );
+        wxFileName newSchematicFile( context()->GetCurrentFileName() );
+        newSchematicFile.MakeAbsolute();
 
         server->NotifyDocumentRenamed( thisDocumentType(), oldSchematicFile.GetFullPath(),
                                        newSchematicFile.GetFullPath() );
@@ -440,11 +456,12 @@ API_HANDLER_SCH::handleSaveCopyOfDocument( const HANDLER_CONTEXT<SaveCopyOfDocum
         return tl::unexpected( e );
     }
 
-    if( schematicPath.GetExt() != FILEEXT::KiCadSchematicFileExtension )
+    if( !KEMI_FORMAT::IsKemiExt( KEMI_FORMAT::DOC::SCHEMATIC, schematicPath.GetExt() ) )
     {
         ApiResponseStatus e;
         e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-        e.set_error_message( fmt::format( "save path '{}' must have a kicad_sch extension",
+        e.set_error_message( fmt::format( "save path '{}' must have a kemi_sch extension; "
+                                          "official KiCad files are import-only",
                                           schematicPath.GetFullPath().ToStdString() ) );
         return tl::unexpected( e );
     }
@@ -535,7 +552,8 @@ API_HANDLER_SCH::handleSaveDocumentToString( const HANDLER_CONTEXT<commands::Sav
     STRING_FORMATTER   formatter;
     SCH_IO_KICAD_SEXPR plugin;
 
-    plugin.FormatSchematicToFormatter( &formatter, topLevelSheet, schematic(), nullptr );
+    plugin.FormatSchematicToFormatter( &formatter, topLevelSheet, schematic(), nullptr,
+            schematic()->IsKemiOnly() ? KEMI_FORMAT::FLAVOR::KEMI : KEMI_FORMAT::FLAVOR::LEGACY );
 
     std::string contents = formatter.GetString();
     KICAD_FORMAT::Prettify( contents, KICAD_FORMAT::FORMAT_MODE::COMPACT_TEXT_PROPERTIES );

@@ -714,8 +714,12 @@ protected:
      * @param aExtensions  Only autosave files whose source has one of these
      *                     extensions are considered. PCB editor passes kicad_pcb,
      *                     schematic editor passes kicad_sch.
+     * @param aDocumentPath identifies the document being opened, if any.
+     * @return its recovered native path, or empty when that document was not restored.
      */
-    void CheckForAutosaveFiles( const wxString& aProjectPath, const std::vector<wxString>& aExtensions );
+    wxString CheckForAutosaveFiles( const wxString& aProjectPath,
+                                    const std::vector<wxString>& aExtensions,
+                                    const wxString& aDocumentPath = wxEmptyString );
 
     virtual bool canCloseWindow( wxCloseEvent& aCloseEvent ) { return true; }
     virtual void doCloseWindow() { }
