@@ -4,14 +4,15 @@
 
 ## 1. 三个远端与对应关系
 
-| 位置 | 地址 | 分支 | 2026-10-30 tip |
+| 位置 | 地址 | 分支 | 2026-10-30 同步 tip |
 |---|---|---|---|
-| 本地开发仓 | TD80 `D:\KiCad` | `main` | `b56ff2eafaf4115a42519accf6b7b05e9dbb4c27` |
-| 内部 GitLab（remote `origin`） | `ssh://git@nl.ydata.online:9527/macos/KiCad.git`（网页 `https://nl.ydata.online:9529/macos/KiCad`） | `main`（默认分支） | `b56ff2ea…`，与本地相同 |
-| GitHub 开源（remote `github`） | `https://github.com/newlinksz/KemiCAD.git` | `main` | `2d6505c2034fb1c17a6509e076a5f096de84afce` |
+| 本地开发仓 | TD80 `D:\KiCad` | `main` | `59787e4c4fc354742713f334a053bedafcd58abe` |
+| 内部 GitLab（remote `origin`） | `ssh://git@nl.ydata.online:9527/macos/KiCad.git`（网页 `https://nl.ydata.online:9529/macos/KiCad`） | `main`（默认分支） | `59787e4c…`，与本地相同 |
+| GitHub 开源（remote `github`） | `https://github.com/newlinksz/KemiCAD.git` | `main` | `9983777d5eff566a7d8bcdc95413d6b80997db21` |
 
+- 表中 tip 为该次同步时的值；本文件自身的更新提交会再让 tip 前进一格，实时值以 `git ls-remote` 为准。
 - 本地 `main` = `origin/main`：同一条完整开发历史。
-- GitHub `main` 的**文件内容与本地 `main` 完全相同**（tree `277c6c8437b095e695ac706cc4eb43450e872d4f`，`git diff main github/main` 为空），但**历史不同**：GitHub 上是在原有历史（`a609266a`）后接一个"内容一致快照提交"。图上显示为两条线属正常，不是内容不一致。
+- GitHub `main` 的**文件内容与本地 `main` 完全相同**（tree `4dfbf9febf73f986df818e595c02ddbd26936c22`，`git diff main github/main` 为空），但**历史不同**：GitHub 上是在原有历史（`a609266a`）后接"内容一致快照提交"（`a609266a` → `2d6505c2` → `9983777d`）。图上显示为两条线属正常，不是内容不一致。
 - 原因：本地仓为浅克隆，整历史推 GitHub 会报 `did not receive expected object …`；因此 GitHub 只用快照方式同步。
 - 目标仓库是 `newlinksz/KemiCAD`，**不是** `newlinksz/KEMI-EDA`（旧示例，查询失败不代表账号连不上）。
 - remote `upstream` = 官方 KiCad（只读，push 已禁用）。
